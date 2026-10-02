@@ -153,8 +153,11 @@
 #     released_to_main, wont_do, done) — rc 2 before any request otherwise, as is a reason with no
 #     text. Because the write is no longer stage-only, it needs the token's `task.update` and a
 #     kanban that knows `add_tags`; a refusal is rc 1 with the card NOT moved. After the move's
-#     echo: a re-read without the tag is rc 1 HARD FAILURE, a re-read that cannot be made is rc 3,
-#     and a reason comment that did not post is cmd_comment's rc. `patch` takes it too. Remove the
+#     echo: a re-read without the tag is rc 1 HARD FAILURE, a re-read of the tag that cannot be
+#     made is rc 3. Once the tag is read back the rc is 0: a reason comment that did not post, or
+#     whose own read-back failed, is a WARNING naming the command that posts it, never the rc. A
+#     401/403 names the `task.update` need and warns against retrying without --partial (which
+#     would land the card finished and unmarked). `patch` takes it too. Remove the
 #     marker with `patch --remove-tags terminal:partial`. Rules: README.md § The terminal:partial
 #     marker.
 #   kbcard reorder --ids "ID-OR-EXT[,ID-OR-EXT...]" --placement top|bottom
@@ -1960,12 +1963,17 @@ _kbc_partial_current_guard() {
 
 # _kbc_partial_after_write <verb> <task> <reason>: after the write that carried the tag has been
 # CONFIRMED (its stage echo compared), READ the card back for the tag, then post <reason> as a card
-# comment. A 2xx is not the tag — a write can answer success and store nothing — so the re-read is
-# the outcome, and it is the verb's rc (the write-outcome ladder at KBC_RC_UNVERIFIED):
-#   rc 0  the re-read card carries the tag, and the comment is posted and read back
+# comment. A 2xx is not the tag — a write can answer success and store nothing — so the TAG's
+# re-read is the outcome, and it is the verb's rc (the write-outcome ladder at KBC_RC_UNVERIFIED):
+#   rc 0  the re-read card carries the tag — whatever happened to the comment
 #   rc 1  the re-read card does NOT carry the tag (no comment is posted for a marker that is not
-#         there); or cmd_comment's own rc 1
-#   rc 3  the re-read produced no measurement; or cmd_comment's own rc 3
+#         there)
+#   rc 3  the tag's re-read produced no measurement (no comment is posted either)
+# THE COMMENT NEVER CHANGES THE RC, by ruling, on _kbc_owner_after_move's precedent: once the tag is
+# confirmed the card is marked and a release sweep holds it, which is what the caller asked for. A
+# comment refused, or one whose own read-back could not be made (cmd_comment's rc 1 / rc 3), prints
+# a WARNING naming the exact command that posts it, and the rc stays 0. So rc 1 means only "not
+# marked", and rc 3 only "whether it is marked is unknown".
 # Every line goes to stderr: stdout is the verb's write echo, which a consumer parses.
 _kbc_partial_after_write() {
     local verb="$1" task="$2" reason="$3" crc=0 cid pred
@@ -1979,11 +1987,11 @@ _kbc_partial_after_write() {
             return 1 ;;
     esac
     echo "kbcard: $verb on task $task: $KB_PARTIAL_TAG written, and read back on the card" >&2
-    local ccrc=0
-    cid="$(cmd_comment --task "$task" --content "$KB_PARTIAL_TAG — $reason")" || ccrc=$?
+    local content="$KB_PARTIAL_TAG — $reason" ccrc=0
+    cid="$(cmd_comment --task "$task" --content "$content")" || ccrc=$?
     if [[ "$ccrc" -ne 0 ]]; then
-        echo "kbcard: $verb on task $task: the card IS marked $KB_PARTIAL_TAG (read back above), but the reason comment did not post (cause above) — post it with: kbcard comment --task $task --content \"$KB_PARTIAL_TAG — <reason>\"" >&2
-        return "$ccrc"
+        echo "kbcard: WARNING — $verb on task $task: the card IS marked $KB_PARTIAL_TAG (read back above) and a release sweep will hold it, but the reason comment was NOT posted, or its post could not be confirmed (cause above). This exit code is the write's, not the comment's. Post the reason with: kbcard ${board_name:+--board $(printf '%q' "$board_name") }comment --task $task --content $(printf '%q' "$content")" >&2
+        return 0
     fi
     echo "kbcard: $verb on task $task: the reason is on the card as comment $cid" >&2
 }
@@ -1999,7 +2007,7 @@ _kbc_partial_after_write() {
 #   THE OWNER CLAIM IS NOT WRITTEN HERE. It is its own assignment write after the move is confirmed
 #   (_kbc_owner_after_move), so no claim outcome can refuse the move.
 #
-#   A POLICY REFUSAL OF AN ASSIGNMENT WRITE IS NAMED (see _kbc_write_fault). That naming lives
+#   A POLICY REFUSAL OF AN ASSIGNMENT OR --partial WRITE IS NAMED (see _kbc_write_fault). That naming lives
 #   HERE rather than at either caller because it needs KB_HTTP, which kb_api sets inside the
 #   command substitution the caller captures the response with — where the caller can no longer
 #   read it. This function runs in that same subshell, so it can.
@@ -2037,11 +2045,20 @@ _kbc_owner_after_move() {
 # flake, and the operator retries. Silent on every other status and on any body that carries no
 # assignment: kb_api has already printed the status, and a second generic line about a write
 # this function knows nothing about would be noise.
+# The terminal:partial marker (--partial) gets its own line for the same status, because the
+# tempting retry there is the dangerous one: the marker is what makes the PATCH an UPDATE rather
+# than a MOVE, so dropping --partial "fixes" the 403 and lands the card finished and UNMARKED —
+# exactly the card a release sweep then promotes.
 _kbc_write_fault() {
-    local verb="$1" task="$2" body="$3" http="$4"
+    local verb="$1" task="$2" body="$3" http="$4" what="nothing was written"
     case "$http" in 401|403) : ;; *) return 0 ;; esac
-    jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null 2>&1 || return 0
-    echo "kbcard: $verb on task $task: HTTP $http is a POLICY refusal and this write carries assigned_user_id — an INSTALL FAULT, not a card problem. Writing an assignee needs the board token's role to carry \`task.update\` (and the board not to be read-only to it); a token without it gets this answer every time, so retrying and editing the card change nothing. Fix the role/token for this board (docs/INSTALL.md §3b)." >&2
+    if jq -e 'has("assigned_user_id")' <<<"$body" >/dev/null 2>&1; then
+        echo "kbcard: $verb on task $task: HTTP $http is a POLICY refusal and this write carries assigned_user_id — an INSTALL FAULT, not a card problem. Writing an assignee needs the board token's role to carry \`task.update\` (and the board not to be read-only to it); a token without it gets this answer every time, so retrying and editing the card change nothing. Fix the role/token for this board (docs/INSTALL.md §3b)." >&2
+    fi
+    if [[ -n "${KB_PARTIAL_TAG:-}" ]] && jq -e --arg t "$KB_PARTIAL_TAG" 'any(.add_tags[]?; . == $t)' <<<"$body" >/dev/null 2>&1; then
+        jq -e 'has("workflow_stage_id")' <<<"$body" >/dev/null 2>&1 && what="the card was NOT moved and NOT marked"
+        echo "kbcard: $verb on task $task: HTTP $http is a POLICY refusal of the --partial write — $what. Carrying the $KB_PARTIAL_TAG tag makes this PATCH an UPDATE, so the board token's role needs \`task.update\` (a plain move needs only \`task.move\`). Do NOT retry without --partial: that move would land the card finished and UNMARKED, and the next release sweep would promote it. Fix the role/token for this board (docs/INSTALL.md §3b), then re-run with --partial." >&2
+    fi
     return 0
 }
 

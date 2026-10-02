@@ -50,8 +50,9 @@
 #   and is recoverable by hand on any later day; a terminal one is not. So: the card is named on
 #   stderr with the `⊘` the source-stage guard already uses, counted in its own summary segment,
 #   and the run continues. A WITHHELD CARD NEVER TURNS A RUN THAT EXITED 0 NON-ZERO: THE RUN EXITS AS IF
-#   THE MOVE HAD LANDED. That follows from WHERE the withhold sits — it is the LAST check before the
-#   write, after already-released, `--shipped-stages` and `--require-complete` — so a parent any
+#   THE MOVE HAD LANDED. That follows from WHERE the withhold sits — it and the terminal:partial
+#   hold are the last checks before the write (program withhold, then the terminal:partial hold),
+#   after already-released, `--shipped-stages` and `--require-complete` — so a parent any
 #   of those stops is reported, counted and exited on exactly as it was before the withhold existed
 #   (`already released`, `stage-guarded`, `completeness-refused`), and the tag is consulted only
 #   for a card that would otherwise MOVE. For that card its withheld count stands in for the
@@ -345,7 +346,8 @@
 #      pr-diverged ref, and the refusal case below all live at 0. The program withhold is at 0
 #      BY DESIGN and not by omission: see THE PROGRAM-PARENT
 #      WITHHOLD above for why this vendored tool reports that card instead of failing its
-#      consumer's release over it: the withhold is the last check before the write, so the run
+#      consumer's release over it: the withhold and the terminal:partial hold are the last checks
+#      before the write (in that order), so the run
 #      exits as if the parent's move had landed. The terminal:partial hold sits right after it
 #      and is at 0 for the same reason. ⛔ A GATE THAT MUST CATCH EITHER READS THE
 #      `program-withheld` / `partial-held` SEGMENT OF THE SUMMARY LINE, NOT THE RC.
@@ -2056,8 +2058,8 @@ while IFS= read -r row; do
   # PROGRAM-PARENT WITHHOLD (card#10068) — unconditional, non-fatal. Why the tag, why exact, why a
   # withhold rather than a refusal: the header block, which --help prints. Not restated here.
   #
-  # ⛔ WHY IT IS LAST, IMMEDIATELY BEFORE THE WRITE — the position IS the rc contract. (The
-  # terminal:partial hold right below it shares the position and every argument here.) Every check
+  # ⛔ WHY IT IS AMONG THE LAST CHECKS BEFORE THE WRITE — the position IS the rc contract. (Only the
+  # terminal:partial hold, right below it, comes after it, and it shares every argument here.) Every check
   # above (already-released, --shipped-stages, --require-complete) runs on a parent exactly as it
   # did before the withhold existed, reports it exactly as it did, and reaches its rc exactly as it
   # did. The tag only matters for a card that would otherwise MOVE, so it is consulted only there,
@@ -2329,7 +2331,8 @@ if [ "$not_applied" -gt 0 ]; then exit 1; fi
 # outcome has its own counter and
 # its own unconditional clause ABOVE, because giving a new outcome an old counter gave it that
 # counter's run-shape condition too. This clause is the one card#9938 found here plus ONE term,
-# `program_held == 0` (card#10068). The withhold is the LAST check before the write, so every card
+# `program_held == 0` (card#10068). The withhold is among the last checks before the write (program
+# withhold, then the terminal:partial hold), so every card
 # `program_held` counts passed every other check and is one the pre-withhold bin PATCHed and, once
 # the PATCH landed, counted `moved` — which kept this arm quiet. So the term changes no rc a run
 # whose parent's move would have landed ever had; where that move would have been refused (the one
@@ -2403,8 +2406,8 @@ if [ "$unverified" -gt 0 ]; then exit "$RC_UNVERIFIED"; fi
 # vs a silently un-promoted shipped card. `program_held` IS in the guard, and that is not the
 # same call made the other way — it is a different constraint winning (card#10068). A withheld
 # parent proves a ref reached a card, not that the RANGE was complete, so on the die's own
-# question it is no better evidence than a guarded skip. But the withhold is the last check before
-# the write, so every card it counts is one the pre-withhold bin PATCHed and counted `moved`, which
+# question it is no better evidence than a guarded skip. But the withhold is among the last checks
+# before the write (program withhold, then the terminal:partial hold), so every card it counts is one the pre-withhold bin PATCHed and counted `moved`, which
 # kept this die from firing; leaving it out made a release whose only match was a parent go from
 # rc 0 to rc 2 — a withheld card breaking a consumer's release, the one thing THE PROGRAM-PARENT
 # WITHHOLD (header) is shaped not to do. A parent the stage guard or the completeness gate stops

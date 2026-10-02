@@ -5176,13 +5176,18 @@ export KB_PCARD="$TMP/pcard.json"
 #   KB_STUB_MOVE      a PATCH carrying workflow_stage_id answers this status, nothing stored
 #   KB_STUB_DROP      a PATCH answers 200 and stores the stage but NOT the tag — a success that
 #                     stored nothing of the marker, which only the read-back can tell
+#   KB_STUB_PATCH     EVERY PATCH answers this status, nothing stored (a stage-less one included)
 #   KB_STUB_REREAD    the `?trashed=1` read-back answers 403, or `transport` (no status at all)
+#   KB_STUB_REREAD_FROM  …only from the Nth `?trashed=1` read of the run on (1 = the tag's own
+#                     read-back, 2 = the comment's), so the comment's read-back can fail alone
 #   KB_STUB_READ      the plain card read (patch's current-column read) answers 403
 #   KB_STUB_COMMENT   the comment POST answers this status
 kb_stub_route() {
-    local method="$1" url="$2" body="$3"
+    local method="$1" url="$2" body="$3" _nre
     case "$method $url" in
         "GET "*/tasks/606.json\?trashed=1)
+            _nre="$(awk -F'\t' '$1 == "GET" && index($2, "?trashed=1")' "$KB_STUB_LOG" | wc -l | tr -d ' ')"
+            [[ "$_nre" -ge "${KB_STUB_REREAD_FROM:-1}" ]] || { printf '200\n'; jq -c '{data: .}' "$KB_PCARD"; return 0; }
             case "${KB_STUB_REREAD:-}" in
                 403)       printf '403\n{"message":"This action is unauthorized."}' ;;
                 transport) printf '!curl 7' ;;
@@ -5192,6 +5197,7 @@ kb_stub_route() {
             if [[ "${KB_STUB_READ:-}" == 403 ]]; then printf '403\n{"message":"This action is unauthorized."}'
             else printf '200\n'; jq -c '{data: .}' "$KB_PCARD"; fi ;;
         "PATCH "*/tasks/606.json)
+            if [[ -n "${KB_STUB_PATCH:-}" ]]; then printf '%s\n{"message":"This action is unauthorized."}' "$KB_STUB_PATCH"; return 0; fi
             if [[ -n "${KB_STUB_MOVE:-}" ]] && jq -e 'has("workflow_stage_id")' <<<"$body" >/dev/null; then
                 printf '%s\n{"message":"refused"}' "$KB_STUB_MOVE"; return 0
             fi
@@ -5211,7 +5217,7 @@ kb_stub_route() {
     esac
 }
 export -f kb_stub_route
-unset KB_STUB_MOVE KB_STUB_DROP KB_STUB_REREAD KB_STUB_READ KB_STUB_COMMENT
+unset KB_STUB_MOVE KB_STUB_PATCH KB_STUB_DROP KB_STUB_REREAD KB_STUB_REREAD_FROM KB_STUB_READ KB_STUB_COMMENT
 
 # pk <stage> <tags-json> <kbcard args…> — seed the card, run the REAL bin.
 pk() {
@@ -5293,6 +5299,15 @@ eq "patch --partial whose current-column read fails → rc 1, nothing written" \
 KB_STUB_MOVE=403 pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$REASON"
 eq "⭐ the combined write REFUSED → rc 1, the card NOT moved and NOT marked, no comment" \
    '1|49|["fr"]|0' "$rc|$(pafter .workflow_stage_id)|$(pafter .tags)|$(kb_stub_count POST /tasks/606/comments.json)"
+# A 401/403 there is the token's ROLE, and the tempting retry — the same move without --partial —
+# is the one that lands the card finished and unmarked. The refusal must say both.
+eq "⭐ …a 403 names the task.update need, and warns against retrying without --partial" "true|true|true" \
+   "$(has 'HTTP 403 is a POLICY refusal of the --partial write — the card was NOT moved and NOT marked' "$err")|$(has 'needs `task.update` (a plain move needs only `task.move`)' "$err")|$(has 'Do NOT retry without --partial: that move would land the card finished and UNMARKED, and the next release sweep would promote it' "$err")"
+KB_STUB_PATCH=403 pk 51 '["fr"]' patch --task 606 --partial "$REASON"
+eq "a 403 on a stage-less patch --partial → rc 1, says NOTHING was written (no move to deny)" "1|true|false" \
+   "$rc|$(has 'refusal of the --partial write — nothing was written' "$err")|$(has 'NOT moved' "$err")"
+KB_STUB_MOVE=403 pk 49 '["fr"]' move --task 606 --column shipped_to_dev
+eq "control: a plain move's 403 carries no --partial line" "1|false" "$rc|$(has '--partial write' "$err")"
 KB_STUB_DROP=1 pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$REASON"
 eq "⭐ a 2xx that stored no tag → rc 1 HARD FAILURE, off the READ-BACK" "1|true" \
    "$rc|$(has 'HARD FAILURE — the write carrying terminal:partial answered 2xx, and the card does not carry the tag on a re-read' "$err")"
@@ -5303,9 +5318,23 @@ for _rr in 403 transport; do
     eq "the read-back $_rr → rc 3 UNVERIFIED, no comment" "3|true|0" \
        "$rc|$(has 'UNVERIFIED WRITE' "$err")|$(kb_stub_count POST /tasks/606/comments.json)"
 done
+# ⭐ THE COMMENT NEVER CHANGES THE RC once the tag is read back (ruling): the card is held, so rc 1
+# keeps meaning only "not marked". A refused comment and one whose own read-back cannot be made
+# take the SAME warning arm, rc 0, naming the exact command that posts the reason.
+_retry="kbcard comment --task 606 --content $(printf '%q' "terminal:partial — $REASON")"
 KB_STUB_COMMENT=403 pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$REASON"
-eq "a comment that did not post → rc 1, saying the card IS marked" "1|true|true" \
-   "$rc|$(has 'the card IS marked terminal:partial' "$err")|$(has '"terminal:partial"' "$(pafter .tags)")"
+eq "⭐ a comment REFUSED after the tag is confirmed → rc 0, the card marked, the move's echo on stdout" \
+   '0|true|51' "$rc|$(has '"terminal:partial"' "$(pafter .tags)")|$(jq -r .workflow_stage_id <<<"$out")"
+eq "…a WARNING that the card is marked and held but the reason is missing" "true" \
+   "$(has 'WARNING — move on task 606: the card IS marked terminal:partial (read back above) and a release sweep will hold it, but the reason comment was NOT posted' "$err")"
+eq "…naming the exact command that posts it"          "true" "$(has "Post the reason with: $_retry" "$err")"
+eq "witness: that command really posts the reason" "0|1|\"terminal:partial — $REASON\"" \
+   "$(KB_STUB_COMMENT='' eval "kbc ${_retry#kbcard }"; echo "$rc")|$(kb_stub_count POST /tasks/606/comments.json)|$(pafter '.comments[0].content')"
+for _rr in 403 transport; do
+    KB_STUB_REREAD=$_rr KB_STUB_REREAD_FROM=2 pk 49 '["fr"]' move --task 606 --column shipped_to_dev --partial "$REASON"
+    eq "⭐ the tag confirmed, the COMMENT's read-back $_rr → rc 0 and the same warning, not rc 3" "0|1|true|true" \
+       "$rc|$(kb_stub_count POST /tasks/606/comments.json)|$(has 'or its post could not be confirmed' "$err")|$(has "Post the reason with: $_retry" "$err")"
+done
 
 # --- a lib older than this kbcard: refused before the move, never after it -----------------------
 _pstale="$TMP/stale-partial"; mkdir -p "$_pstale"
@@ -5319,7 +5348,7 @@ kb_stub_reset; rc=0; "$_pstale/kbcard" move --task 606 --column shipped_to_dev >
 eq "control: that stale bin, without --partial, still moves" '0|{"workflow_stage_id":51}' "$rc|$(pbodies)"
 
 unset -f pk pbodies pafter preads kb_stub_route
-unset KB_PCARD REASON PMOVE51 _args _blank _fc _wl _rr _pstale
+unset KB_PCARD REASON PMOVE51 _args _blank _fc _wl _rr _pstale _retry
 
 echo "== owner-migrate — the one-time owner:* tag → assignee migration, dry-run by default (card#10868) =="
 rm -rf "$TMP"
