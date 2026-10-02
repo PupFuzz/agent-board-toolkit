@@ -357,8 +357,20 @@ _disk_tests() {
 # (`kbc-archive-eligible` vs `kbcard-field` invert on the `-` vs `a` at position 4). Feed comm
 # two C-collated streams while it judges them as en_US and it reports "not in sorted order" and
 # emits an unreliable diff — observed, not hypothetical.
+# _disk_scripts <tests-dir> — every *.sh basename in the dir, C-collated. `dangling` compares
+# against THIS, not `_disk_tests`: channel 2 also collects a helper a step runs by path
+# (`tests/_composite-step-run.sh` in ci.yml, card#9022), which is on disk but is not a selftest,
+# and comparing it against the selftest set alone reported a file that exists as missing.
+_disk_scripts() {
+    local d="$1" f
+    for f in "$d"/*.sh; do
+        [[ -e "$f" ]] || continue
+        basename "$f" .sh
+    done | LC_ALL=C sort
+}
+
 unrun()    { LC_ALL=C comm -23 <(_disk_tests "$2") <(_wf_runs "$1"); }
-dangling() { LC_ALL=C comm -13 <(_disk_tests "$2") <(_wf_runs "$1"); }
+dangling() { LC_ALL=C comm -13 <(_disk_scripts "$2") <(_wf_runs "$1"); }
 
 # ---------------------------------------------------------------------------
 # Positive control FIRST. Every assertion below is an assertion of ABSENCE ("no unrun
@@ -410,7 +422,11 @@ eq "a workflow that reads no PR field is outside it (ci.yml)" "false" \
 # ---------------------------------------------------------------------------
 echo "== every tests/*-selftest.sh is run by a PR-triggered workflow =="
 eq "no selftest on disk is left unrun" "" "$(unrun "$WORKFLOWS" "$HERE")"
-eq "the workflows name no selftest that is absent from tests/" "" "$(dangling "$WORKFLOWS" "$HERE")"
+eq "the workflows name no script that is absent from tests/" "" "$(dangling "$WORKFLOWS" "$HERE")"
+# The witness for `_disk_scripts`: a non-selftest helper the workflows name, present on disk, is
+# extracted AND not reported. Narrowing `dangling` back to the selftest set reds the line above.
+eq "a helper named by path is extracted (witness for the dangling leg's population)" "true" \
+   "$(has_line '_composite-step-run' "$runs")"
 
 echo "== the trigger contract: no narrowed pull_request, no PR-field read without 'edited' =="
 eq "no workflow observes fewer than all pull requests (filter key, or a deficient types list)" \
