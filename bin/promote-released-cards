@@ -20,6 +20,8 @@
 # A matched card carrying the `program` tag is WITHHELD — always, no flag — because such a card
 # is a PARENT naming several legs and no one release may take it terminal; see THE PROGRAM-PARENT
 # WITHHOLD below.
+# A matched card carrying the `terminal:partial` tag is HELD — always, no flag — because someone
+# declared work on it still outstanding; see THE TERMINAL:PARTIAL HOLD below.
 #
 # THE PROGRAM-PARENT WITHHOLD — unconditional, non-fatal, counted (toolkit card#10068).
 #   A card carrying the `program` tag names SEVERAL LEGS rather than one deliverable. A release
@@ -48,8 +50,9 @@
 #   and is recoverable by hand on any later day; a terminal one is not. So: the card is named on
 #   stderr with the `⊘` the source-stage guard already uses, counted in its own summary segment,
 #   and the run continues. A WITHHELD CARD NEVER TURNS A RUN THAT EXITED 0 NON-ZERO: THE RUN EXITS AS IF
-#   THE MOVE HAD LANDED. That follows from WHERE the withhold sits — it is the LAST check before the
-#   write, after already-released, `--shipped-stages` and `--require-complete` — so a parent any
+#   THE MOVE HAD LANDED. That follows from WHERE the withhold sits — it and the terminal:partial
+#   hold are the last checks before the write (program withhold, then the terminal:partial hold),
+#   after already-released, `--shipped-stages` and `--require-complete` — so a parent any
 #   of those stops is reported, counted and exited on exactly as it was before the withhold existed
 #   (`already released`, `stage-guarded`, `completeness-refused`), and the tag is consulted only
 #   for a card that would otherwise MOVE. For that card its withheld count stands in for the
@@ -76,9 +79,36 @@
 #   ⚠ WHAT THIS CANNOT SEE, so an absent `program-withheld` segment is not read as "no parent was promoted": a
 #   parent nobody TAGGED is invisible to this, exactly as it is to the bridge's guard — the tag is
 #   an operator convention with no enforcement at mint time on either side. And a row whose `tags`
-#   this run could not read as a list answers "not a parent" and is PROMOTED; that direction is
-#   deliberate and is the bridge guard's too (the alternative withholds a whole release on one
-#   malformed response), but it means an unreadable `tags` is silent here.
+#   this run could not read as a list answers "not a parent"; that direction is deliberate and is
+#   the bridge guard's too (the alternative withholds a whole release on one malformed response),
+#   but it means an unreadable `tags` is silent HERE. Such a row is not promoted, though: THE
+#   TERMINAL:PARTIAL HOLD below holds it, because it cannot rule its own marker out either.
+#
+# THE TERMINAL:PARTIAL HOLD — unconditional, non-fatal, counted (toolkit card#10140).
+#   A card carrying the tag `terminal:partial` reached its shipped stage with declared work still
+#   outstanding: `kbcard move/patch --partial "<reason>"` writes the tag and posts the reason as a
+#   card comment. Releasing it would record unfinished work as released, so this run leaves it
+#   where it is, names it on a `⊘` line, counts it in its own `partial-held` summary segment, and
+#   goes on to the next card. There is NO flag that promotes it anyway, and `--require-complete`
+#   neither enables nor disables it. Once the work is done, remove the tag (`kbcard patch
+#   --remove-tags terminal:partial`) and promote the card by hand or re-run this tool with
+#   `--cards <id>`: the release that held it has already run, and a later release moves it only if
+#   a ref in that later range matches it.
+#   It sits beside the program withhold, immediately after it, and is the same kind of outcome in
+#   every respect this tool reports: never a failure, and a held card stands in for the `moved` it
+#   would have counted in the two exit arms that ask whether a run promoted anything (EXIT CODES),
+#   for the reasons THE PROGRAM-PARENT WITHHOLD gives. A card both blocks would hold is counted
+#   once, as program-withheld, because that check runs first.
+#   ⛔ THE SPELLING IS AN EXACT, CASE-SENSITIVE MATCH ON `terminal:partial` — the board stores tags
+#   verbatim. The literal is PARTIAL_TAG below, which `tests/mirror-pair-parity-selftest.sh` § 9
+#   holds equal to the KB_PARTIAL_TAG that kbcard writes.
+#   ⚠ AN UNREADABLE `tags` IS HELD, the OPPOSITE of the program withhold's choice, and on purpose: a
+#   row whose `tags` is present but not a list cannot rule the marker out, and promoting it is the
+#   direction that cannot be undone. Absent or null `tags` is no tags and moves.
+#   ⚠ WHAT THIS CANNOT SEE: a card nobody marked. The marker is written by `kbcard`; a card already
+#   in its shipped stage before anyone marked it, or moved there by another writer (the bridge's
+#   writeback or reconcile, a hand move in the board UI), is held only once someone applies the tag
+#   (`kbcard patch --task <id> --partial "<reason>"` marks a card where it is).
 #
 # Shipped refs come from an EXPLICIT set (`--dls "DL-1,DL-2"` and/or `--cards "12,34"`),
 # else from `git log <base>..<head>`:
@@ -282,7 +312,7 @@
 #     EXIT CODES below, and deliberately not repeated here.
 #     The move is the only write to the card: a released card keeps its assignee and tags
 #     (README.md § The card owner), so the read-back is the only extra request per moved card.
-#   - Nothing NEWLY promoted (and no program parent withheld) despite a non-empty shipped-ref
+#   - Nothing NEWLY promoted (and no program parent withheld, no card held partial) despite a non-empty shipped-ref
 #     set => the exit is decided
 #     by the ROOT CAUSE: a MERGE-commit release tip (or an explicit --dls/--cards set) means
 #     ref-derivation was COMPLETE, so the refs are genuinely cardless => WARN (exit 0); a
@@ -312,12 +342,15 @@
 #
 #   0  the run promoted what it says it promoted: no card was measured in another stage, and no
 #      write went unread. ⚠ NOT "every matched card is released" — a stage-guarded skip, a
-#      program-parent withhold, a no-card, other-repo, pr-unqualified or pr-diverged ref, and the refusal
-#      case below all live at 0. The program withhold is at 0 BY DESIGN and not by omission: see THE PROGRAM-PARENT
+#      program-parent withhold, a terminal:partial hold, a no-card, other-repo, pr-unqualified or
+#      pr-diverged ref, and the refusal case below all live at 0. The program withhold is at 0
+#      BY DESIGN and not by omission: see THE PROGRAM-PARENT
 #      WITHHOLD above for why this vendored tool reports that card instead of failing its
-#      consumer's release over it: the withhold is the last check before the write, so the run
-#      exits as if the parent's move had landed. ⛔ A GATE THAT MUST CATCH ONE READS THE
-#      `program-withheld` SEGMENT OF THE SUMMARY LINE, NOT THE RC.
+#      consumer's release over it: the withhold and the terminal:partial hold are the last checks
+#      before the write (in that order), so the run
+#      exits as if the parent's move had landed. The terminal:partial hold sits right after it
+#      and is at 0 for the same reason. ⛔ A GATE THAT MUST CATCH EITHER READS THE
+#      `program-withheld` / `partial-held` SEGMENT OF THE SUMMARY LINE, NOT THE RC.
 #   1  a KNOWN failure. TWO ROUTES REACH IT AND THEY ARE NOT CONDITIONAL ON THE SAME THING —
 #      the difference is the whole of what round 2 changed, so it is stated rather than implied:
 #        · a MEASURED un-applied move (`✗ … move NOT APPLIED`) — UNCONDITIONAL. Whatever else
@@ -325,8 +358,9 @@
 #          the write, so the release is not clean. 27 promoted beside one un-applied is rc 1.
 #        · a REFUSED or never-completed move (`✗ … move failed (left in place)` /
 #          `move NOT CONFIRMED`, the `<n> failed` count) — only on a run where NOTHING moved,
-#          NOTHING was already released and NO program parent was withheld (each one withheld
-#          would otherwise have been PATCHed, since the withhold is the last check). A refusal beside
+#          NOTHING was already released and NO program parent was withheld and NO card was held
+#          terminal:partial (each one withheld or held would otherwise have been PATCHed, since
+#          those two holds are the last checks before the write). A refusal beside
 #          a promoted card exits 0, as it always has: that is the card#9301 acceptance,
 #          left standing deliberately (widening it changes runs this tool has always
 #          called green). ⛔ AN UNREADABLE CARD BESIDE IT DOES NOT
@@ -335,7 +369,8 @@
 #          ⛔ A GATE THAT MUST CATCH THAT ONE READS THE `<n> failed.` TAIL OF THE SUMMARY LINE,
 #          NOT THE RC.
 #   2  bad invocation, or a refusal this tool `die`s on before/instead of promoting — including
-#      the REF-COMPLETENESS die: 0 cards newly promoted and no program parent withheld, behind a
+#      the REF-COMPLETENESS die: 0 cards newly promoted, no program parent withheld and no card held
+#      terminal:partial, behind a
 #      NON-MERGE release tip, where a squash/rebase merge may have dropped the per-PR refs. ⛔ THAT
 #      DIE IS NOT THE `--require-complete` GATE, which is rung 5: this one asks whether the REFS
 #      this run reads arrived intact, that one asks whether a matched card's WORK is finished. They
@@ -485,7 +520,7 @@
 #   never the constraint; with both supplied from the environment it can move NEITHER.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.42.0'
+ABTK_TOOL_VERSION='0.43.0'
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 
@@ -517,6 +552,13 @@ in_shipped_stage() { case ",$SHIPPED_STAGES," in *",$1,"*) return 0 ;; *) return
 # the operator is told about. Why the tag at all, why an exact match, and why a withhold rather
 # than a refusal: THE PROGRAM-PARENT WITHHOLD in the header, which `--help` prints.
 PROGRAM_TAG='program'
+
+# The terminal:partial marker — THE ONE PLACE THIS STRING IS WRITTEN in this script. The
+# correlation's jq reads it through `--arg xtag`, the hold line interpolates it, and
+# tests/mirror-pair-parity-selftest.sh § 9 holds it equal to the lib's KB_PARTIAL_TAG (this
+# script may not source the lib). Why the hold, and why an unreadable list is held: THE
+# TERMINAL:PARTIAL HOLD in the header, which `--help` prints.
+PARTIAL_TAG='terminal:partial'
 
 # uint_ok <s> / uint_csv_ok <s>: true iff <s> is a non-empty run of ASCII digits, or a
 # non-empty comma-separated list of them (no leading/trailing/doubled comma).
@@ -1460,7 +1502,7 @@ CARDS="$(fetch_whole_board)"
 #     --cards set.
 # The classification is done ONCE here, in one pass, and every downstream leg reads `.cls`, so
 # the move loop, the reports and the summary cannot disagree about which cards matched.
-CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" --arg qsrc "$QUALIFY_SRC" --arg prrepo "$PR_REPO" --arg rstage "$STAGE" --arg ptag "$PROGRAM_TAG" '
+CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PRS_J" --argjson cids "$CARDS_J" --arg qsrc "$QUALIFY_SRC" --arg prrepo "$PR_REPO" --arg rstage "$STAGE" --arg ptag "$PROGRAM_TAG" --arg xtag "$PARTIAL_TAG" '
   # norm reads a card ref (dl_number, pr_number or id) and answers the bare-integer,
   # zero-stripped form numlist produces for the shipped side, so "093"/93 correlate — or ""
   # for a value that is not ONE integer, which correlates to nothing and leaves the card alone.
@@ -1657,8 +1699,14 @@ CORREL="$(printf '%s' "$CARDS" | jq -c --argjson dls "$DLS_J" --argjson prs "$PR
     # form answers `false` for a `tags` that is absent or not a list — the degrade-toward-promoting
     # direction the header names as a blind spot rather than hides.
     | (([($c.tags // [])[]? | select(type == "string")] | index($ptag)) != null) as $prog
+    # THE TERMINAL:PARTIAL PREDICATE (card#10140), off the same row: true when the list carries
+    # the tag, false when it does not or there is no list (absent / null), null when `tags` is
+    # present and not a list — UNREADABLE, which the move loop holds too (header).
+    | (if ($c.tags == null) then false
+       elif ($c.tags | type) != "array" then null
+       else ([$c.tags[] | select(type == "string")] | index($xtag)) != null end) as $part
     # Display precedence keeps DL first so a run with no --cards renders exactly as before.
-    | { id: $c.id, stage: ($c.workflow_stage_id|tostring), program: $prog,
+    | { id: $c.id, stage: ($c.workflow_stage_id|tostring), program: $prog, partial: $part,
         ref: (if $byDl then "DL-\($cdl)" elif $byId then "card#\($cid)" elif $byPr then "#\($pref.n)" else "#\($cpr)" end),
         dl: (if $byDl then $cdl else null end),
         pr: (if $byPr then $pref.n elif $byBare or $byDiv then $cpr else null end),
@@ -1976,7 +2024,7 @@ complete_verdict() {
 }
 
 # --- move --------------------------------------------------------------------
-moved=0; skipped=0; failed=0; guarded=0; unverified=0; not_applied=0; incomplete=0; program_held=0
+moved=0; skipped=0; failed=0; guarded=0; unverified=0; not_applied=0; incomplete=0; program_held=0; partial_held=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   id="$(printf '%s' "$row" | jq -r '.id')"
@@ -2010,7 +2058,8 @@ while IFS= read -r row; do
   # PROGRAM-PARENT WITHHOLD (card#10068) — unconditional, non-fatal. Why the tag, why exact, why a
   # withhold rather than a refusal: the header block, which --help prints. Not restated here.
   #
-  # ⛔ WHY IT IS LAST, IMMEDIATELY BEFORE THE WRITE — the position IS the rc contract. Every check
+  # ⛔ WHY IT IS AMONG THE LAST CHECKS BEFORE THE WRITE — the position IS the rc contract. (Only the
+  # terminal:partial hold, right below it, comes after it, and it shares every argument here.) Every check
   # above (already-released, --shipped-stages, --require-complete) runs on a parent exactly as it
   # did before the withhold existed, reports it exactly as it did, and reaches its rc exactly as it
   # did. The tag only matters for a card that would otherwise MOVE, so it is consulted only there,
@@ -2024,6 +2073,17 @@ while IFS= read -r row; do
     echo "  ⊘ $ref (#$id): carries the \`$PROGRAM_TAG\` tag — this is a PARENT card naming SEVERAL legs, not one deliverable, so one release's ref may not take it to the terminal stage while its other legs are unbuilt. WITHHELD, not promoted, and left exactly where it was: move it by hand once every leg has shipped. The withhold does not change this run's exit code: the run exits as it would have if this card carried no tag and its move had landed." >&2
     program_held=$((program_held + 1)); continue
   fi
+  # TERMINAL:PARTIAL HOLD (card#10140) — unconditional, non-fatal; the header owns why. Immediately
+  # after the program withhold and for the same positional reason: only a card that would
+  # otherwise MOVE is held, so every check above keeps its own outcome and count.
+  case "$(printf '%s' "$row" | jq -r '.partial')" in
+    true)
+      echo "  ⊘ $ref (#$id): carries the \`$PARTIAL_TAG\` tag — declared work on it is still outstanding (a \`kbcard --partial\` mark posts its reason as a card comment). HELD, not promoted, and left exactly where it was: once that work is done, remove the tag and promote it by hand or re-run with --cards $id." >&2
+      partial_held=$((partial_held + 1)); continue ;;
+    null)
+      echo "  ⊘ $ref (#$id): its \`tags\` could not be read as a list, so whether it carries \`$PARTIAL_TAG\` is UNKNOWN — HELD, not promoted, and left exactly where it was." >&2
+      partial_held=$((partial_held + 1)); continue ;;
+  esac
   if [ "$DRY" = 1 ]; then echo "  → $ref (#$id): would move $cur → $STAGE"; moved=$((moved + 1)); continue; fi
   if api -X PATCH -H "Content-Type: application/json" -d "$(jq -nc --argjson s "$STAGE" '{workflow_stage_id: $s}')" "$API/tasks/$id.json" >/dev/null; then
     # ⛔ THE 2xx IS NOT THE MOVE (card#9938). The success line below is built out of a READ of
@@ -2127,11 +2187,12 @@ fi
 # read-back counts, "was this run gated at all?" for the completeness one.
 #
 # SEGMENT ORDER is by WHEN a card leaves the promotion path, not by which card added the term:
-# the pre-write refusals (`stage-guarded`, `completeness-refused`, `program-withheld`,
+# the pre-write refusals (`stage-guarded`, `completeness-refused`, `program-withheld`, `partial-held`,
 # `other-repo`/`unsourced`, `pr-unqualified`, `pr-diverged`, `no-card`) come first in the order the move loop
 # applies them, then the post-write outcomes (`NOT APPLIED`, `UNVERIFIED`, `failed`). `completeness-refused` sits
 # immediately after `stage-guarded` because that is where its `continue` is in the loop, and
-# `program-withheld` immediately after both because its `continue` is the last before the write.
+# `program-withheld` immediately after both, then `partial-held`, whose `continue` is the last before
+# the write.
 #
 # ⚠ `program-withheld` RIDES BY THE COUNT RULE, not the flag rule, because it has no flag: it
 # appears only when there IS one, so every run that matches no `program`-tagged card keeps a
@@ -2153,7 +2214,11 @@ if [ "$diverged_n" -gt 0 ]; then div_txt="$diverged_n pr-diverged, "; fi
 if [ "$not_applied" -gt 0 ]; then na_txt="$not_applied NOT APPLIED, "; fi
 if [ "$unverified" -gt 0 ]; then unv_txt="$unverified UNVERIFIED, "; fi
 if [ "$program_held" -gt 0 ]; then prog_txt="$program_held program-withheld, "; fi
-echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$([ "$REQUIRE_COMPLETE" = 1 ] && printf '%s completeness-refused, ' "$incomplete")$prog_txt$qual_txt$unqual_txt$div_txt$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+# `partial-held` rides by the COUNT rule, for `program-withheld`'s reason (it has no flag), and
+# sits right after it because its `continue` is right after that one in the move loop.
+part_txt=""
+if [ "$partial_held" -gt 0 ]; then part_txt="$partial_held partial-held, "; fi
+echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$([ "$REQUIRE_COMPLETE" = 1 ] && printf '%s completeness-refused, ' "$incomplete")$prog_txt$part_txt$qual_txt$unqual_txt$div_txt$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
 # --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
 # a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,
@@ -2266,7 +2331,8 @@ if [ "$not_applied" -gt 0 ]; then exit 1; fi
 # outcome has its own counter and
 # its own unconditional clause ABOVE, because giving a new outcome an old counter gave it that
 # counter's run-shape condition too. This clause is the one card#9938 found here plus ONE term,
-# `program_held == 0` (card#10068). The withhold is the LAST check before the write, so every card
+# `program_held == 0` (card#10068). The withhold is among the last checks before the write (program
+# withhold, then the terminal:partial hold), so every card
 # `program_held` counts passed every other check and is one the pre-withhold bin PATCHed and, once
 # the PATCH landed, counted `moved` — which kept this arm quiet. So the term changes no rc a run
 # whose parent's move would have landed ever had; where that move would have been refused (the one
@@ -2289,7 +2355,9 @@ if [ "$not_applied" -gt 0 ]; then exit 1; fi
 # the unconditional rule that was true
 # of neither half. Every other surface points there rather than carrying a copy — that block
 # publishes the command that re-derives which surfaces those are.
-if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ] && [ "$program_held" = 0 ]; then exit 1; fi
+# `partial_held == 0` is the same term for the terminal:partial hold (card#10140), which sits right
+# after the withhold and so counts only cards the pre-hold bin would have PATCHed too.
+if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ] && [ "$program_held" = 0 ] && [ "$partial_held" = 0 ]; then exit 1; fi
 # A WRITE WENT OUT AND NOBODY HERE CAN SAY WHAT IT DID → exit $RC_UNVERIFIED (card#9938).
 #
 # ⛔ IT IS DECIDED BEFORE THE COMPLETENESS DIE BELOW, because that die's premise is FALSE on this
@@ -2338,8 +2406,8 @@ if [ "$unverified" -gt 0 ]; then exit "$RC_UNVERIFIED"; fi
 # vs a silently un-promoted shipped card. `program_held` IS in the guard, and that is not the
 # same call made the other way — it is a different constraint winning (card#10068). A withheld
 # parent proves a ref reached a card, not that the RANGE was complete, so on the die's own
-# question it is no better evidence than a guarded skip. But the withhold is the last check before
-# the write, so every card it counts is one the pre-withhold bin PATCHed and counted `moved`, which
+# question it is no better evidence than a guarded skip. But the withhold is among the last checks
+# before the write (program withhold, then the terminal:partial hold), so every card it counts is one the pre-withhold bin PATCHed and counted `moved`, which
 # kept this die from firing; leaving it out made a release whose only match was a parent go from
 # rc 0 to rc 2 — a withheld card breaking a consumer's release, the one thing THE PROGRAM-PARENT
 # WITHHOLD (header) is shaped not to do. A parent the stage guard or the completeness gate stops
@@ -2355,7 +2423,9 @@ if [ "$unverified" -gt 0 ]; then exit "$RC_UNVERIFIED"; fi
 # release whose refs ALL matched other repos therefore still fails behind a squash tip — which
 # is right, because the two possible causes (nothing of ours shipped / our refs were dropped)
 # are exactly what a human has to tell apart there.
-if [ "$moved" = 0 ] && [ "$program_held" = 0 ] && [ -z "$DLS_IN$CARDS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
+# `partial_held` is in the guard for `program_held`'s reason: the terminal:partial hold is the
+# other last check before the write (card#10140).
+if [ "$moved" = 0 ] && [ "$program_held" = 0 ] && [ "$partial_held" = 0 ] && [ -z "$DLS_IN$CARDS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
   die "FAILED — 0 cards newly promoted and the release tip (${HEAD_REF}) is not a merge commit. A squash/rebase merge of the release PR may have dropped the per-PR refs this derives from (use a MERGE commit for release/sync PRs — VERSIONING.md). Verify and promote manually."
 fi
 # A COMPLETENESS REFUSAL IS LAST ON THE LADDER, and non-zero rather than a warning: a card left
