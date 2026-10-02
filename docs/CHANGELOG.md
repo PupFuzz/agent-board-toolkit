@@ -6,6 +6,12 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-10-01
+
+**Minor — the card owner is the kanban assignee, not the `owner:<project>/<seat>` tag: `kbcard move --stamp-owner` and the card-start paths assign the seat's own kanban user (read from the coord roster's `kanban_user_id`), and the new `kbcard owner-migrate` moves existing tag-only cards across (card#10868).** The PRs in `v0.41.0..v0.42.0` are enumerated below and in the release PR's generated `## Bundled` table (`git log --oneline v0.41.0..v0.42.0` re-prints the range; the rest of it is the post-v0.41.0 back-merge and the release PR's own merge commit). Per `VERSIONING.md` § Bump sizing this is a **minor** on two independent grounds, either of which alone forces it: new user-visible surface (`kbcard owner-migrate`, card#10868) **and** an acceptance narrowing.
+
+**⚠ Narrowings this release — ⚠-flagged in its own bullet below, which carries the exact inputs:** **card#10868** — `kbcard move --stamp-owner --column done` (a board env declaring `KB_STAGE_DONE`) is `rc 2` before any request, where it moved the card at `rc 0`. Other behaviour changes in this release leave the input accepted at `rc 0`, so they are not narrowings under that test (`VERSIONING.md` § Bump sizing, *What this rule does NOT cover*) — for example the claim now assigning instead of tagging, a card another user holds being taken, and a finished card keeping its assignee. Upgrade actions: `docs/UPGRADE.md` §6 v0.42.0.
+
 ### Added
 
 - **card#10868** — **`kbcard owner-migrate [--apply]`: the one-time move off the retired `owner:<project>/<seat>` tag.** It classifies every card on the board that carries an owner tag as `migratable` (one tag, no assignee, and the tag's seat maps to a kanban user through the coord roster), `unmapped`, `ambiguous` or `assigned`. It prints one JSON object whose `counts.tag_only` is the number of cards still carrying ONLY the tag — the figure the tag readers' deletion waits on — and says it in words on stderr. **A dry run by default; nothing is written.** `--apply` writes `{assigned_user_id}` alone to each migratable card, after a fresh read that skips any card assigned since the scan, and reports each from a read-back. It never removes a tag. Rules: README § The card owner, *Migrating off the owner tag*; exit codes: the verb's `kbcard` help block.
