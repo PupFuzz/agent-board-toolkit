@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-02
+
+**Minor — `kbcard move --partial` / `kbcard patch --partial` mark a finished card as only partly done, and `promote-released-cards` holds such a card instead of releasing it (card#10140).** The one PR in `v0.42.0..v0.43.0` that carries a change is #439; `git log --oneline v0.42.0..v0.43.0` re-prints the range, and the release PR's generated `## Bundled` table enumerates it. Per `VERSIONING.md` § Bump sizing this is a **minor** for new user-visible surface (a new flag on two verbs). **No narrowings this release:** every input that succeeded before still succeeds at the same rc — the one changed outcome is that a card whose `tags` cannot be read as a list is now held rather than promoted, and the run's rc is unchanged by it (`VERSIONING.md` § Bump sizing, *What this rule does NOT cover*, item 2). Upgrade actions: `docs/UPGRADE.md` §6 v0.43.0.
+
 ### Added
 
 - **card#10140** — **The `terminal:partial` marker: a card that reaches a finished column with declared work still outstanding says so, and a release holds it.** `kbcard move --column <finished> --partial "<reason>"` and `kbcard patch --partial "<reason>"` write the tag `terminal:partial` and post the reason as a card comment. `bin/promote-released-cards` names a matched card carrying the tag on a `⊘` line, counts it in a `partial-held` summary segment, does not move it, and continues; there is no override, and it holds with or without `--require-complete`. Rules: README § The terminal:partial marker.
