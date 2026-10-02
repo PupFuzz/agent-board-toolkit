@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#11146** — **`docs/INSTALL.md` §3c and `docs/UPGRADE.md` §6 v0.42.0 said an impl seat has no roster `kanban_user_id` "by design" because it works through a shared writeback user. That is not a toolkit rule:** the resolver reads `roster[].kanban_user_id` for every roster row whatever its role. Both now state the actual rule: a seat with its own kanban user records that id for each instance, whatever its role; the one id that must never go there is a user several seats share. §3c also names the bridge-only path (`board_take_card`, with the bridge `identity.kanban_user_id` kept equal to the roster id) and says that the coord installer writes the field for pm and solo seats only, so any other seat with its own account sets it by hand. README § The card owner's first sentence now says "every seat that has its own kanban account is that user", not "every seat". Docs only; no tool changes.
+
 ## [0.43.0] - 2026-10-02
 
 **Minor — `kbcard move --partial` / `kbcard patch --partial` mark a finished card as only partly done, and `promote-released-cards` holds such a card instead of releasing it (card#10140).** The one PR in `v0.42.0..v0.43.0` that carries a change is #439; `git log --oneline v0.42.0..v0.43.0` re-prints the range, and the release PR's generated `## Bundled` table enumerates it. Per `VERSIONING.md` § Bump sizing this is a **minor** for new user-visible surface (a new flag on two verbs). **No narrowings this release:** every input that succeeded before still succeeds at the same rc — the one changed outcome is that a card whose `tags` cannot be read as a list is now held rather than promoted, and the run's rc is unchanged by it (`VERSIONING.md` § Bump sizing, *What this rule does NOT cover*, item 2). Upgrade actions: `docs/UPGRADE.md` §6 v0.43.0.
