@@ -3005,10 +3005,13 @@ _kbc_move_board_target() (
         lane_json="$(_kbc_swimlane_value "$lane")" || { echo "kbcard: move-board: --swimlane $lane was $where. Nothing was sent." >&2; return 2; }
         send_lane=1
     fi
-    jq -nc --arg env "$KB_BOARD_ENV" --arg tok "$KB_TOKEN_FILE" \
+    # The token-PATH reaches jq through its environment, exported to this one call, not through
+    # argv: under --no-token it is never checked readable, so it may be a pasted secret, and a
+    # process's argv is world-readable (/proc/<pid>/cmdline) where its environment is not.
+    _KBC_MB_TOK="$KB_TOKEN_FILE" jq -nc --arg env "$KB_BOARD_ENV" \
            --argjson b "$KB_BOARD_ID" --argjson s "$stage" --arg t "$type_id" \
            --argjson l "$lane_json" --arg sl "$send_lane" \
-        '{env: $env, token_file: $tok,
+        '{env: $env, token_file: env._KBC_MB_TOK,
           body: ({board_id: $b, workflow_stage_id: $s}
                  + (if $t == "" then {} else {card_type_id: ($t | tonumber)} end)
                  + (if $sl == "" then {} else {swimlane_id: $l} end))}'

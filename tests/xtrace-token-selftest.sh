@@ -849,6 +849,22 @@ eq "kbcard move-board, target's pasted path: in no stream" "false" "$(has "$PB" 
 eq "kbcard move-board: control — the run WAS traced"      "true"  "$(grep -q '^+ ' "$TMP/mb.err" && echo true || echo false)"
 eq "kbcard move-board: control — the target was resolved and the card read" "true" \
     "$([[ "$(kb_stub_count GET /tasks/505.json)" -ge 1 ]] && echo true || echo false)"
+# …nor on any jq argv: a process's argv is world-readable (/proc/<pid>/cmdline). A jq shim on PATH
+# records every argv and the target-building call's output. RED when the path went `--arg tok`.
+mkdir -p "$TMP/jqshim"
+printf '#!/usr/bin/env bash
+printf "%%s\n" "$*" >> "%s"
+if [[ " $* " == *" --arg env "* ]]; then %s "$@" | tee -a "%s"; else exec %s "$@"; fi
+' \
+    "$TMP/jq-argv.log" "$(command -v jq)" "$TMP/jq-target.log" "$(command -v jq)" > "$TMP/jqshim/jq"
+chmod +x "$TMP/jqshim/jq"
+: > "$TMP/jq-argv.log"; : > "$TMP/jq-target.log"; kb_stub_reset
+( PATH="$TMP/jqshim:$PATH" KBCARD_TOKEN_FILE="" bash "$KBC" --board dev move-board --task 505 --to-board pasted --column backlog --dry-run ) \
+    >/dev/null 2>&1 || true
+eq "kbcard move-board: the target's pasted path is on no jq argv"  "false" "$(_contains "$PB" "$TMP/jq-argv.log")"
+eq "kbcard move-board: control — the shim saw the target-building call" "true" "$(_contains '--arg env' "$TMP/jq-argv.log")"
+eq "kbcard move-board: control — the target still carries that path, through the environment" "true" \
+    "$(has "\"token_file\":\"$PB\"" "$(cat "$TMP/jq-target.log")")"
 # kb_path_shown's own body runs untraced, so a caller that forgets to suspend leaks the value on
 # its CALL line only, not again from the body's `local`. RED without the body's suspension (2+).
 h7="$(bash -c 'source "$1"; set -x; kb_path_shown "$2" >/dev/null' _ "$LIB" "$PB" 2>&1)"
