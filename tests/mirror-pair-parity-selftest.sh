@@ -935,4 +935,35 @@ eq "control: …so the equality reds when the OWNER moves" "false" \
 unset _pt_owner
 unset -f _pt_read
 
+# ═══════════════════════ 10 — `repo_from_origin_url`: card-completeness ↔ release-pr-body (card#11149) ═════
+#
+# Two standalones answer "which <owner>/<repo> does this checkout's origin name?" — card-completeness
+# for the PRs whose state decides a promote, release-pr-body for the repo its review verifier is asked
+# about. Neither may source the lib, so each carries the function; a fix to one that misses the other
+# asks the verifier about one repo while the promote reads another. Same hold as § 2: both copies are
+# extracted from the real files and driven over one corpus, with a control that a mutated copy reds.
+echo "== repo_from_origin_url: the two standalone copies agree over one corpus =="
+CCB="$ROOT/bin/card-completeness"
+_need -x "$CCB"
+RFO_A="$(_fn_src "$CCB" repo_from_origin_url)"
+RFO_B="$(_fn_src "$RPB" repo_from_origin_url)"
+eq "control: both copies extracted with a body" "true" \
+   "$([[ "$RFO_A" == *'sed -E'* && "$RFO_B" == *'sed -E'* ]] && echo true || echo false)"
+_rfo() { ( eval "$1"; repo_from_origin_url "$2" ); }
+_rfo_corpus=('git@github.com:acme/widget.git' 'https://github.com/acme/widget.git' 'https://github.com/acme/widget'
+    'ssh://git@github.com/acme/widget' 'ssh://git@github.com:22/acme/widget.git' 'https://github.com/acme/widget/'
+    '/srv/git/acme/widget.git' 'widget' '')
+for _v in "${_rfo_corpus[@]}"; do
+    eq "repo_from_origin_url agrees on [$_v]" "$(_rfo "$RFO_A" "$_v")" "$(_rfo "$RFO_B" "$_v")"
+done
+eq "witness: the corpus holds an origin that yields a repo and one that yields none" "acme/widget|" \
+   "$(_rfo "$RFO_A" 'git@github.com:acme/widget.git')|$(_rfo "$RFO_A" 'widget')"
+echo "== control: a copy that keeps the .git suffix is caught by the corpus =="
+RFO_MUT="${RFO_B//\$\{url%.git\}/\$url}"
+eq "control: the mutation applied" "false" "$([[ "$RFO_MUT" == "$RFO_B" ]] && echo true || echo false)"
+eq "control: …and the copies now disagree on a .git origin" "false" \
+   "$([[ "$(_rfo "$RFO_A" 'git@github.com:acme/widget.git')" == "$(_rfo "$RFO_MUT" 'git@github.com:acme/widget.git')" ]] && echo true || echo false)"
+unset -f _rfo
+unset RFO_A RFO_B RFO_MUT _rfo_corpus _v CCB
+
 _summary "mirror-pair-parity-selftest"
