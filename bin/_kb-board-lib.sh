@@ -295,7 +295,8 @@ _kb_pointer_fingerprint() {
 
 # kb_path_shown <value>: <value> as a message may print it — the value itself when it is shaped
 # like a filesystem path (it contains `/` or `\`, or starts with `~` or `.`, and holds no
-# whitespace), else `<value not shown: not a path>` (card#11204).
+# whitespace) AND its directory part exists (everything before the last `/` or `\`, a leading `~`
+# expanded; `.` when there is no separator), else `<value not shown: not a path>` (card#11204).
 #
 # WHY. A token-path slot (KBCARD_TOKEN_FILE, a store pointer) is where a pasted SECRET lands when
 # an operator puts the token where its file belongs. The lib then treats it as a path, finds it
@@ -304,18 +305,27 @@ _kb_pointer_fingerprint() {
 # message line naming a token-path variable to pass it through here — the names derived from
 # KBCARD_TOKEN_FILE / KB_TOKEN_FILE to a fixed point, the messages bounded by that leg's list of
 # printers (its header states the rest of the bound).
-# `\` counts as a separator so a Windows path (`C:\creds\tok`) is still shown. A value with
-# whitespace is withheld even when it has a `/`, so a token pasted with a space and a slash is not
-# shown; a real path containing a space is withheld too, which is the safe direction. An empty
-# value is withheld.
+# `\` counts as a separator so a Windows path (`C:\creds\tok`) is still shown where that directory
+# exists. A value with whitespace is withheld even when it has a `/`, so a token pasted with a
+# space and a slash is not shown; a real path containing a space is withheld too, which is the safe
+# direction. An empty value is withheld. The directory test is what withholds a token whose
+# alphabet includes `/` (standard base64): shaped like a path, but naming no directory. What is
+# left: a pasted value whose directory part happens to exist (relative to the cwd), or that has no
+# separator and starts with `~` or `.`, is still shown; and a real path under a directory that is
+# missing is withheld.
 # Its body runs untraced, so its own `local` cannot echo the value under `bash -x`; a caller's
 # CALL line still expands the argument, so call it as `$(kb_xtrace_off; kb_path_shown "$p")`.
 kb_path_shown() {
     local _kps_x; kb_xtrace_off _kps_x
-    local LC_ALL=C v="${1-}" out='<value not shown: not a path>'
+    local LC_ALL=C v="${1-}" out='<value not shown: not a path>' d
     case "$v" in
         *[[:space:]]*) ;;
-        */*|*\\*|'~'*|.*) out="$v" ;;
+        */*|*\\*|'~'*|.*)
+            case "$v" in
+                */*|*\\*) d="${v%[/\\]*}"; d="${d:-/}" ;;
+                *) d=. ;;
+            esac
+            [[ -d "$(_kb_expand_home "$d")" ]] && out="$v" ;;
     esac
     printf '%s' "$out"
     kb_xtrace_restore _kps_x

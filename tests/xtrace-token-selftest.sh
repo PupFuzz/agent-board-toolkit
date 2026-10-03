@@ -473,9 +473,9 @@ echo "== § 6. a credential pasted into a token-PATH slot is not echoed by the r
 # A different leak from the trace, and no `-x` is needed for it: a secret pasted where a token FILE
 # is declared was treated as a path, and the refusal that the path is unreadable printed it
 # (`token file not readable: <the secret>`). The refusals now go through the lib's kb_path_shown,
-# which prints only a value shaped like a path. RED on the pre-fix
-# lib: the value is in stderr. CONTROLS: the refusal still names the problem, and a real path is
-# still printed whole.
+# which prints only a value shaped like a path whose directory exists (the predicate rows below).
+# RED on the pre-fix lib: the value is in stderr. CONTROLS: the refusal still names the problem,
+# and a real path is still printed whole.
 PASTED='FAKE-BOARD-TOKEN-NOT-SECRET-001'
 printf 'export KB_BOARD_ID=43\nexport KB_STAGE_BACKLOG=48\nexport KBCARD_TOKEN_FILE="%s"\n' "$PASTED" > "$HOME/.kanban-pasted-board.env"
 printf 'export KB_BOARD_ID=44\nexport KBCARD_TOKEN_FILE="%s"\n' "$TMP/no-such-token-file" > "$HOME/.kanban-gone-board.env"
@@ -486,6 +486,14 @@ eq "kbcard, pasted slot: …and nothing was sent"                    "0"     "$(
 eq "kbcard, pasted slot: the value is NOT in stderr"               "false" "$(_contains "$PASTED" "$TMP/p.err")"
 eq "kbcard, pasted slot: …nor in stdout"                           "false" "$(_contains "$PASTED" "$TMP/p.out")"
 eq "kbcard, pasted slot: the refusal still names the problem"      "true"  "$(_contains 'token file not readable: <value not shown: not a path>' "$TMP/p.err")"
+# A pasted secret whose alphabet includes `/` (standard base64) is path-SHAPED; it is withheld
+# because its directory part does not exist.
+PASTED_SL='abcd/EFGH+ijkl/MNOP0123456789qrst'
+printf 'export KB_BOARD_ID=46\nexport KB_STAGE_BACKLOG=48\nexport KBCARD_TOKEN_FILE="%s"\n' "$PASTED_SL" > "$HOME/.kanban-pastedsl-board.env"
+rc=0; bash "$KBC" --board pastedsl show --task 505 >"$TMP/psl.out" 2>"$TMP/psl.err" || rc=$?
+eq "kbcard, pasted slot holding a '/': refused before any request (rc 2)" "2" "$rc"
+eq "kbcard, pasted slot holding a '/': the value is in neither stream" "false" "$(has "$PASTED_SL" "$(cat "$TMP/psl.out" "$TMP/psl.err")")"
+eq "kbcard, pasted slot holding a '/': the refusal still names the problem" "true" "$(_contains 'token file not readable: <value not shown: not a path>' "$TMP/psl.err")"
 rc=0; bash "$KBC" --board gone show --task 505 >/dev/null 2>"$TMP/g.err" || rc=$?
 eq "control: a real but missing path is refused the same way (rc 2)" "2"    "$rc"
 eq "control: …and that PATH is still printed whole"                "true"  "$(_contains "token file not readable: $TMP/no-such-token-file" "$TMP/g.err")"
@@ -497,14 +505,21 @@ eq "board-snapshot, pasted slot: the board is still reported unread, naming why"
     "$(has 'token file unreadable: <value not shown: not a path>' "$(cat "$TMP/ps.out" "$TMP/ps.err")")"
 
 # THE HELPER'S PREDICATE, row by row: shown only when the value is shaped like a path — a `/` or
-# `\`, or a leading `~` or `.` — and carries no whitespace.
-h6="$(bash -c 'source "$1"; shift; for v in "$@"; do printf "%s\t%s\n" "$v" "$(kb_path_shown "$v")"; done' _ "$LIB" \
-    /abs/tok '~/tok' ./tok rel/tok 'C:\creds\tok' .kanban-tok \
-    "$PASTED" ghp_NOTAREALTOKEN0000 'tok en' '/a b/tok' '')"
-for v in /abs/tok '~/tok' ./tok rel/tok 'C:\creds\tok' .kanban-tok; do
+# `\`, or a leading `~` or `.` — carries no whitespace, AND its directory part (everything before
+# the last `/` or `\`, `~` expanded; `.` when there is no separator) exists. Run from a directory
+# holding `rel/` and a Linux directory literally named `C:\creds`, so the `\` split is exercised.
+# The secret with `/` in it is the standard-base64 shape a shape-only predicate printed.
+P6D="$TMP/pshown"; mkdir -p "$P6D/rel" "$P6D/C:\creds"
+P6S='abcd/EFGH+ijkl/MNOP0123456789qrst'
+h6="$(cd "$P6D" && bash -c 'source "$1"; shift; for v in "$@"; do printf "%s\t%s\n" "$v" "$(kb_path_shown "$v")"; done' _ "$LIB" \
+    "$TMP/tok" '~/tok' ./tok rel/tok 'C:\creds\tok' .kanban-tok /tok \
+    "$PASTED" ghp_NOTAREALTOKEN0000 'tok en' '/a b/tok' '' \
+    "$P6S" /no-such-dir-c11204/tok rel-missing/tok '~/no-such-dir-c11204/tok' 'C:\nowhere\tok')"
+for v in "$TMP/tok" '~/tok' ./tok rel/tok 'C:\creds\tok' .kanban-tok /tok; do
     eq "kb_path_shown prints the path [$v]" "true" "$(has_line "$v"$'\t'"$v" "$h6")"
 done
-for v in "$PASTED" ghp_NOTAREALTOKEN0000 'tok en' '/a b/tok' ''; do
+for v in "$PASTED" ghp_NOTAREALTOKEN0000 'tok en' '/a b/tok' '' \
+         "$P6S" /no-such-dir-c11204/tok rel-missing/tok '~/no-such-dir-c11204/tok' 'C:\nowhere\tok'; do
     eq "kb_path_shown withholds [$v]" "true" "$(has_line "$v"$'\t<value not shown: not a path>' "$h6")"
 done
 
