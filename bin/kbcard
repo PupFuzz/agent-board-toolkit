@@ -3092,8 +3092,8 @@ cmd_move_board() {
         # re-read below says what the board holds.
         lead="the POST answered HTTP $KB_HTTP"
     elif [[ "$prc" -ne 0 ]]; then
-        local tokn="the token this run resolved for its own board ($KB_TOKEN_FILE)"
-        [[ -z "$to_tok" || "$to_tok" == "$KB_TOKEN_FILE" ]] || tokn="$tokn — NOT the one board $to_id's env declares ($to_tok): the move is ONE request and carries ONE token"
+        local tokn="the token this run resolved for its own board ($(kb_path_shown "$KB_TOKEN_FILE"))"
+        [[ -z "$to_tok" || "$to_tok" == "$KB_TOKEN_FILE" ]] || tokn="$tokn — NOT the one board $to_id's env declares ($(kb_path_shown "$to_tok")): the move is ONE request and carries ONE token"
         case "${KB_HTTP:-}" in
             401) echo "kbcard: move-board on task $task: HTTP 401 — the token was not accepted — invalid or expired. The request carried $tokn. Nothing was moved." >&2 ;;
             403) echo "kbcard: move-board on task $task: HTTP 403 is a POLICY refusal, not a card problem. A cross-board move needs the token to UPDATE card $task on board $from_id AND to CREATE cards on board $to_id, and one of the two is missing. The request carried $tokn. Nothing was moved." >&2 ;;

@@ -167,7 +167,7 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     tokfile="$(kb_declared_token_file "$envf" "${KBCARD_TOKEN_FILE:-}" "${KB_HOST_TOKEN_FILE:-}")" \
         || { board_unread "$label" "no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env, and no usable [kanban] api_token_file in the coord credential store"; return 0; }
     kb_read_token "$tokfile" \
-        || { board_unread "$label" "token file unreadable: $tokfile"; return 0; }
+        || { board_unread "$label" "token file unreadable: $(kb_path_shown "$tokfile")"; return 0; }
     local data rc
     data="$(kb_xtrace_off; fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
     [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] \

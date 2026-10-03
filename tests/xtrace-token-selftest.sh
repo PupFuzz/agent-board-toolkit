@@ -25,6 +25,8 @@
 #   § 4    THE CALL-SITE RULE, statically, over every shipped shell file (CI's own population,
 #          `_shipped_shell_files`). § 1–2 can only see the verbs they run; this sees every line.
 #   § 5    KBCARD_DEBUG=1, the per-request view offered instead of `-x`: present, and token-free.
+#   § 6    A second leak, no `-x` needed: a secret pasted into a token-PATH slot is not echoed by
+#          the refusal (kb_path_shown), driven through the bins and held over every such message.
 #
 # WHAT A GREEN RUN DOES NOT COVER — read before citing it:
 #   * § 4's predicate is the expansion `$KB_TOKEN` / `${KB_TOKEN…}` and a CALL of
@@ -235,5 +237,96 @@ eq "debug: a whole-board walk prints one line per page it read" \
 kb_stub_reset
 bash "$KBC" --board dev show --task 505 >/dev/null 2>"$TMP/nodbg.err" || true
 eq "control: without the knob there is no debug line"     "false" "$(_contains 'debug:' "$TMP/nodbg.err")"
+
+echo "== § 6. a credential pasted into a token-PATH slot is not echoed by the refusal (card#11204) =="
+# A different leak from the trace, and no `-x` is needed for it: a secret pasted where a token FILE
+# is declared was treated as a path, and the refusal that the path is unreadable printed it
+# (`token file not readable: <the secret>`). Every message naming a token-path variable now goes
+# through the lib's kb_path_shown, which prints only a value shaped like a path. RED on the pre-fix
+# lib: the value is in stderr. CONTROLS: the refusal still names the problem, and a real path is
+# still printed whole.
+PASTED='FAKE-BOARD-TOKEN-NOT-SECRET-001'
+printf 'export KB_BOARD_ID=43\nexport KBCARD_TOKEN_FILE="%s"\n' "$PASTED" > "$HOME/.kanban-pasted-board.env"
+printf 'export KB_BOARD_ID=44\nexport KBCARD_TOKEN_FILE="%s"\n' "$TMP/no-such-token-file" > "$HOME/.kanban-gone-board.env"
+kb_stub_reset
+rc=0; bash "$KBC" --board pasted show --task 505 >"$TMP/p.out" 2>"$TMP/p.err" || rc=$?
+eq "kbcard, pasted slot: refused before any request (rc 2)"        "2"     "$rc"
+eq "kbcard, pasted slot: …and nothing was sent"                    "0"     "$(kb_stub_total)"
+eq "kbcard, pasted slot: the value is NOT in stderr"               "false" "$(_contains "$PASTED" "$TMP/p.err")"
+eq "kbcard, pasted slot: …nor in stdout"                           "false" "$(_contains "$PASTED" "$TMP/p.out")"
+eq "kbcard, pasted slot: the refusal still names the problem"      "true"  "$(_contains 'token file not readable: <value not shown: not a path>' "$TMP/p.err")"
+rc=0; bash "$KBC" --board gone show --task 505 >/dev/null 2>"$TMP/g.err" || rc=$?
+eq "control: a real but missing path is refused the same way (rc 2)" "2"    "$rc"
+eq "control: …and that PATH is still printed whole"                "true"  "$(_contains "token file not readable: $TMP/no-such-token-file" "$TMP/g.err")"
+
+printf 'pasted:P\n' > "$HOME/.kanban-snapshot-boards"
+bash "$SNAP" >"$TMP/ps.out" 2>"$TMP/ps.err" || true
+eq "board-snapshot, pasted slot: the value is in neither stream"   "false" "$(has "$PASTED" "$(cat "$TMP/ps.out" "$TMP/ps.err")")"
+eq "board-snapshot, pasted slot: the board is still reported unread, naming why" "true" \
+    "$(has 'token file unreadable: <value not shown: not a path>' "$(cat "$TMP/ps.out" "$TMP/ps.err")")"
+
+# THE HELPER'S PREDICATE, row by row: shown only when the value is shaped like a path — a `/` or
+# `\`, or a leading `~` or `.` — and carries no whitespace.
+h6="$(bash -c 'source "$1"; shift; for v in "$@"; do printf "%s\t%s\n" "$v" "$(kb_path_shown "$v")"; done' _ "$LIB" \
+    /abs/tok '~/tok' ./tok rel/tok 'C:\creds\tok' .kanban-tok \
+    "$PASTED" ghp_NOTAREALTOKEN0000 'tok en' '/a b/tok' '')"
+for v in /abs/tok '~/tok' ./tok rel/tok 'C:\creds\tok' .kanban-tok; do
+    eq "kb_path_shown prints the path [$v]" "true" "$(has_line "$v"$'\t'"$v" "$h6")"
+done
+for v in "$PASTED" ghp_NOTAREALTOKEN0000 'tok en' '/a b/tok' ''; do
+    eq "kb_path_shown withholds [$v]" "true" "$(has_line "$v"$'\t<value not shown: not a path>' "$h6")"
+done
+
+# THE MESSAGE RULE, over every shipped shell file: a non-comment line that interpolates a
+# token-path variable inside a double-quoted string, and prints it, goes through kb_path_shown.
+# ⚠ BOUNDED BY A NAME LIST: the variables below are the token-path names the tree uses today; a
+# message interpolating one under a NEW name is outside this leg. The printers are the ones the
+# shipped bins use (`echo`, `printf`, `die`, `warn`, `fail`, `say`, `bcs_skip`, `board_unread`,
+# `fails+=`, and a `tokn=` message assignment).
+_xt_path_msgs() {
+    awk '
+        /^[[:space:]]*#/ { next }
+        /"[^"]*\$\{?(KB_TOKEN_FILE|KBCARD_TOKEN_FILE|KB_HOST_TOKEN_FILE|tokfile|token_file|to_tok|board_tok)([^A-Za-z0-9_]|$)/ &&
+        /(^|[;&|({[:space:]])(echo|printf|die|warn|fail|say|bcs_skip|board_unread|fails\+=|tokn=)/ {
+            printf "%s:%d:%s\n", FILENAME, FNR, $0
+        }
+    ' "$@"
+}
+pmsgs="$(cd "$ROOT" && _xt_path_msgs "${SHIPPED[@]}")"
+echo "  denominator — every message line naming a token-path variable (re-derived each run):"
+printf '%s\n' "$pmsgs" | cut -d: -f1,2 | sed 's/^/    /'
+eq "the message rule has members to hold"                          "true" "$([[ -n "$pmsgs" ]] && echo true || echo false)"
+# Two members print the variable as a VALUE into a capture, not into a message — they are the
+# transport a later message reads — and are dispositioned here by file and text, with the reason.
+# A disposition outliving its line reds below, so the list cannot rot quietly.
+PATH_MSG_DISPOSED=(
+  "bin/next-dl|printf '%s\t%s\t%s' \"\$KB_API\" \"\$KB_BOARD_ID\" \"\$KB_TOKEN_FILE\"|resolve_board_cfg hands the resolved config to its caller through \$(…); the path is read back, never printed"
+  "bin/agent-board-toolkit-runtime-check|printf '%s' \"\${KBCARD_TOKEN_FILE:-}\" )\"|_rc_declared_token_file returns the DECLARED value through \$(…); _rc_add_source withholds a credential-shaped one before any message"
+)
+undisposed="$(printf '%s\n' "$pmsgs" | grep -v 'kb_path_shown' | while IFS= read -r m; do
+    [[ -n "$m" ]] || continue
+    ok=""
+    for d in "${PATH_MSG_DISPOSED[@]}"; do
+        f="${d%%|*}"; rest="${d#*|}"; t="${rest%%|*}"
+        [[ "$m" == "$f:"* && "$m" == *"$t"* ]] && ok=1
+    done
+    [[ -n "$ok" ]] || printf '%s\n' "$m"
+done)"
+eq "every such message goes through kb_path_shown (or is a dispositioned value transport)" "" "$undisposed"
+for d in "${PATH_MSG_DISPOSED[@]}"; do
+    f="${d%%|*}"; rest="${d#*|}"; t="${rest%%|*}"
+    eq "disposition still names a live line: $f" "true" "$(has "$t" "$(printf '%s\n' "$pmsgs" | grep -F "$f:" || true)")"
+done
+cat > "$TMP/plant6.sh" <<'PLANT'
+echo "x: token file not readable: $KB_TOKEN_FILE" >&2
+bcs_skip "kanban token file not readable: $(kb_path_shown "$tokfile")"
+[[ -r "$tokfile" ]] || return 1
+PLANT
+p6="$(_xt_path_msgs "$TMP/plant6.sh")"
+eq "control: an unrouted message is a member"                      "true"  "$(has ':1:' "$p6")"
+eq "control: a routed message is a member"                         "true"  "$(has ':2:' "$p6")"
+eq "control: a test that prints nothing is NOT a member"           "false" "$(has ':3:' "$p6")"
+eq "control: only the unrouted one is a violation"                 "1" \
+    "$(printf '%s\n' "$p6" | grep -vc 'kb_path_shown' || true)"
 
 _summary "xtrace-token-selftest"

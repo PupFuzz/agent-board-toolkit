@@ -293,6 +293,28 @@ _kb_pointer_fingerprint() {
     fi
 }
 
+# kb_path_shown <value>: <value> as a message may print it — the value itself when it is shaped
+# like a filesystem path (it contains `/` or `\`, or starts with `~` or `.`, and holds no
+# whitespace), else `<value not shown: not a path>` (card#11204).
+#
+# WHY. A token-path slot (KBCARD_TOKEN_FILE, a store pointer) is where a pasted SECRET lands when
+# an operator puts the token where its file belongs. The lib then treats it as a path, finds it
+# unreadable, and the refusal used to print it: `token file not readable: <the token>`, on stderr
+# and into durable logs, with no `-x` involved. Every message that names a token-path variable
+# goes through here; tests/xtrace-token-selftest.sh § 6 holds that over the shipped shell.
+# `\` counts as a separator so a Windows path (`C:\creds\tok`) is still shown. A value with
+# whitespace is withheld even when it has a `/`, so a token pasted with a space and a slash is not
+# shown; a real path containing a space is withheld too, which is the safe direction. An empty
+# value is withheld.
+kb_path_shown() {
+    local LC_ALL=C v="${1-}"
+    case "$v" in
+        *[[:space:]]*) ;;
+        */*|*\\*|'~'*|.*) printf '%s' "$v"; return 0 ;;
+    esac
+    printf '%s' '<value not shown: not a path>'
+}
+
 # _kb_looks_like_pasted_secret <value>: true when a value that is supposed to be a PATH has
 # the shape of a CREDENTIAL instead. Ported from the framework's resolver so both tools
 # recognise the same mis-paste rather than diverging on it.
@@ -684,7 +706,7 @@ kb_load_config() {
             return 2 ;;
         3) echo "$(_kb_prog): KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)" >&2; return 2 ;;
         4) return 2 ;;   # kb_resolve_env already named the file and the fix
-        5) echo "$(_kb_prog): token file not readable: $KB_TOKEN_FILE" >&2; return 2 ;;
+        5) echo "$(_kb_prog): token file not readable: $(kb_path_shown "$KB_TOKEN_FILE")" >&2; return 2 ;;
         6|7) return 2 ;; # the guard already named the value, the file and the line to add
         *) echo "$(_kb_prog): config error ($rc) for $board_env" >&2; return 2 ;;
     esac
