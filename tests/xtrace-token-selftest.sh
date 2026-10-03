@@ -55,7 +55,9 @@
 #       - `set -x` inside a region: the lines after it are traced but scored `ok`;
 #       - `;;` at the case arm's BODY indent: only a closer indented less than the opener closes
 #         a region, so a suspension in one arm covers the next arm's lines;
-#       - `select`, which is not among the call-position keywords;
+#       - `select` is left out of the call-position keywords (the word after it is a name, not
+#         a command); a call in its word list or body is still seen through `$(` and `do`, and
+#         no false negative through it has been shown — it is named here as an exclusion;
 #       - a token-named variable filled by `read`, `mapfile` / `readarray`, or as an array element
 #         (`KB_TOKEN[0]=…`): not members.
 #   * § 6's message rule is bounded by its PRINTER list (named at the leg; `logger`, `kb_warn` and

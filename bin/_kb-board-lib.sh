@@ -844,7 +844,7 @@ kb_board_env_get() {
 # `-v` because verbose mode echoes every line the shell READS, so sourcing an env file under
 # `bash -v` / `bash -xv` printed its `KBCARD_TOKEN_FILE=…` line verbatim — a secret pasted into
 # that slot included — whatever xtrace did. <var> records which of the two were on (`x`, `v`,
-# `xv` or empty). bash already clears `v` inside a `$(…)`, so the bare form needs no `v` handling.
+# `xv` or empty); the bare form suspends both and records nothing.
 #
 # WHY. xtrace prints every simple command with its words EXPANDED — an assignment, a `[[ … ]]`,
 # a function call's arguments, and every command a `$(…)` runs. kb_auth_header keeps the bearer
