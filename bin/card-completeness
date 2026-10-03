@@ -233,6 +233,18 @@ ids_in() {
 # from the tree and drives it against the lib's `kb_require_value`.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
+# repo_from_origin_url <url>: the `<owner>/<repo>` an origin remote URL names, or nothing.
+# `git@host:owner/repo(.git)`, `https://host/owner/repo(.git)`, `ssh://git@host/owner/repo`.
+# `bin/release-pr-body` carries the same function for the same question; the two are held equal
+# by tests/mirror-pair-parity-selftest.sh rather than by this comment.
+repo_from_origin_url() {
+  local url="$1" slug=""
+  case "$url" in
+    *:*|*/*) slug="$(printf '%s' "${url%.git}" | sed -E 's#^.*[:/]([^/:]+/[^/]+)$#\1#')" ;;
+  esac
+  case "$slug" in */*) printf '%s\n' "$slug" ;; esac
+}
+
 USAGE="Usage: card-completeness --repo OWNER/REPO --cards LIST --release-head REV --integration BRANCH [--api BASE]"
 REPO=""; CARDS_IN=""; API=""; RELEASE_HEAD=""; INTEGRATION=""; TOOL_VERSION_ONLY=0
 while [ $# -gt 0 ]; do
@@ -271,12 +283,7 @@ IDS="$(printf '%s' "$CARDS_IN" | grep -oE '[0-9]+' | sed 's/^0*\([0-9]\)/\1/' | 
 # cwd's own `origin` remote, and failing that the run refuses.
 [ -n "$REPO" ] || REPO="${GITHUB_REPOSITORY:-}"
 if [ -z "$REPO" ]; then
-  origin="$(git config --get remote.origin.url 2>/dev/null || true)"
-  # git@host:owner/repo(.git) | https://host/owner/repo(.git) | ssh://git@host/owner/repo
-  case "$origin" in
-    *:*|*/*) REPO="$(printf '%s' "${origin%.git}" | sed -E 's#^.*[:/]([^/:]+/[^/]+)$#\1#')" ;;
-  esac
-  case "$REPO" in */*) ;; *) REPO="" ;; esac
+  REPO="$(repo_from_origin_url "$(git config --get remote.origin.url 2>/dev/null || true)")"
 fi
 [ -n "$REPO" ] \
   || die "no repo to read PRs from — pass --repo OWNER/REPO, or set GITHUB_REPOSITORY, or run inside a checkout with an 'origin' remote. Refusing to guess the population a terminal-stage decision rests on."

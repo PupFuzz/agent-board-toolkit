@@ -1581,4 +1581,121 @@ eq "…named"                                        "true" "$(has '--base requi
 echo "== --help lists --tool-version =="
 eq "usage names the flag"                          "true" "$(has_line '#   release-pr-body --tool-version    # print the agent-board-toolkit version THIS FILE is, and exit' "$("$BIN" --help)")"
 
+echo "== the Review: sentence reports each bundled change's review record, and never blocks (card#11149) =="
+# THE CONTRACT (rt#557): one verifier call per bundled PR, `<verifier> <owner>/<repo>#<pr>`; exit 0
+# is a record, 1 is none, 2 is unmeasured, and any other exit, a timeout or a missing verifier is
+# unmeasured too. The sentence states its denominator and never folds unmeasured into either of the
+# other two. Every case asserts the EXACT sentence and rc 0: the result is reported, never gated.
+#
+# THE FIXTURE. v0.1.0 → #11, #12, #13 (RV_MID) → a commit with no PR number → a second #11 commit.
+# `v0.1.0..RV_MID` is three PRs; `v0.1.0..HEAD` adds the PR-less line (named by its short sha) and
+# a repeated PR number, which must count once — M is the bundled PRs, not the commits.
+RV="$T/rv"; RVR="$RV/repo"; RVB="$RV/bin"; mkdir -p "$RVB"
+g init -q "$RVR"
+echo 0 > "$RVR/f"; g -C "$RVR" add f; g -C "$RVR" commit -qm "chore: init"; g -C "$RVR" tag v0.1.0
+echo 1 > "$RVR/f"; g -C "$RVR" commit -qam "feat: eleven (#11)"
+echo 2 > "$RVR/f"; g -C "$RVR" commit -qam "fix: twelve (#12)"
+echo 3 > "$RVR/f"; g -C "$RVR" commit -qam "docs: thirteen (#13)"
+RV_MID="$(g -C "$RVR" rev-parse HEAD)"
+echo 4 > "$RVR/f"; g -C "$RVR" commit -qam "chore: a direct push with no pull request"
+RV_NOPR="$(g -C "$RVR" log -1 --format=%h)"
+echo 5 > "$RVR/f"; g -C "$RVR" commit -qam "fix: eleven again (#11)"
+echo '{}' > "$RVR/.release-pr.json"
+
+# The stub verifier: exit code per PR from RV_MAP ("11=0 12=1"), RV_DEFAULT otherwise; it sleeps
+# RV_SLEEP seconds first when the PR is RV_SLOW, and appends every argument it was given to RV_LOG.
+cat > "$RVB/coord-review-verify" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$RV_LOG"
+pr="${1##*#}"
+if [ "$pr" = "${RV_SLOW:-}" ]; then sleep "${RV_SLEEP:-0}"; fi
+for kv in ${RV_MAP:-}; do
+  if [ "${kv%%=*}" = "$pr" ]; then exit "${kv#*=}"; fi
+done
+exit "${RV_DEFAULT:-0}"
+EOF
+chmod +x "$RVB/coord-review-verify"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$RV/not-executable"
+
+# A PATH with every directory that carries a real `coord-review-verify` removed, so the no-verifier
+# case is not decided by whatever the host running this suite has installed.
+RV_PATH=""
+IFS=: read -r -a _rv_dirs <<< "$PATH"
+for _d in "${_rv_dirs[@]}"; do
+  [[ -x "$_d/coord-review-verify" ]] && continue
+  RV_PATH="${RV_PATH:+$RV_PATH:}$_d"
+done
+eq "witness: the scrubbed PATH finds no coord-review-verify" "" "$(PATH="$RV_PATH" command -v coord-review-verify || true)"
+
+# _rv <head> [VAR=value ...] — run the generator over v0.1.0..<head> under the scrubbed PATH with
+# the stub dir prepended, GITHUB_REPOSITORY=acme/widget, and the extra env given. Sets RV_RC,
+# RV_OUT (stdout), RV_ERR (stderr), RV_LINE (the line after the `## Bundled` heading) and RV_CALLS.
+_rv() {
+  local head="$1"; shift
+  : > "$RV/log"; RV_RC=0
+  ( cd "$RVR" && env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
+      PATH="$RVB:$RV_PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" "$@" \
+      "$BIN" --version 0.2.0 --base v0.1.0 --head "$head" ) >"$RV/out" 2>"$RV/err" || RV_RC=$?
+  RV_OUT="$(cat "$RV/out")"; RV_ERR="$(cat "$RV/err")"; RV_CALLS="$(cat "$RV/log")"
+  RV_LINE="$(printf '%s\n' "$RV_OUT" | awk 'p { print; exit } $0 == "## Bundled (generated — do not hand-edit)" { p = 1 }')"
+}
+
+_rv "$RV_MID"
+eq "all records → rc 0"                                  "0" "$RV_RC"
+eq "…the sentence is the first line under ## Bundled"   "Review: 3 of 3 bundled changes have an independent review record." "$RV_LINE"
+eq "…the verifier was asked <owner>/<repo>#<pr>, once per PR" "$(printf 'acme/widget#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+eq "…and the bundled rows still follow it"              "true" "$(has_line '- **#12** fix: twelve' "$RV_OUT")"
+
+_rv "$RV_MID" RV_MAP="11=0 12=1 13=2"
+eq "mixed 0/1/2 → rc 0"                                  "0" "$RV_RC"
+eq "…1 is not covered and 2 is not measured, each by name" "Review: 1 of 3 bundled changes have an independent review record; not covered: #12; not measured: #13." "$RV_LINE"
+eq "…the exit-2 PR is named on stderr"                  "true" "$(has 'release-pr-body: review: #13 not measured' "$RV_ERR")"
+
+_rv "$RV_MID" RV_MAP="12=7"
+eq "unexpected exit code → rc 0"                         "0" "$RV_RC"
+eq "…exit 7 is not measured, never a record or a no"   "Review: 2 of 3 bundled changes have an independent review record; not measured: #12." "$RV_LINE"
+eq "…and stderr names the exit code"                    "true" "$(has 'release-pr-body: review: #12 not measured (the verifier exited 7)' "$RV_ERR")"
+
+RV_T0="$(date +%s)"
+_rv "$RV_MID" RV_SLOW=13 RV_SLEEP=20 RELEASE_PR_REVIEW_VERIFIER_TIMEOUT=1
+RV_SECS=$(( $(date +%s) - RV_T0 ))
+eq "a hanging verifier → rc 0"                           "0" "$RV_RC"
+eq "…the hung call is not measured"                     "Review: 2 of 3 bundled changes have an independent review record; not measured: #13." "$RV_LINE"
+eq "…the generator did not wait it out (<10s of a 20s hang)" "true" "$([[ "$RV_SECS" -lt 10 ]] && echo true || echo false)"
+eq "…and stderr says it was killed"                     "true" "$(has 'release-pr-body: review: #13 not measured (the verifier was killed after 1s)' "$RV_ERR")"
+
+_rv "$RV_MID" PATH="$RV_PATH"
+eq "no verifier on PATH → rc 0"                          "0" "$RV_RC"
+eq "…the no-verifier sentence, with its denominator"    "Review: not measured for any of the 3 bundled changes (no review-record verifier on this machine)." "$RV_LINE"
+
+_rv "$RV_MID" RELEASE_PR_REVIEW_VERIFIER=off
+eq "RELEASE_PR_REVIEW_VERIFIER=off → rc 0"               "0" "$RV_RC"
+eq "…the turned-off sentence, with its denominator"     "Review: not measured for any of the 3 bundled changes (the review-record verifier is turned off on this machine)." "$RV_LINE"
+eq "…and the verifier on PATH was never called"        "" "$RV_CALLS"
+
+_rv HEAD
+eq "a bundled line with no PR number → rc 0"             "0" "$RV_RC"
+eq "…it is not measured, named by its short sha; a repeated PR counts once" "Review: 3 of 4 bundled changes have an independent review record; not measured: $RV_NOPR." "$RV_LINE"
+eq "…and the repeated PR is asked about once"           "$(printf 'acme/widget#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+
+cp "$RVB/coord-review-verify" "$RV/override"
+_rv "$RV_MID" PATH="$RV_PATH" RELEASE_PR_REVIEW_VERIFIER="$RV/override" RV_MAP="11=1"
+eq "RELEASE_PR_REVIEW_VERIFIER=<path> is the verifier"   "Review: 2 of 3 bundled changes have an independent review record; not covered: #11." "$RV_LINE"
+
+_rv "$RV_MID" RELEASE_PR_REVIEW_VERIFIER="$RV/not-executable"
+eq "an override that is not executable → rc 0"           "0" "$RV_RC"
+eq "…every PR is not measured, and the PATH verifier is not used instead" "Review: 0 of 3 bundled changes have an independent review record; not measured: #11, #12, #13." "$RV_LINE"
+eq "…the stub on PATH was never called"                "" "$RV_CALLS"
+
+_rv "$RV_MID" GITHUB_REPOSITORY=
+eq "an empty GITHUB_REPOSITORY and no origin → rc 0"           "0" "$RV_RC"
+eq "…nothing can be asked, so nothing is measured"     "Review: 0 of 3 bundled changes have an independent review record; not measured: #11, #12, #13." "$RV_LINE"
+eq "…and the verifier was never called"                "" "$RV_CALLS"
+
+g -C "$RVR" remote add origin git@github.com:acme/gadget.git
+_rv "$RV_MID" GITHUB_REPOSITORY=
+eq "the repo falls back to the origin remote"           "$(printf 'acme/gadget#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+_rv "$RV_MID"
+eq "…and GITHUB_REPOSITORY outranks it"                 "$(printf 'acme/widget#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+
 _summary "release-pr-body-selftest"
