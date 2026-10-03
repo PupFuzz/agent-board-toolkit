@@ -635,6 +635,9 @@ board_envf="$(kb_board_env_for "$board" || true)"
 # host-local opt-in. (Inverting the board_id order alone would NOT have closed this: the two
 # sources are mutually-exclusive populations, so the inversion only ever helps the population
 # that never had the exposure — the gate is the real fix.)
+# Every line from here to the token read expands the token-PATH slot, where a pasted secret
+# lands, so they run untraced (card#11204); each skip restores the trace before it speaks.
+kb_xtrace_off _bcs_px
 board_tok=""
 if [ "$board_src" = "hostlocal" ] && [ -n "$board_envf" ]; then
     IFS= read -r board_tok <<<"$(kb_board_env_get "$board_envf" KBCARD_TOKEN_FILE)"
@@ -653,9 +656,13 @@ fi
 # fail-soft policy.
 tok_where="${board_envf:-$HOME/.kanban-host.env}"
 tokfile="$(kb_declared_token_file "$tok_where" "$board_tok" "${KB_HOST_TOKEN_FILE:-}")" \
-    || bcs_skip "no kanban token file is declared for this board (see docs/INSTALL.md §3)"
-kb_read_token "$tokfile" \
-    || bcs_skip "kanban token file not readable: $(kb_path_shown "$tokfile") (see docs/INSTALL.md §3)"
+    || { kb_xtrace_restore _bcs_px; bcs_skip "no kanban token file is declared for this board (see docs/INSTALL.md §3)"; }
+if ! kb_read_token "$tokfile"; then
+    tokfile_shown="$(kb_path_shown "$tokfile")"
+    kb_xtrace_restore _bcs_px
+    bcs_skip "kanban token file not readable: $tokfile_shown (see docs/INSTALL.md §3)"
+fi
+kb_xtrace_restore _bcs_px
 kb_xtrace_off _bcs_x; token="$KB_TOKEN"; kb_xtrace_restore _bcs_x
 
 # Effective api_base: the committed value, unless it is a documentation-placeholder host
@@ -803,7 +810,7 @@ if [ "$http" != "200" ]; then
     case "$http" in
         404) ;;   # fall through to the not-a-card handling below
         000) bcs_skip "card #$cid could not be read — the kanban API at $api_shown is unreachable; the card was NOT confirmed missing" ;;
-        401|403) bcs_skip "card #$cid could not be read — the kanban API rejected the token from $(kb_path_shown "${KB_TOKEN_FILE:-}") (HTTP $http); the card was NOT confirmed missing" ;;
+        401|403) bcs_skip "card #$cid could not be read — the kanban API rejected the token from $(kb_xtrace_off; kb_path_shown "${KB_TOKEN_FILE:-}") (HTTP $http); the card was NOT confirmed missing" ;;
         *) bcs_skip "card #$cid could not be read — the kanban API returned HTTP $http; the card was NOT confirmed missing" ;;
     esac
 fi

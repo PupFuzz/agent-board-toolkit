@@ -576,6 +576,10 @@ _rc_add_source() {
 
 rc_host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
 rc_store_file="${COORD_CREDENTIALS:-$HOME/.config/coord/credentials.ini}"
+# From here to the last _rc_add_source, every line expands a token-PATH slot — where a pasted
+# secret lands — or sources a file that sets one, so the block runs untraced under `bash -x`
+# (card#11204). This bin does not source the lib, so it suspends xtrace itself.
+case $- in *x*) _rc_px=x; set +x ;; *) _rc_px= ;; esac
 rc_amb="${KBCARD_TOKEN_FILE:-}"
 rc_host_tok="$(_rc_declared_token_file "$rc_host_env" || true)"
 if [ -e "$rc_store_file" ] && [ ! -r "$rc_store_file" ]; then
@@ -607,6 +611,7 @@ for envf in "$HOME"/.kanban-*-board.env; do
 done
 
 _rc_add_source "the coord credential store's [kanban] api_token_file pointer" "$rc_store_tok"
+[ -z "$_rc_px" ] || set -x
 
 # THE UNDECLARED HALF OF THE POPULATION — `~/.kanban-*-token`, that literal glob and nothing
 # wider. Every source above is a DECLARATION, and the state this leg exists for has none:
@@ -651,7 +656,12 @@ elif [ "${#TOK_PATHS[@]}" -ge 1 ]; then
             fi
         done
         rc_store_real=""
-        [ -n "$rc_store_tok" ] && rc_store_real="$(_rc_key "$rc_store_tok")"
+        # Only a readable, non-empty pointer can be in a group (TOK_PATHS holds nothing else), and
+        # it is tested untraced: a secret pasted into the store's pointer would otherwise be
+        # printed here under `bash -x` (card#11204).
+        case $- in *x*) _rc_sx=x; set +x ;; *) _rc_sx= ;; esac
+        [ -r "$rc_store_tok" ] && [ -s "$rc_store_tok" ] && rc_store_real="$(_rc_key "$rc_store_tok")"
+        [ -z "$_rc_sx" ] || set -x
         for tp in "${TOK_PATHS[@]}"; do
             group="${tok_group[${TOK_DIG[$tp]}]}"
             [ "$group" = "${group%%$'\n'*}" ] && continue      # a group of one: not a copy

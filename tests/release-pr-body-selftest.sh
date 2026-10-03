@@ -827,6 +827,16 @@ eq "…nor the pre-fix false-clean short-circuit"       "false" "$(has 'No shipp
 # board's only card carries DL-42, and 42 is NOT what card#9999 asks about.
 eq "the unrelated DL-42 card is not read as coverage" "false" "$(has 'card#42' "$covmisserr")"
 
+# card#11204: `bash -x release-pr-body` must not print the writeback token. The coverage arm tests
+# it as `${KANBAN_WRITEBACK_TOKEN:+set}`; the `${…:-}` spelling it replaced traced the value. RED on
+# that spelling. CONTROLS: the run was traced, and the coverage report still measured.
+covx_tok='FAKE-WRITEBACK-TOKEN-NOT-SECRET-005'
+( cd "$CR" && PATH="$COV/bin:$HERE/../bin:$PATH" KANBAN_WRITEBACK_TOKEN="$covx_tok" KANBAN_EXPECTED_HOST=kanban.test \
+    bash -x "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD >"$COV/covx.out" 2>"$COV/covx.err" ) || true
+eq "bash -x: the writeback token is in neither stream"  "false" "$(has "$covx_tok" "$(cat "$COV/covx.out" "$COV/covx.err")")"
+eq "bash -x: control — the run WAS traced"              "true"  "$(grep -q '^+ ' "$COV/covx.err" && echo true || echo false)"
+eq "bash -x: control — the coverage report still MEASURED" "true" "$(has 'release-pr-body: card coverage: ' "$(cat "$COV/covx.err")")"
+
 # CONTROL: same tool, same range, same config — the board now holds card 9999. Without this the
 # assertions above are satisfied by a section that reports every ref unconditionally.
 cat > "$BOARD_FILE" <<'EOF'
@@ -1099,8 +1109,8 @@ eq "leg 2: every silent return in the gate region is reached through such a test
 # left alone — `#` inside a string is not a comment, and no regex here knows the difference;
 # a test it hides is still read, an invented one still reds.
 _pc_uncomment() { printf '%s\n' "$1" | sed -E 's/^[[:space:]]*#.*$//'; }
-# Normalisation, spelled here rather than in the header: `${V:-…}` and `$V`
-# reduce to `V`, and a `$dir/name` operand reduces to `name` (that is the promoter's
+# Normalisation, spelled here rather than in the header: `${V:-…}`, `${V:+…}` (the spelling a
+# credential is tested in, so a trace never prints it — card#11204) and `$V` reduce to `V`, and a `$dir/name` operand reduces to `name` (that is the promoter's
 # beside-the-script half, which the header names as `promote-released-cards`).
 # BINARY tests are read as well as unary ones, and `test -z "$x"` is read alongside
 # `[ … ]`/`[[ … ]]`: `test` is a command's exit status by SPELLING, but it carries a quoted
@@ -1111,7 +1121,7 @@ _pc_uncomment() { printf '%s\n' "$1" | sed -E 's/^[[:space:]]*#.*$//'; }
 _pc_subjects() {
   local _pct _pcn _pcu _pcb
   _pct="$(_pc_uncomment "$1")"
-  _pcn='s/^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}$/\1/; s|^\$[A-Za-z_][A-Za-z0-9_]*/||; s/^\$//'
+  _pcn='s/^\$\{([A-Za-z_][A-Za-z0-9_]*)(:[-+][^}]*)?\}$/\1/; s|^\$[A-Za-z_][A-Za-z0-9_]*/||; s/^\$//'
   _pcu="$(printf '%s\n' "$_pct" | { command grep -oE '(\[\[? |test )-[a-z] "[^"]*"' || true; } \
     | sed -E 's/^(\[\[? |test )-[a-z] "//; s/"$//' | sed -E "$_pcn")"
   _pcb="$(printf '%s\n' "$_pct" \

@@ -3035,12 +3035,17 @@ cmd_move_board() {
         echo "kbcard: move-board requires --yes in a non-interactive shell — the move CLEARS the card's custom-field payload, correlation stamps included, and nothing restores it. --dry-run shows what it would clear. Nothing was sent." >&2
         return 2
     fi
-    local target body to_id to_env to_tok
-    target="$(_kbc_move_board_target "$to_board" "$column" "$ctype" "$lane")" || return 2
+    local target body to_id to_env to_tok _kbmb_x
+    # Untraced, the target's resolution included: under --no-token its token-PATH is never checked
+    # readable, so a secret pasted there is carried in $target and $to_tok, and every line that
+    # handles it would print it under `bash -x` (card#11204).
+    kb_xtrace_off _kbmb_x
+    target="$(_kbc_move_board_target "$to_board" "$column" "$ctype" "$lane")" || { kb_xtrace_restore _kbmb_x; return 2; }
+    to_tok="$(jq -r '.token_file' <<<"$target")"
+    kb_xtrace_restore _kbmb_x
     body="$(jq -c '.body' <<<"$target")"
     to_id="$(jq -r '.body.board_id' <<<"$target")"
     to_env="$(jq -r '.env' <<<"$target")"
-    to_tok="$(jq -r '.token_file' <<<"$target")"
     local task
     task="$(resolve_task "$task_ref")" || return 1
 
@@ -3092,8 +3097,11 @@ cmd_move_board() {
         # re-read below says what the board holds.
         lead="the POST answered HTTP $KB_HTTP"
     elif [[ "$prc" -ne 0 ]]; then
-        local tokn="the token this run resolved for its own board ($(kb_path_shown "$KB_TOKEN_FILE"))"
+        local tokn _kbmb_y
+        kb_xtrace_off _kbmb_y
+        tokn="the token this run resolved for its own board ($(kb_path_shown "$KB_TOKEN_FILE"))"
         [[ -z "$to_tok" || "$to_tok" == "$KB_TOKEN_FILE" ]] || tokn="$tokn — NOT the one board $to_id's env declares ($(kb_path_shown "$to_tok")): the move is ONE request and carries ONE token"
+        kb_xtrace_restore _kbmb_y
         case "${KB_HTTP:-}" in
             401) echo "kbcard: move-board on task $task: HTTP 401 — the token was not accepted — invalid or expired. The request carried $tokn. Nothing was moved." >&2 ;;
             403) echo "kbcard: move-board on task $task: HTTP 403 is a POLICY refusal, not a card problem. A cross-board move needs the token to UPDATE card $task on board $from_id AND to CREATE cards on board $to_id, and one of the two is missing. The request carried $tokn. Nothing was moved." >&2 ;;

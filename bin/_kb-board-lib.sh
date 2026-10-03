@@ -300,19 +300,25 @@ _kb_pointer_fingerprint() {
 # WHY. A token-path slot (KBCARD_TOKEN_FILE, a store pointer) is where a pasted SECRET lands when
 # an operator puts the token where its file belongs. The lib then treats it as a path, finds it
 # unreadable, and the refusal used to print it: `token file not readable: <the token>`, on stderr
-# and into durable logs, with no `-x` involved. Every message that names a token-path variable
-# goes through here; tests/xtrace-token-selftest.sh § 6 holds that over the shipped shell.
+# and into durable logs, with no `-x` involved. tests/xtrace-token-selftest.sh § 6 requires every
+# message line naming a token-path variable to pass it through here — the names derived from
+# KBCARD_TOKEN_FILE / KB_TOKEN_FILE to a fixed point, the messages bounded by that leg's list of
+# printers (its header states the rest of the bound).
 # `\` counts as a separator so a Windows path (`C:\creds\tok`) is still shown. A value with
 # whitespace is withheld even when it has a `/`, so a token pasted with a space and a slash is not
 # shown; a real path containing a space is withheld too, which is the safe direction. An empty
 # value is withheld.
+# Its body runs untraced, so its own `local` cannot echo the value under `bash -x`; a caller's
+# CALL line still expands the argument, so call it as `$(kb_xtrace_off; kb_path_shown "$p")`.
 kb_path_shown() {
-    local LC_ALL=C v="${1-}"
+    local _kps_x; kb_xtrace_off _kps_x
+    local LC_ALL=C v="${1-}" out='<value not shown: not a path>'
     case "$v" in
         *[[:space:]]*) ;;
-        */*|*\\*|'~'*|.*) printf '%s' "$v"; return 0 ;;
+        */*|*\\*|'~'*|.*) out="$v" ;;
     esac
-    printf '%s' '<value not shown: not a path>'
+    printf '%s' "$out"
+    kb_xtrace_restore _kps_x
 }
 
 # _kb_looks_like_pasted_secret <value>: true when a value that is supposed to be a PATH has
@@ -507,7 +513,19 @@ kb_declared_token_file() {
 # false about their config, and the fix is a specific line in a specific file. A bare rc
 # reaches the operator through a caller that can only say "config incomplete (rc=N)" —
 # next-dl's arm, verbatim — which is why rc 4's refusal was already written this way.
+#
+# UNTRACED, WHOLE (card#11204). The host and board envs it sources, the tier locals and the
+# `[[ -r ]]` all expand the token-PATH slot, which is where a pasted secret lands; under
+# `bash -x` each of those lines printed it. The body therefore runs with xtrace suspended, and
+# this wrapper restores the caller's state on every one of its returns.
 kb_resolve_env() {
+    local _kre_x _kre_rc=0
+    kb_xtrace_off _kre_x
+    _kb_resolve_env "$@" || _kre_rc=$?
+    kb_xtrace_restore _kre_x
+    return "$_kre_rc"
+}
+_kb_resolve_env() {
     local board_env="$1" no_token=""
     [[ "${2:-}" == --no-token ]] && no_token=1
     # CLEARED FIRST, not on the success path only. These are globals, and five of the seven
@@ -706,7 +724,7 @@ kb_load_config() {
             return 2 ;;
         3) echo "$(_kb_prog): KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)" >&2; return 2 ;;
         4) return 2 ;;   # kb_resolve_env already named the file and the fix
-        5) echo "$(_kb_prog): token file not readable: $(kb_path_shown "$KB_TOKEN_FILE")" >&2; return 2 ;;
+        5) echo "$(_kb_prog): token file not readable: $(kb_xtrace_off; kb_path_shown "$KB_TOKEN_FILE")" >&2; return 2 ;;
         6|7) return 2 ;; # the guard already named the value, the file and the line to add
         *) echo "$(_kb_prog): config error ($rc) for $board_env" >&2; return 2 ;;
     esac
@@ -719,7 +737,9 @@ kb_load_config() {
     else
         # `|| KB_TOKEN=""` keeps what an unreadable-after-resolve file (a DIRECTORY passes -r) has
         # always produced here: an empty bearer, not a refusal — refusing is an acceptance change.
+        local _klc_x; kb_xtrace_off _klc_x
         kb_token_file_read KB_TOKEN "$KB_TOKEN_FILE" || KB_TOKEN=""
+        kb_xtrace_restore _klc_x
     fi
     return 0
 }
@@ -739,12 +759,16 @@ kb_load_config() {
 # dropping the host's KBCARD_TOKEN_FILE (board-snapshot was the only gated caller, and
 # so the only tool affected).
 kb_load_host_env() {
+    # Untraced: the host env's KBCARD_TOKEN_FILE line, and the copy below, would print a secret
+    # pasted into that slot under `bash -x` (card#11204).
+    local _klh_x; kb_xtrace_off _klh_x
     local amb_api="${KBCARD_API:-}"
     local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
     # shellcheck disable=SC1090
     [[ -r "$host_env" ]] && source "$host_env"
     KB_API="${amb_api:-${KBCARD_API:-}}"   # an ambient API still beats the host's
     KB_HOST_TOKEN_FILE="${KBCARD_TOKEN_FILE:-}"
+    kb_xtrace_restore _klh_x
     return 0
 }
 
@@ -761,7 +785,8 @@ kb_board_env_for() {
         # that sets no KB_BOARD_ID at all false-match every lookup. 2>/dev/null so a
         # board env missing the key stays quiet here rather than emitting raw noise.
         # shellcheck disable=SC1090
-        if ( unset KB_BOARD_ID; . "$envf" 2>/dev/null; [ "${KB_BOARD_ID:-}" = "$want" ] ); then
+        # Untraced inside: sourcing traces the env's KBCARD_TOKEN_FILE line (card#11204).
+        if ( kb_xtrace_off; unset KB_BOARD_ID; . "$envf" 2>/dev/null; [ "${KB_BOARD_ID:-}" = "$want" ] ); then
             match="$envf"; n=$((n+1))
         fi
     done
@@ -790,6 +815,9 @@ kb_board_env_for() {
 kb_board_env_get() {
     local envf="$1"; shift
     (
+        # Untraced: the source and the printf below expand a KBCARD_TOKEN_FILE when one is asked
+        # for (card#11204). The subshell ends the suspension.
+        kb_xtrace_off
         local v
         for v in "$@"; do unset "$v"; done
         # shellcheck disable=SC1090
@@ -815,9 +843,13 @@ kb_board_env_get() {
 # token argument of fetch_board_cards / kb_mask_token / kb_auth_header (positional, so the CALL is
 # where it is traced) — runs with xtrace suspended, by a `kb_xtrace_off` ON THAT SAME LINE (or, inside
 # a lib function that owns the token, a region the function opens and closes itself, as
-# kb_token_file_read does). tests/xtrace-token-selftest.sh checks the same-line form for
-# `$KB_TOKEN` and the three by-value calls across the shipped shell; a token under any other name
-# is outside that check and is caught only by its `bash -x` runs, on the verbs they drive.
+# kb_token_file_read does). tests/xtrace-token-selftest.sh § 4 checks, across the shipped shell,
+# every expansion of a variable whose name carries `TOKEN` (not `*_FILE` / `*_REGEX`) and the three
+# by-value calls: suspended BEFORE the first expansion on the line (the bare form only right after
+# `$(` or `(`), or inside such a region. A token under a name without `TOKEN` is outside that
+# check and is caught only by the `bash -x` runs, on the verbs they drive. A token-PATH (where a
+# pasted secret lands) is suspended the same way wherever it is resolved — kb_resolve_env,
+# kb_load_host_env, kb_board_env_for / _get, and the bins' own tier reads (§ 7 drives them).
 #
 # RE-ENTRANT BY CONSTRUCTION, with no counter: the state lives in <var>, which the CALLER declares
 # `local`. A nested pair finds xtrace already off, records that, and its restore leaves it off;
@@ -874,7 +906,7 @@ kb_token_file_read() {
 # DIRECTORY) leaves KB_TOKEN empty at rc 0, as the `$(cat …)` this replaced did — turning that
 # into a refusal changes what the callers accept, and is not this helper's to decide.
 kb_read_token() {
-    [[ -r "$1" ]] || return 1
+    [[ -r "$1" ]] || return 1   # a caller holding a token-PATH suspends xtrace around this call
     kb_token_file_read KB_TOKEN "$1" || KB_TOKEN=""
     KB_TOKEN_FILE="$1"
     return 0
