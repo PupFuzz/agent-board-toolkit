@@ -365,6 +365,7 @@ The coupling itself predates this flag and is coherent — a blocked card should
 Its header says what it does not cover:
 - a token held under a name without `TOKEN`, or reached through `${!v}` indirection, is caught only on the paths the runs drive;
 - the line rule reads lines, not the shell's grammar: a suspension made conditional by a construct spanning lines, other than a less-indented block closer, is outside it;
+- the rule that keeps a pasted secret out of refusal messages reads only the printers it lists: `logger`, `kb_warn`, a heredoc body and a nameref (`local -n`) are outside it, as are a callee's positional parameters;
 - a response body in which a server echoes the request's own Authorization header is printed by a trace like any other body.
 
 ## Get started

@@ -44,10 +44,11 @@
 #     shape it cannot place is scored `bad`, but a suspension made conditional by a construct
 #     spanning lines it does not model (anything other than a less-indented block closer) is
 #     outside it.
-#   * § 6's message rule is bounded by its PRINTER list (named at the leg) and does not follow a
-#     path into a callee's positional parameters, or out of a multi-field printf. § 7 drives the
-#     bins it names; a token-path line on another path is held only by § 6's message rule, which
-#     does not look at traces.
+#   * § 6's message rule is bounded by its PRINTER list (named at the leg; `logger`, `kb_warn` and
+#     any other printer outside it are not seen) and does not follow a path into a callee's
+#     positional parameters, out of a multi-field printf, into a heredoc body, or through a
+#     nameref (`local -n`). § 7 drives the bins it names; a token-path line on another path is
+#     held only by § 6's message rule, which does not look at traces.
 #   * A server that ECHOES the request's Authorization header into its response body (a debug
 #     error page, measured once — card#9301) puts the token into the traced response variables.
 #     That is a body the server sent back, not an expansion of the token, and nothing here
@@ -522,9 +523,12 @@ done
 # `warn`, `fail`, `say`, `bcs_skip`, `board_unread`, `fails+=`, `tokn=` (the printers the shipped
 # bins use; a new printer is outside this leg) — that expands a member anywhere AFTER the printer,
 # quoted or not. It is a violation unless every such member is the argument of kb_path_shown. A
-# producer's own `printf` is a TRANSPORT, not a message. A value passed as a function ARGUMENT is
-# not followed into the callee's positional parameters, and a value packed into a multi-field
-# printf (next-dl's resolve_board_cfg) is followed only to that printf.
+# producer's own `printf` is a TRANSPORT, not a message — only on a line where it is the SOLE
+# printer: a message beside it, or `echo "$(printf '%s' …)"`, is judged as a message. Outside the
+# bound: a heredoc body (`cat >&2 <<EOF … $KB_TOKEN_FILE`), a nameref (`local -n r=KB_TOKEN_FILE`),
+# and `logger`, `kb_warn` or any other printer not in the list. A value passed as a function
+# ARGUMENT is not followed into the callee's positional parameters, and a value packed into a
+# multi-field printf (next-dl's resolve_board_cfg) is followed only to that printf.
 cat > "$TMP/xt-paths.awk" <<'XTAWK'
 # c11204 — the token-PATH name set, derived to a fixed point (see the selftest § 6 header).
 # Output modes (-v mode=…):
@@ -638,6 +642,7 @@ FNR == 1 { fn = ""; cont = ""; contno = 0 }
     cont = ""
 }
 END {
+    PRINTER = "(^|[;&|({[:space:]])(echo|printf|die|warn|fail|say|bcs_skip|board_unread|fails\\+=|tokn=)"
     MEM["*", "KBCARD_TOKEN_FILE"] = 1; MEM["*", "KB_TOKEN_FILE"] = 1
     changed = 1; passes = 0
     while (changed && passes < 50) {
@@ -648,7 +653,13 @@ END {
             # a PRODUCER: a function whose output is ONE member value — `printf '%s' "$member"`
             if (fn != "" && t ~ /(^|[;&|({[:space:]])printf[[:space:]]+'%s'[[:space:]]+"[^"]*"[[:space:]]*($|[;)|])/) {
                 q = t; sub(/.*printf[[:space:]]+'%s'[[:space:]]+/, "", q)
-                if (member_in(q, f, fn)) { if (!(fn in PROD)) changed = 1; PROD[fn] = 1; TRANSPORT[f, ln] = 1 }
+                if (member_in(q, f, fn)) {
+                    if (!(fn in PROD)) changed = 1; PROD[fn] = 1
+                    # A TRANSPORT only when that printf is the line's SOLE printer: a message on
+                    # the same line, or a printer whose argument captures the printf, is judged.
+                    r = t; sub(/(^|[;&|({[:space:]])printf[[:space:]]+'%s'[[:space:]]+"[^"]*"/, " ", r)
+                    if (r !~ PRINTER) TRANSPORT[f, ln] = 1
+                }
             }
         }
     }
@@ -660,7 +671,7 @@ END {
     }
     for (i = 1; i <= NL; i++) {
         split(L[i], a, SUBSEP); f = a[1]; ln = a[2]; fn = a[3]; t = a[4]
-        if (!match(t, /(^|[;&|({[:space:]])(echo|printf|die|warn|fail|say|bcs_skip|board_unread|fails\+=|tokn=)/)) continue
+        if (!match(t, PRINTER)) continue
         # From the printer on: a quoted ARGUMENT before it (`kb_read_token "$f" || die …`) is not
         # part of the message. A member there at all makes the line a message member; one left
         # after removing every routed `kb_path_shown "$x"` makes it a violation.
@@ -736,6 +747,16 @@ say "board $id"
 say "token file $tf"
 shown="$(kb_path_shown "$hop1")"
 echo "$shown"
+pick() {
+    local c="$KB_TOKEN_FILE"
+    printf '%s' "$c"; echo "pick: using $c" >&2
+}
+show() {
+    echo "$(printf '%s' "$KB_TOKEN_FILE")"
+}
+prod() {
+    printf '%s' "$KB_TOKEN_FILE"
+}
 PLANT
 p6n="$(_xt_paths names "$TMP/plant6.sh")"
 p6="$(_xt_paths msgs "$TMP/plant6.sh")"
@@ -749,6 +770,9 @@ eq "control: a local alias is not a member in ANOTHER function"     "false" "$(h
 eq "control: the kb_board_env_get element NOT holding the path is not a member" "false" "$(has ':17:' "$p6")"
 eq "control: the element holding it (continuation joined) is a violation" "true" "$(_p6v 18 bad)"
 eq "control: a value that went THROUGH kb_path_shown does not propagate" "false" "$(has ':20:' "$p6")"
+eq "control: a message on a producer's own line is judged, not exempted as transport" "true" "$(_p6v 23 bad)"
+eq "control: …and so is a printer whose argument captures the producer's printf" "true" "$(_p6v 26 bad)"
+eq "control: a printf that is its line's sole printer is still a transport" "true" "$(_p6v 29 transport)"
 eq "control: the derivation took more than one pass"                "true"  "$(awk -F'\t' '$1=="passes" { r = ($2 > 2) ? "true" : "false" } END { print r ? r : "false" }' <<<"$p6n")"
 
 echo "== § 7. bash -x and a credential pasted into a token-PATH slot, at each declaring tier =="
