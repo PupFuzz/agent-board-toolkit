@@ -6176,7 +6176,12 @@ main() {
     case "$cmd" in
         create-card|move|move-board|patch)
             declare -F kb_stage_write >/dev/null \
-                || { _kbc_lib_unruled "$cmd" "the write" kb_stage_write undefined; exit 2; } ;;
+                || { _kbc_lib_unruled "$cmd" "the write" kb_stage_write undefined; exit 2; }
+            # move-board suspends xtrace around the target's token-path (card#11204): beside a lib
+            # without kb_xtrace_off that statement is rc 127 under `set -e`, before any request.
+            # kb_path_shown, which its 401/403 lines call, arrived in the same lib.
+            [[ "$cmd" != move-board ]] || declare -F kb_xtrace_off >/dev/null \
+                || { _kbc_lib_unruled "$cmd" "the write" kb_xtrace_off undefined; exit 2; } ;;
         unlink)
             declare -F kb_mask_token >/dev/null \
                 || { _kbc_lib_unruled "$cmd" "the delete" kb_mask_token undefined; exit 2; }

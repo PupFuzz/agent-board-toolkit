@@ -6343,6 +6343,25 @@ KB_STUB_PAYLOAD="$PR178" "$_psstale" show --task 505 >/dev/null 2>"$TMP/e" || rc
 eq "control: show beside that lib → rc 0 and it reached the wire" "0|true" \
    "$rc|$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
 unset ISS42 _ref _seg _noun _nf _uf _nk _uk _held _psstale _args _v
+# --- ⭐ beside a lib without kb_xtrace_off, the verbs whose own lines call it refuse (card#11204) --
+# move-board and unlink run `kb_xtrace_off <var>` as a statement; under kbcard's `set -e` that is
+# rc 127 beside an older lib (move-board before any request, unlink after its DELETE). Asked for
+# at dispatch instead: rc 2, no request, the function named.
+_xostale="$(_bin_beside_stale_lib "$TMP/stale-xtrace" "$BIN" kb_xtrace_off)"
+for _args in "move-board --task 505 --to-board dev --column backlog --dry-run" "unlink --link-id 9 --on 505"; do
+    kb_stub_reset; rc=0
+    # shellcheck disable=SC2086
+    out="$("$_xostale" $_args 2>"$TMP/e")" || rc=$?; err="$(cat "$TMP/e")"
+    eq "⭐ lib without kb_xtrace_off: ${_args%% *} → rc 2, NO request at all" "2|0" "$rc|$(kb_stub_total)"
+    eq "⭐ …names kb_xtrace_off as not defined, and that nothing was written" "true|true" \
+       "$(has "kb_xtrace_off is not defined — the _kb-board-lib.sh beside this kbcard predates it" "$err")|$(has 'NOTHING was written' "$err")"
+done
+# Control: the check is scoped to those verbs — a read verb beside the same lib still reads.
+kb_stub_reset; rc=0
+"$_xostale" show --task 505 >/dev/null 2>"$TMP/e" || rc=$?
+eq "control: show beside that lib → rc 0 and it reached the wire" "0|true" \
+   "$rc|$([[ "$(kb_stub_total)" -ge 1 ]] && echo true || echo false)"
+unset _xostale _args
 
 unset -f kb_stub_route ppay npatch nget
 unset KB_STUB_PAYLOAD KB_STUB_READ PR178 _p _r _ng _u
