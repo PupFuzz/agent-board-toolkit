@@ -311,8 +311,9 @@ _kb_pointer_fingerprint() {
 # direction. An empty value is withheld. The directory test is what withholds a token whose
 # alphabet includes `/` (standard base64): shaped like a path, but naming no directory. What is
 # left: a pasted value whose directory part happens to exist (relative to the cwd), or that has no
-# separator and starts with `~` or `.`, is still shown; and a real path under a directory that is
-# missing is withheld.
+# separator and starts with `~` or `.`, is still shown; a value whose ONLY separator is a single
+# leading `/` (`/<anything>`) is ALWAYS shown, because its directory part is `/`; and a real path
+# under a directory that is missing is withheld (card#11224).
 # Its body runs untraced, so its own `local` cannot echo the value under `bash -x`; a caller's
 # CALL line still expands the argument, so call it as `$(kb_xtrace_off; kb_path_shown "$p")`.
 kb_path_shown() {
