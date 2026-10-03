@@ -153,8 +153,12 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
   [[ -r "$envf" ]] || { board_unread "$label" "env $envf missing"; return 0; }
   (
     board_env_scrub
+    # The source, and every line below that expands the token-PATH slot (where a pasted secret
+    # lands), run untraced (card#11204); each refusal restores the trace before it speaks.
+    local _bsr_x; kb_xtrace_off _bsr_x
     # shellcheck disable=SC1090
     source "$envf"
+    kb_xtrace_restore _bsr_x
     [[ -n "${KB_BOARD_ID:-}" ]] || { board_unread "$label" "env $envf sets no KB_BOARD_ID"; return 0; }
     # Explicit token ladder: this board's > the host's, then the coord credential store's
     # `[kanban] api_token_file` pointer if one is there (card#7316). There is NO defaulted tier
@@ -163,13 +167,15 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     # rung is a path an operator wrote down, discovered, not one invented here. Per-board
     # fail-soft — one board's undeclared or unreadable token must not blank the others.
     # Resolved once so the read and its failure message can't drift to different files.
-    local tokfile
+    local tokfile shown
+    kb_xtrace_off _bsr_x
     tokfile="$(kb_declared_token_file "$envf" "${KBCARD_TOKEN_FILE:-}" "${KB_HOST_TOKEN_FILE:-}")" \
-        || { board_unread "$label" "no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env, and no usable [kanban] api_token_file in the coord credential store"; return 0; }
+        || { kb_xtrace_restore _bsr_x; board_unread "$label" "no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env, and no usable [kanban] api_token_file in the coord credential store"; return 0; }
     kb_read_token "$tokfile" \
-        || { board_unread "$label" "token file unreadable: $tokfile"; return 0; }
+        || { shown="$(kb_path_shown "$tokfile")"; kb_xtrace_restore _bsr_x; board_unread "$label" "token file unreadable: $shown"; return 0; }
+    kb_xtrace_restore _bsr_x
     local data rc
-    data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
+    data="$(kb_xtrace_off; fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
     [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] \
         || { board_unread "$label" "board read failed — fetch rc=$rc"; return 0; }
     # A PARTIAL read is rendered — and now SAYS SO ON THE CHANNEL THE READER SEES.

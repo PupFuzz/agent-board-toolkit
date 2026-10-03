@@ -349,6 +349,25 @@ The coupling itself predates this flag and is coherent — a blocked card should
 
 **Out of scope, deliberately:** `_kbc-stale-blocker.py` still greps card **prose** for `blocked behind card#N`. That leg has to keep working for every card written before this writer existed, and switching it to the structured field is a separate change with its own denominator.
 
+## Debugging a board tool without `bash -x` — `KBCARD_DEBUG=1`
+
+**`KBCARD_DEBUG=1` prints one stderr line for each kanban request the lib sends** (`kb_api`, `kb_api_status` and `fetch_board_cards`, so every `kbcard` verb): `<tool>: debug: GET https://<host>/api/v3/tasks/505.json -> HTTP 200 (143 ms)`. The line names the method, the url (userinfo masked, as every rendered url is) and the status, `000` when the request did not complete. It never carries the bearer token. A request a tool sends with its own `curl` does not print the line: `next-dl`'s DL-sequence claim, and `promote-released-cards` / `card-completeness`, which do not source the lib. A whole-board read prints one line per page it fetched, which makes it the instrument for a slow `kbcard list`.
+
+**`bash -x` is safe as well, but it shows less** (card#11204). xtrace prints every command with its words expanded. It used to print the board token: the token-file read, the header built from it, and every call that takes it as an argument. It also printed a secret pasted into a token-path slot (`KBCARD_TOKEN_FILE` set to the token instead of its file): the env line that sets it, and every line that resolved it. Each of those now runs with xtrace suspended, and the caller's state is restored afterwards, so the rest of the trace is unchanged. The lib does this with `kb_xtrace_off` / `kb_xtrace_restore`. The standalone `promote-released-cards`, `card-completeness` and `agent-board-toolkit-runtime-check` do it by hand, and `release-pr-body` tests its writeback token only as `${KANBAN_WRITEBACK_TOKEN:+set}`. As a result the whole-board walk (`fetch_board_cards`) and the reading of the host and board envs run untraced, so use `KBCARD_DEBUG=1` to see the requests.
+
+`tests/xtrace-token-selftest.sh` runs the tools under `bash -x` with a planted token, and with a secret pasted into the path slot at each tier. It also reads every shipped shell file line by line:
+- **What it checks:** every expansion (`$NAME` or `${NAME…}`) of a variable whose name contains `TOKEN` (not `*_FILE` or `*_REGEX`; `${NAME:+…}`, `${NAME+…}` and `${#NAME}` never expand to the value), and every call of `fetch_board_cards`, `kb_mask_token` or `kb_auth_header`. Each one on a line must have xtrace off where it is expanded.
+- **What counts as off:**
+  - a `kb_xtrace_off <var>` earlier on the line that runs unconditionally (it starts the line, or follows a plain `;` with no `if`/`then`/`do`/`else`/`elif`/`while`/`until`/`for`/`case`, `{`, `}`, `(`, `)`, `|` or `&` before it), with no `kb_xtrace_restore <var>` between it and the expansion;
+  - a `kb_xtrace_off` directly after `(` or `$(`, with the expansion inside that parenthesis;
+  - a region, with no restore earlier on the line. A region opens on a line holding such an unconditional `kb_xtrace_off <var>` with no restore of it later on that line. It closes on any line holding `kb_xtrace_restore <var>`, on a `}` in column 0, or on a block closer (`fi`, `done`, `esac`, `else`, `elif`, `}`, `;;`) indented less than the line that opened it. The standalone bins' `case $- in *x*) V=x; set +x` is a region too, closed by `[ -z "$V" ] || set -x`.
+
+Its header says what it does not cover:
+- a token held under a name without `TOKEN`, or reached through `${!v}` indirection, is caught only on the paths the runs drive;
+- the line rule reads lines, not the shell's grammar: a suspension made conditional by a construct spanning lines, other than a less-indented block closer, is outside it;
+- the rule that keeps a pasted secret out of refusal messages reads only the printers it lists: `logger`, `kb_warn`, a heredoc body and a nameref (`local -n`) are outside it, as are a callee's positional parameters;
+- a response body in which a server echoes the request's own Authorization header is printed by a trace like any other body.
+
 ## Get started
 
 - **Adopting this for a new project/agent? Start here:** [`ADOPTION.md`](ADOPTION.md) (who it's for + how it fits the cross-project standard)

@@ -799,7 +799,7 @@ card_coverage_report() {
   fi
   # Nothing to measure with ⇒ nothing to say. The return is BEFORE any line is printed, so an
   # unmeasured run emits no coverage line at all.
-  if [ -z "$board" ] || [ -z "${KANBAN_WRITEBACK_TOKEN:-}" ] || [ -z "$promote" ]; then
+  if [ -z "$board" ] || [ -z "${KANBAN_WRITEBACK_TOKEN:+set}" ] || [ -z "$promote" ]; then
     return 0
   fi
   local dl_manifest card_manifest

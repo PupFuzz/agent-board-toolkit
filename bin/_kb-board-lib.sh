@@ -293,6 +293,44 @@ _kb_pointer_fingerprint() {
     fi
 }
 
+# kb_path_shown <value>: <value> as a message may print it — the value itself when it is shaped
+# like a filesystem path (it contains `/` or `\`, or starts with `~` or `.`, and holds no
+# whitespace) AND its directory part exists (everything before the last `/` or `\`, a leading `~`
+# expanded; `.` when there is no separator), else `<value not shown: not a path>` (card#11204).
+#
+# WHY. A token-path slot (KBCARD_TOKEN_FILE, a store pointer) is where a pasted SECRET lands when
+# an operator puts the token where its file belongs. The lib then treats it as a path, finds it
+# unreadable, and the refusal used to print it: `token file not readable: <the token>`, on stderr
+# and into durable logs, with no `-x` involved. tests/xtrace-token-selftest.sh § 6 requires every
+# message line naming a token-path variable to pass it through here — the names derived from
+# KBCARD_TOKEN_FILE / KB_TOKEN_FILE to a fixed point, the messages bounded by that leg's list of
+# printers (its header states the rest of the bound).
+# `\` counts as a separator so a Windows path (`C:\creds\tok`) is still shown where that directory
+# exists. A value with whitespace is withheld even when it has a `/`, so a token pasted with a
+# space and a slash is not shown; a real path containing a space is withheld too, which is the safe
+# direction. An empty value is withheld. The directory test is what withholds a token whose
+# alphabet includes `/` (standard base64): shaped like a path, but naming no directory. What is
+# left: a pasted value whose directory part happens to exist (relative to the cwd), or that has no
+# separator and starts with `~` or `.`, is still shown; and a real path under a directory that is
+# missing is withheld.
+# Its body runs untraced, so its own `local` cannot echo the value under `bash -x`; a caller's
+# CALL line still expands the argument, so call it as `$(kb_xtrace_off; kb_path_shown "$p")`.
+kb_path_shown() {
+    local _kps_x; kb_xtrace_off _kps_x
+    local LC_ALL=C v="${1-}" out='<value not shown: not a path>' d
+    case "$v" in
+        *[[:space:]]*) ;;
+        */*|*\\*|'~'*|.*)
+            case "$v" in
+                */*|*\\*) d="${v%[/\\]*}"; d="${d:-/}" ;;
+                *) d=. ;;
+            esac
+            [[ -d "$(_kb_expand_home "$d")" ]] && out="$v" ;;
+    esac
+    printf '%s' "$out"
+    kb_xtrace_restore _kps_x
+}
+
 # _kb_looks_like_pasted_secret <value>: true when a value that is supposed to be a PATH has
 # the shape of a CREDENTIAL instead. Ported from the framework's resolver so both tools
 # recognise the same mis-paste rather than diverging on it.
@@ -343,75 +381,81 @@ _kb_expand_home() {
 }
 
 kb_coord_store_token_file() {
-    local store; store="$(_kb_coord_store_path)"
-    # ABSENT IS SILENT, and that is the decision rather than an omission: a box with no coord
-    # framework at all must not be told about a store it does not have, and its refusal has to
-    # read exactly as it did before this rung existed. PRESENT-BUT-UNREADABLE is NOT absence —
-    # it is a fault hiding a credential the operator believes is configured — so it says so.
-    [[ -e "$store" ]] || return 1
-    if [[ ! -r "$store" ]]; then
-        echo "$(_kb_prog): the coord credential store $store exists but is not readable, so its [kanban] api_token_file (if any) was not consulted" >&2
-        return 1
-    fi
+    # A SUBSHELL WITH XTRACE OFF, for the reason the header's mis-paste paragraph gives: in the
+    # case this function exists to catch, the pointer's text IS the token, and every line below
+    # expands it. A subshell rather than a kb_xtrace_off/restore pair, because the body has a
+    # `return` on every refusal and each would otherwise need its own restore (card#11204).
+    ( kb_xtrace_off
+      local store; store="$(_kb_coord_store_path)"
+      # ABSENT IS SILENT, and that is the decision rather than an omission: a box with no coord
+      # framework at all must not be told about a store it does not have, and its refusal has to
+      # read exactly as it did before this rung existed. PRESENT-BUT-UNREADABLE is NOT absence —
+      # it is a fault hiding a credential the operator believes is configured — so it says so.
+      [[ -e "$store" ]] || return 1
+      if [[ ! -r "$store" ]]; then
+          echo "$(_kb_prog): the coord credential store $store exists but is not readable, so its [kanban] api_token_file (if any) was not consulted" >&2
+          return 1
+      fi
 
-    local parsed verdict ptr coord="[kanban] api_token_file"
-    parsed="$(awk -v sec='kanban' -v want='api_token_file' -v inl='api_token' '
-        function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
-        {
-            l = trim($0)
-            if (l == "") next
-            if (substr(l, 1, 1) == "#" || substr(l, 1, 1) == ";") next
-            if (substr(l, 1, 1) == "[") {
-                p = 0
-                for (i = length(l); i >= 2; i--) if (substr(l, i, 1) == "]") { p = i; break }
-                cur = p ? substr(l, 2, p - 2) : ""
-                next
-            }
-            if (cur != sec) next
-            e = index(l, "="); c = index(l, ":")
-            if (e && c) d = (e < c) ? e : c; else d = e ? e : c
-            if (!d) next
-            k = trim(substr(l, 1, d - 1))
-            v = trim(substr(l, d + 1))
-            if (k == want) { nexact++; if (nexact == 1) pv = v }
-            else if (tolower(k) == want) { if (!nfold) { nfold++; fv = v } }
-            else if ((k == inl || tolower(k) == inl) && v != "") ninline++
-        }
-        END {
-            if (nexact > 1) { print "dup"; exit }
-            if (ninline) { if (nexact || nfold) print "inline_ptr"; else print "inline"; exit }
-            if (nexact) { printf "ok\n%s\n", pv; exit }
-            if (nfold)  { printf "ok\n%s\n", fv; exit }
-            print "none"
-        }
-    ' "$store" 2>/dev/null)"
-    verdict="${parsed%%$'\n'*}"
-    ptr=""
-    [[ "$parsed" == *$'\n'* ]] && ptr="${parsed#*$'\n'}"
+      local parsed verdict ptr coord="[kanban] api_token_file"
+      parsed="$(awk -v sec='kanban' -v want='api_token_file' -v inl='api_token' '
+          function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+          {
+              l = trim($0)
+              if (l == "") next
+              if (substr(l, 1, 1) == "#" || substr(l, 1, 1) == ";") next
+              if (substr(l, 1, 1) == "[") {
+                  p = 0
+                  for (i = length(l); i >= 2; i--) if (substr(l, i, 1) == "]") { p = i; break }
+                  cur = p ? substr(l, 2, p - 2) : ""
+                  next
+              }
+              if (cur != sec) next
+              e = index(l, "="); c = index(l, ":")
+              if (e && c) d = (e < c) ? e : c; else d = e ? e : c
+              if (!d) next
+              k = trim(substr(l, 1, d - 1))
+              v = trim(substr(l, d + 1))
+              if (k == want) { nexact++; if (nexact == 1) pv = v }
+              else if (tolower(k) == want) { if (!nfold) { nfold++; fv = v } }
+              else if ((k == inl || tolower(k) == inl) && v != "") ninline++
+          }
+          END {
+              if (nexact > 1) { print "dup"; exit }
+              if (ninline) { if (nexact || nfold) print "inline_ptr"; else print "inline"; exit }
+              if (nexact) { printf "ok\n%s\n", pv; exit }
+              if (nfold)  { printf "ok\n%s\n", fv; exit }
+              print "none"
+          }
+      ' "$store" 2>/dev/null)"
+      verdict="${parsed%%$'\n'*}"
+      ptr=""
+      [[ "$parsed" == *$'\n'* ]] && ptr="${parsed#*$'\n'}"
 
-    case "$verdict" in
-        ok) ;;
-        dup)
-            echo "$(_kb_prog): $coord is declared more than once in $store — refusing to guess which token to send (the framework's own resolver refuses that store outright); remove the duplicate" >&2
-            return 1 ;;
-        inline|inline_ptr)
-            echo "$(_kb_prog): $store holds an INLINE [kanban] api_token — this reads POINTERS only, because that file is also the first surface a transcript captures. Write the token to a file (chmod 600) and declare   api_token_file = <path>   instead (card#7316)" >&2
-            [[ "$verdict" == "inline_ptr" ]] && \
-                echo "$(_kb_prog):   an api_token_file is declared too, but the framework's own resolver prefers the INLINE value — honouring the pointer here would send a different credential than the rest of the framework does, so remove the inline value" >&2
-            return 1 ;;
-        *) return 1 ;;
-    esac
+      case "$verdict" in
+          ok) ;;
+          dup)
+              echo "$(_kb_prog): $coord is declared more than once in $store — refusing to guess which token to send (the framework's own resolver refuses that store outright); remove the duplicate" >&2
+              return 1 ;;
+          inline|inline_ptr)
+              echo "$(_kb_prog): $store holds an INLINE [kanban] api_token — this reads POINTERS only, because that file is also the first surface a transcript captures. Write the token to a file (chmod 600) and declare   api_token_file = <path>   instead (card#7316)" >&2
+              [[ "$verdict" == "inline_ptr" ]] && \
+                  echo "$(_kb_prog):   an api_token_file is declared too, but the framework's own resolver prefers the INLINE value — honouring the pointer here would send a different credential than the rest of the framework does, so remove the inline value" >&2
+              return 1 ;;
+          *) return 1 ;;
+      esac
 
-    [[ -n "$ptr" ]] || return 1
-    if [[ "$ptr" == *'%%'* || "$ptr" == *'%('* ]]; then
-        echo "$(_kb_prog): $coord in $store contains \`%%\` or \`%(\`, whose meaning is not the same before and after the framework stopped %-interpolating that file — guessing would resolve a path that differs by one character, so this refuses; spell it literally ($(_kb_pointer_fingerprint "$ptr"))" >&2
-        return 1
-    fi
-    if _kb_looks_like_pasted_secret "$ptr"; then
-        echo "$(_kb_prog): $coord in $store holds something with the SHAPE OF A CREDENTIAL, not a path ($(_kb_pointer_fingerprint "$ptr")) — a \`_file\` slot takes the path of a file CONTAINING the token, never the token itself. Its text is deliberately not echoed: if it is live, echoing it is the leak that indirection exists to stop" >&2
-        return 1
-    fi
-    _kb_expand_home "$ptr"
+      [[ -n "$ptr" ]] || return 1
+      if [[ "$ptr" == *'%%'* || "$ptr" == *'%('* ]]; then
+          echo "$(_kb_prog): $coord in $store contains \`%%\` or \`%(\`, whose meaning is not the same before and after the framework stopped %-interpolating that file — guessing would resolve a path that differs by one character, so this refuses; spell it literally ($(_kb_pointer_fingerprint "$ptr"))" >&2
+          return 1
+      fi
+      if _kb_looks_like_pasted_secret "$ptr"; then
+          echo "$(_kb_prog): $coord in $store holds something with the SHAPE OF A CREDENTIAL, not a path ($(_kb_pointer_fingerprint "$ptr")) — a \`_file\` slot takes the path of a file CONTAINING the token, never the token itself. Its text is deliberately not echoed: if it is live, echoing it is the leak that indirection exists to stop" >&2
+          return 1
+      fi
+      _kb_expand_home "$ptr"
+    )
 }
 
 # kb_declared_token_file <where> <candidate>…: the FIRST non-empty candidate, on stdout —
@@ -479,7 +523,19 @@ kb_declared_token_file() {
 # false about their config, and the fix is a specific line in a specific file. A bare rc
 # reaches the operator through a caller that can only say "config incomplete (rc=N)" —
 # next-dl's arm, verbatim — which is why rc 4's refusal was already written this way.
+#
+# UNTRACED, WHOLE (card#11204). The host and board envs it sources, the tier locals and the
+# `[[ -r ]]` all expand the token-PATH slot, which is where a pasted secret lands; under
+# `bash -x` each of those lines printed it. The body therefore runs with xtrace suspended, and
+# this wrapper restores the caller's state on every one of its returns.
 kb_resolve_env() {
+    local _kre_x _kre_rc=0
+    kb_xtrace_off _kre_x
+    _kb_resolve_env "$@" || _kre_rc=$?
+    kb_xtrace_restore _kre_x
+    return "$_kre_rc"
+}
+_kb_resolve_env() {
     local board_env="$1" no_token=""
     [[ "${2:-}" == --no-token ]] && no_token=1
     # CLEARED FIRST, not on the success path only. These are globals, and five of the seven
@@ -678,7 +734,7 @@ kb_load_config() {
             return 2 ;;
         3) echo "$(_kb_prog): KBCARD_API not set — create ~/.kanban-host.env (see agent-board-toolkit docs/INSTALL.md)" >&2; return 2 ;;
         4) return 2 ;;   # kb_resolve_env already named the file and the fix
-        5) echo "$(_kb_prog): token file not readable: $KB_TOKEN_FILE" >&2; return 2 ;;
+        5) echo "$(_kb_prog): token file not readable: $(kb_xtrace_off; kb_path_shown "$KB_TOKEN_FILE")" >&2; return 2 ;;
         6|7) return 2 ;; # the guard already named the value, the file and the line to add
         *) echo "$(_kb_prog): config error ($rc) for $board_env" >&2; return 2 ;;
     esac
@@ -691,7 +747,9 @@ kb_load_config() {
     else
         # `|| KB_TOKEN=""` keeps what an unreadable-after-resolve file (a DIRECTORY passes -r) has
         # always produced here: an empty bearer, not a refusal — refusing is an acceptance change.
+        local _klc_x; kb_xtrace_off _klc_x
         kb_token_file_read KB_TOKEN "$KB_TOKEN_FILE" || KB_TOKEN=""
+        kb_xtrace_restore _klc_x
     fi
     return 0
 }
@@ -711,12 +769,16 @@ kb_load_config() {
 # dropping the host's KBCARD_TOKEN_FILE (board-snapshot was the only gated caller, and
 # so the only tool affected).
 kb_load_host_env() {
+    # Untraced: the host env's KBCARD_TOKEN_FILE line, and the copy below, would print a secret
+    # pasted into that slot under `bash -x` (card#11204).
+    local _klh_x; kb_xtrace_off _klh_x
     local amb_api="${KBCARD_API:-}"
     local host_env="${KANBAN_HOST_ENV:-$HOME/.kanban-host.env}"
     # shellcheck disable=SC1090
     [[ -r "$host_env" ]] && source "$host_env"
     KB_API="${amb_api:-${KBCARD_API:-}}"   # an ambient API still beats the host's
     KB_HOST_TOKEN_FILE="${KBCARD_TOKEN_FILE:-}"
+    kb_xtrace_restore _klh_x
     return 0
 }
 
@@ -733,7 +795,8 @@ kb_board_env_for() {
         # that sets no KB_BOARD_ID at all false-match every lookup. 2>/dev/null so a
         # board env missing the key stays quiet here rather than emitting raw noise.
         # shellcheck disable=SC1090
-        if ( unset KB_BOARD_ID; . "$envf" 2>/dev/null; [ "${KB_BOARD_ID:-}" = "$want" ] ); then
+        # Untraced inside: sourcing traces the env's KBCARD_TOKEN_FILE line (card#11204).
+        if ( kb_xtrace_off; unset KB_BOARD_ID; . "$envf" 2>/dev/null; [ "${KB_BOARD_ID:-}" = "$want" ] ); then
             match="$envf"; n=$((n+1))
         fi
     done
@@ -762,6 +825,9 @@ kb_board_env_for() {
 kb_board_env_get() {
     local envf="$1"; shift
     (
+        # Untraced: the source and the printf below expand a KBCARD_TOKEN_FILE when one is asked
+        # for (card#11204). The subshell ends the suspension.
+        kb_xtrace_off
         local v
         for v in "$@"; do unset "$v"; done
         # shellcheck disable=SC1090
@@ -770,6 +836,51 @@ kb_board_env_get() {
         printf '.\n'
     )
 }
+
+# kb_xtrace_off [<var>] / kb_xtrace_restore <var>: suspend `set -x` around a line that expands a
+# credential, then put the caller's own trace state back (card#11204).
+#
+# WHY. xtrace prints every simple command with its words EXPANDED — an assignment, a `[[ … ]]`,
+# a function call's arguments, and every command a `$(…)` runs. kb_auth_header keeps the bearer
+# off curl's argv, but under `bash -x <tool>` the token-file read, the `kb_auth_header "$KB_TOKEN"`
+# call and its printf were all traced with the value in them, to stderr, and from there into a
+# transcript or a CI log (rt#592: a diagnostic `bash -x kbcard list` printed a live board token,
+# which then had to be rotated). The herestring feeding curl was worse than visible: under `2>&1`
+# the trace of the `$(kb_auth_header …)` it expanded was captured INTO the response, so the tool
+# also misparsed every answer when traced.
+#
+# THE RULE THIS PAIR SERVES: a line that expands a token — `$KB_TOKEN`, a token local, or the
+# token argument of fetch_board_cards / kb_mask_token / kb_auth_header (positional, so the CALL is
+# where it is traced) — runs with xtrace suspended, by a `kb_xtrace_off` ON THAT SAME LINE (or, inside
+# a lib function that owns the token, a region the function opens and closes itself, as
+# kb_token_file_read does). tests/xtrace-token-selftest.sh § 4 checks, across the shipped shell,
+# every expansion of a variable whose name carries `TOKEN` (not `*_FILE` / `*_REGEX`) and the three
+# by-value calls: suspended BEFORE the first expansion on the line (the bare form only right after
+# `$(` or `(`), or inside such a region. A token under a name without `TOKEN` is outside that
+# check and is caught only by the `bash -x` runs, on the verbs they drive. A token-PATH (where a
+# pasted secret lands) is suspended the same way wherever it is resolved — kb_resolve_env,
+# kb_load_host_env, kb_board_env_for / _get, and the bins' own tier reads (§ 7 drives them).
+#
+# RE-ENTRANT BY CONSTRUCTION, with no counter: the state lives in <var>, which the CALLER declares
+# `local`. A nested pair finds xtrace already off, records that, and its restore leaves it off;
+# only the outermost restore turns tracing back on. <var> must be local to the calling function
+# (top-level script code has no locals and uses a name of its own) — a shared global would let an
+# inner pair overwrite the outer one's record. With no <var> nothing is recorded: that form is for
+# the inside of a `$(…)`, whose xtrace state ends with the subshell.
+#
+# A region must reach kb_xtrace_restore on EVERY path — a `return` between the two leaves the
+# caller's trace off for the rest of the run. That leaks nothing, but the trace goes quiet; a body
+# with many exits runs in a subshell instead (kb_coord_store_token_file). In a trace, a region
+# reads as one `+ kb_xtrace_off <var>` line, after which tracing resumes past the region's end.
+# kb_xtrace_restore ends in its `set -x`, so its own rc is 0 on both paths.
+kb_xtrace_off() {
+    { case $- in
+        *x*) set +x; [[ -z "${1:-}" ]] || printf -v "$1" '%s' x ;;
+        *)   [[ -z "${1:-}" ]] || printf -v "$1" '%s' '' ;;
+      esac; } 2>/dev/null
+    return 0
+}
+kb_xtrace_restore() { [[ -z "${!1:-}" ]] || set -x; }
 
 # kb_token_file_read <var> <token_file>: set the CALLER's <var> to the bearer token in
 # <token_file>, TRAILING WHITESPACE (space, tab, CR, LF, VT, FF) STRIPPED; rc 1, <var> untouched,
@@ -789,11 +900,14 @@ kb_board_env_get() {
 # untouched. agent-board-toolkit-runtime-check's _rc_digest normalises to this same identity.
 #
 # Assigns by name (`printf -v`) like kb_mask_token rather than printing, so no caller captures
-# the token through a `$(…)` of its own. Its one local carries a name no caller passes.
+# the token through a `$(…)` of its own. Its locals carry names no caller passes. The whole read
+# runs with xtrace suspended (kb_xtrace_off): both the read and the assignment expand the token.
 kb_token_file_read() {
-    local _kbtfr_v
-    _kbtfr_v="$(cat -- "$2" 2>/dev/null)" || return 1
+    local _kbtfr_v _kbtfr_x
+    kb_xtrace_off _kbtfr_x
+    if ! _kbtfr_v="$(cat -- "$2" 2>/dev/null)"; then kb_xtrace_restore _kbtfr_x; return 1; fi
     printf -v "$1" '%s' "${_kbtfr_v%"${_kbtfr_v##*[!$' \t\n\r\v\f']}"}"
+    kb_xtrace_restore _kbtfr_x
 }
 
 # kb_read_token <token_file>: read the bearer token into KB_TOKEN (+ KB_TOKEN_FILE), through
@@ -802,7 +916,7 @@ kb_token_file_read() {
 # DIRECTORY) leaves KB_TOKEN empty at rc 0, as the `$(cat …)` this replaced did — turning that
 # into a refusal changes what the callers accept, and is not this helper's to decide.
 kb_read_token() {
-    [[ -r "$1" ]] || return 1
+    [[ -r "$1" ]] || return 1   # a caller holding a token-PATH suspends xtrace around this call
     kb_token_file_read KB_TOKEN "$1" || KB_TOKEN=""
     KB_TOKEN_FILE="$1"
     return 0
@@ -815,13 +929,31 @@ kb_read_token() {
 # transport failure is logged/visible.
 KB_HTTP=""
 
+# kb_debug_request <method> <url> <status> <start>: under KBCARD_DEBUG=1, one stderr line per
+# request — `<prog>: debug: GET https://host/api/v3/… -> HTTP 200 (143 ms)` — and nothing
+# otherwise. <start> is $EPOCHREALTIME read just before the request (empty drops the timing).
+# It exists so that nobody needs `bash -x` to see what a tool sent (card#11204): the request a
+# trace would show is printed here WITHOUT the bearer, the URL goes through
+# kb_redact_url_userinfo, and a whole-board walk, which runs untraced, prints one line per page.
+# Status `000` is a request that did not complete.
+kb_debug_request() {
+    [[ "${KBCARD_DEBUG:-}" == 1 ]] || return 0
+    local ms="" now="${EPOCHREALTIME:-}" t0="${4:-}"
+    # EPOCHREALTIME's separator follows the locale's decimal point, so digits only: microseconds.
+    if [[ -n "$t0" && -n "$now" ]]; then ms=" ($(( (10#${now//[!0-9]/} - 10#${t0//[!0-9]/}) / 1000 )) ms)"; fi
+    echo "$(_kb_prog): debug: $1 $(kb_redact_url_userinfo "$2") -> HTTP $3$ms" >&2
+}
+
 # kb_auth_header <token>: emit the Authorization header line (no trailing newline)
-# for feeding to curl OUT-OF-BAND via a stdin herestring — `curl -H @- … <<<"$(kb_auth_header
-# "$tok")"`. The bearer token must never be an argv token: curl's argv is world-readable via
-# `ps aux` / /proc/<pid>/cmdline on a multi-user host, so a `-H "Authorization: Bearer $tok"`
-# would leak it. The herestring keeps the token off argv AND (unlike a `-H @<(…)` process
+# for feeding to curl OUT-OF-BAND via a stdin herestring — `kb_xtrace_off x; hdr="$(kb_auth_header
+# "$tok")"; kb_xtrace_restore x`, then `curl -H @- … <<<"$hdr"`. The bearer token must never be
+# an argv token: curl's argv is world-readable via `ps aux` / /proc/<pid>/cmdline on a multi-user
+# host, so a `-H "Authorization: Bearer $tok"` would leak it. The herestring keeps the token off argv AND (unlike a `-H @<(…)` process
 # substitution) redirects a regular temp file onto fd 0 rather than a /dev/fd named pipe, so it
 # also works on native mingw64/Git-Bash curl where the process-sub fd can't be opened (#34).
+# Its argument IS the token, so a call is traced with it expanded: call it into a variable on a
+# line that suspends xtrace (kb_xtrace_off), then feed curl `<<<"$var"` — a herestring's text is
+# never part of a trace line, while a `$(kb_auth_header …)` inside it runs a traced command.
 kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 
 # kb_mask_token <var> <token> <text>: set the CALLER's variable <var> to <text> with every
@@ -840,7 +972,8 @@ kb_auth_header() { printf 'Authorization: Bearer %s' "$1"; }
 # IT ASSIGNS BY NAME (`printf -v`) RATHER THAN PRINTING, and that is the point: `$(…)` strips
 # trailing newlines, so a printing helper would change the bytes every log line carries — the
 # fetch_board_cards body ends in the newline curl's -w marker is preceded by. It declares no
-# locals, so no caller variable name can be shadowed by one of its own.
+# locals, so no caller variable name can be shadowed by one of its own. Its <token> argument is
+# traced at the call, so a caller suspends xtrace on that line (kb_xtrace_off, card#11204).
 kb_mask_token() {
     if [[ -n "$2" ]]; then printf -v "$1" '%s' "${3//"$2"/***}"; else printf -v "$1" '%s' "$3"; fi
 }
@@ -1223,22 +1356,27 @@ kb_api() {
     local args=(-sS -X "$method" -H "Accept: application/json")
     [[ -n "${KB_CURL_MAX_TIME:-}" ]] && args+=(--max-time "$KB_CURL_MAX_TIME")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
-    local out
+    local out hdr _kbx
     # Auth fed via stdin herestring (-H @- <<<) so the token never enters argv (#3569) AND
     # the call is portable: a herestring redirects a regular temp file onto fd 0, avoiding the
     # /dev/fd process-substitution path that native mingw64/Git-Bash curl can't open (#34).
-    out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || {
-        local out_shown; kb_mask_token out_shown "${KB_TOKEN:-}" "$out"
+    # The header is built untraced and fed as a variable (kb_xtrace_off, card#11204).
+    kb_xtrace_off _kbx; hdr="$(kb_auth_header "$KB_TOKEN")"; kb_xtrace_restore _kbx
+    local t0="${EPOCHREALTIME:-}"
+    out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$hdr")" || {
+        kb_debug_request "$method" "$KB_API$path" 000 "$t0"
+        local out_shown; kb_xtrace_off _kbx; kb_mask_token out_shown "${KB_TOKEN:-}" "$out"; kb_xtrace_restore _kbx
         [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out_shown" >> "$KB_LOG_FILE"
         echo "$(_kb_prog): curl failed on $method $path" >&2
         # NOT rc 1 — nothing was read here, while rc 1 below means the server answered.
         KB_HTTP="000"; return "$KB_API_RC_TRANSPORT"
     }
     KB_HTTP="${out##*__HTTP__}"
+    kb_debug_request "$method" "$KB_API$path" "$KB_HTTP" "$t0"
     local resp="${out%__HTTP__*}"
     if [[ ! "$KB_HTTP" =~ ^2 ]]; then
         KB_API_ERR_RESP="$resp"
-        local resp_shown; kb_mask_token resp_shown "${KB_TOKEN:-}" "$resp"
+        local resp_shown; kb_xtrace_off _kbx; kb_mask_token resp_shown "${KB_TOKEN:-}" "$resp"; kb_xtrace_restore _kbx
         [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path HTTP-$KB_HTTP $resp_shown" >> "$KB_LOG_FILE"
         [[ "${KB_API_QUIET:-}" == 1 ]] || echo "$(_kb_prog): HTTP $KB_HTTP on $method $path" >&2
         [[ "${KB_API_ERRBODY:-}" == 1 ]] && echo "$resp_shown" >&2
@@ -1275,14 +1413,18 @@ kb_api_status() {
     # covers two of three is just a wrong claim.
     [[ -n "${KB_CURL_MAX_TIME:-}" ]] && args+=(--max-time "$KB_CURL_MAX_TIME")
     [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" --data "$body")
-    local out
+    local out hdr _kbx
     # Auth via stdin herestring (-H @- <<<) — token stays out of argv (#3569) + portable
-    # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
+    # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34). The header is
+    # built untraced, as kb_api builds it (card#11204).
     # KB_HTTP is set on THIS path too, so the global agrees with the status line the caller
     # reads. Leaving it alone here left the PREVIOUS request's status standing while the
     # status line said 000 — two answers to one question, from one call (card#6680).
-    out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$(kb_auth_header "$KB_TOKEN")")" || { KB_HTTP="000"; printf '000\n%s' "$out"; return 0; }
+    kb_xtrace_off _kbx; hdr="$(kb_auth_header "$KB_TOKEN")"; kb_xtrace_restore _kbx
+    local t0="${EPOCHREALTIME:-}"
+    out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$hdr")" || { KB_HTTP="000"; kb_debug_request "$method" "$KB_API$path" 000 "$t0"; printf '000\n%s' "$out"; return 0; }
     KB_HTTP="${out##*__HTTP__}"
+    kb_debug_request "$method" "$KB_API$path" "$KB_HTTP" "$t0"
     printf '%s\n%s' "$KB_HTTP" "${out%__HTTP__*}"
 }
 
@@ -1311,8 +1453,8 @@ KB_API_ERR_EXCERPT_MAX=400
 # two texts stay two; tests/mirror-pair-parity-selftest.sh § 8 drives both over one corpus and
 # reds on any row where their output differs, envelope included.
 kb_render_refusal() {
-    local LC_ALL=C status="$1" body="${2-}"
-    kb_mask_token body "${KB_TOKEN:-}" "$body"
+    local LC_ALL=C status="$1" body="${2-}" _kbx
+    kb_xtrace_off _kbx; kb_mask_token body "${KB_TOKEN:-}" "$body"; kb_xtrace_restore _kbx
     body="$(printf '%s' "$body" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
     body="${body# }"; body="${body% }"
     if [[ -z "$body" ]]; then printf 'HTTP %s, and the server sent no body' "$status"; return 0; fi
@@ -1995,6 +2137,11 @@ _kb_walk_unkeyable() {
 # that knows it — printed unconditionally for rc 3 and rc 4, and only under
 # KB_FETCH_LOUD for rc 1 and rc 2 (two of the six consumer bins set it). A caller that
 # wants the cause visible sets that knob; it does not guess at the cause itself.
+#
+# <token> IS THE BEARER, BY VALUE, so the CALL is where xtrace would print it: every caller
+# suspends xtrace on the line that calls this (`x="$(kb_xtrace_off; fetch_board_cards …)"`), and
+# the walk inside then runs untraced too (card#11204). A per-request view of a walk without
+# `-x` is KBCARD_DEBUG=1 (kb_debug_request).
 fetch_board_cards() {
     local api="$1" token="$2" board="$3" page_cap="${4:-50}" query="${5:-}"
     local pages="" page=1 resp data n total="" read_n out sum_n=0 qextra="" cursor="" idq=""
@@ -2042,18 +2189,22 @@ fetch_board_cards() {
     # against a header-echoing server — an empty token included). The one credential a body can
     # carry is therefore $token, which the failure arms below mask (card#9777).
     local api_shown; api_shown="$(kb_redact_url_userinfo "$api")"
+    # The header is built ONCE, untraced, and fed to every page as a variable (card#11204).
+    local hdr _kbx
+    kb_xtrace_off _kbx; hdr="$(kb_auth_header "$token")"; kb_xtrace_restore _kbx
     while :; do
         idq=""
         [[ -n "$cursor" ]] && idq="%20id%3C${cursor}"
         local qs="/tasks/search.json?q=board_id=${board}${idq}${qextra}&limit=200&page=1"
         local url="$api$qs" url_shown="$api_shown$qs"
-        local rc
+        local rc t0="${EPOCHREALTIME:-}"
         # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) +
         # portable (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
         resp="$(curl "${curl_opts[@]}" -H @- -H "Accept: application/json" \
                 -w $'\n__HTTP__%{http_code}' \
-                "$url" 2>&"$errfd" <<<"$(kb_auth_header "$token")")" || {
+                "$url" 2>&"$errfd" <<<"$hdr")" || {
             rc=$?
+            kb_debug_request GET "$url" 000 "$t0"
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
                 echo "fetch_board_cards: page $page read failed for board $board (curl rc=$rc)" >&2
                 [[ -n "${KB_LOG_FILE:-}" ]] && \
@@ -2063,6 +2214,7 @@ fetch_board_cards() {
             return 2
         }
         local http="${resp##*__HTTP__}"
+        kb_debug_request GET "$url" "$http" "$t0"
         resp="${resp%__HTTP__*}"
         # THE RENDERABLE BODY, on the two failure arms only (card#9777): the same request sent
         # $token in its Authorization header, and a server that echoes request headers into its
@@ -2071,7 +2223,7 @@ fetch_board_cards() {
         # successful walk does not pay a substitution over every 200-card body.
         local resp_shown
         if [[ ! "$http" =~ ^2 ]]; then
-            kb_mask_token resp_shown "$token" "$resp"
+            kb_xtrace_off _kbx; kb_mask_token resp_shown "$token" "$resp"; kb_xtrace_restore _kbx
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
                 echo "fetch_board_cards: page $page read failed for board $board (HTTP $http): $resp_shown" >&2
             fi
@@ -2139,7 +2291,7 @@ fetch_board_cards() {
         # signal the envelope does not carry, not a stricter row count.
         data="$(printf '%s' "$resp" | jq -c 'if (.data|type) == "array" then .data else empty end' 2>/dev/null)"
         if [[ -z "$data" ]]; then
-            kb_mask_token resp_shown "$token" "$resp"
+            kb_xtrace_off _kbx; kb_mask_token resp_shown "$token" "$resp"; kb_xtrace_restore _kbx
             if [[ -n "${KB_FETCH_LOUD:-}" ]]; then
                 # What the refusal SAVED the caller from differs by page, and saying the
                 # wrong one is a false claim about the board: an unreadable page 1 would

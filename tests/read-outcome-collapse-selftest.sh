@@ -254,7 +254,6 @@ ROOT="$(cd "$HERE/.." && pwd)"
 DISPOSITIONED=(
   "bin/agent-board-toolkit-runtime-check:p|SAME OUTCOME — command -v: a tool this seat cannot resolve cannot be run, so 'missing' is true of absent and unreadable alike."
   "bin/agent-board-toolkit-runtime-check:newest|SAME OUTCOME — empty warns 'cannot judge staleness (UNKNOWN, not ok)' and continues; it never reports current. The offline case is named separately at the fetch above."
-  "bin/agent-board-toolkit-runtime-check:rc_store_tok|SAME OUTCOME — the store rung answers rc 1 with nothing on stdout for every state it refuses (absent store, duplicated key, inline token, %-bearing or credential-shaped pointer), mirroring the lib's rung, which the TOOLS also resolve nothing from. 'No usable pointer' and 'no store' must therefore both mean 'not a source here'; the lib is what speaks about a refused store, at each tool's use site."
   "bin/agent-board-toolkit-runtime-check:d|SAME OUTCOME — a digest is empty only when nothing could produce one (no sha256sum, or the file stopped being readable between the two probes), and the emptiness test IS the honest-UNKNOWN branch: it warns 'CANNOT BE VERIFIED (UNKNOWN, not ok)' and classifies nothing. A verdict is never derived from a missing digest."
   "bin/agent-board-toolkit-runtime-check:v|NO READ of the answer — the subshell's rc is the SOURCED env file's last-command status, which says nothing about whether that file DECLARED KBCARD_TOKEN_FILE; the declaration's presence is exactly the emptiness test. Same contract as the lib's kb_board_env_get, which reports an empty line for a var the file does not set."
   "bin/board-card-start:dltok|NO READ — grep over \$branch, already in memory."
@@ -411,6 +410,13 @@ function pieces(s, arr, so,   i, c, n, q, d, k, cur) {
     }
     arr[++k] = cur; return k
 }
+# untraced(s) — s with every `kb_xtrace_off [var];` statement removed (card#11204). The xtrace
+# suspension in the lib prints nothing and answers 0, and a token-bearing call carries it on its
+# own line — `x="$(kb_xtrace_off; fetch_board_cards …)"`, `(kb_xtrace_off; fetch_board_cards …) >f`.
+# Without this the capture resolves to kb_xtrace_off, the rc of the paginator stops being seen as
+# USED, and its rc1-merge member silently drops out of the scan. (No apostrophe in this comment:
+# it sits inside a single-quoted bash string.)
+function untraced(s) { gsub(/kb_xtrace_off([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)?[[:space:]]*;[[:space:]]*/, "", s); return s }
 BEGIN { SQ = sprintf("%c", 39) }
 '
 _roc_awk="$_roc_awk_lib"'
@@ -567,6 +573,7 @@ END {
             if (opcont(J)) { cont = J; continue }
             cont = ""
             if (iscomment(J)) continue
+            J = untraced(J)
             fn = fnat[F, st]; fk = (fn == "" ? "(top)" : fn)
             write = (J ~ /(^|[^A-Za-z])(PATCH|POST|PUT|DELETE)([^A-Za-z]|$)/)
             if (rep && (J ~ /\.data[[:space:]]*\/\/|\.data\[\]\?/ || J ~ /\.data(\.[A-Za-z_][A-Za-z0-9_]*|\[[^]]*\])+\??[[:space:]]*\/\/[[:space:]]*(\[|\{|"|[0-9]|false|true|null|\$)/)) rec(F, (fn == "" ? "(top)" : fn) "():envelope", st, "envelope-default")
@@ -1230,6 +1237,27 @@ EOF
 )"
 eq "card#6631 respelled 'if ! cards=\"\$(fetch_board_cards …)\"; then exit 1; fi'" \
    "$(printf '%s\n' 'bin/next-dl:board_dl_max()' 'bin/next-dl:board_dl_max:if fetch_board_cards')" "$(_roc_members "$S6631B")"
+# card#11204 put `kb_xtrace_off;` at the head of every token-bearing call. The paginator's rc must
+# still read as USED through both spellings that shipped — a capture whose `|| { rc=$?` keeps it,
+# and a subshell whose status is taken on the next line — or its rc1-merge member drops out.
+SXTRACE="$(_seam xtrace board-stats <<'EOF'
+fetch_board_cards() {
+    local resp
+    resp="$(curl -sS "$1/tasks/search.json")" || return 1
+    printf '%s' "$resp"
+}
+other_reader() {
+    local resp
+    resp="$(curl -sS "$1/other.json")" || return 1
+    printf '%s' "$resp"
+}
+cards="$(kb_xtrace_off; fetch_board_cards "$api" "$tok" 42)" || { rc=$?; echo "fetch rc=$rc" >&2; exit 2; }
+(kb_xtrace_off; other_reader "$api" "$tok") > "$f" 2>/dev/null
+rc=$?
+EOF
+)"
+eq "an rc kept through \$(kb_xtrace_off; F …) and through (kb_xtrace_off; F …) is still F's (card#11204)" \
+   "$(printf '%s\n' 'bin/board-stats:fetch_board_cards()' 'bin/board-stats:other_reader()')" "$(_roc_members "$SXTRACE")"
 eq "card#10241 respelled 'if ! out=\"\$(by_ref_has …)\"'" \
    "$(printf '%s\n' 'bin/dl-a1-register-field:(top):if by_ref_has' 'bin/dl-a1-register-field:by_ref_has()' 'bin/dl-a1-register-field:kb_by_ref_hit():envelope')" \
    "$(_roc_members "$S10241B")"
