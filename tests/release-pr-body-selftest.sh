@@ -1603,12 +1603,12 @@ echo 5 > "$RVR/f"; g -C "$RVR" commit -qam "fix: eleven again (#11)"
 echo '{}' > "$RVR/.release-pr.json"
 
 # The stub verifier: exit code per PR from RV_MAP ("11=0 12=1"), RV_DEFAULT otherwise; it sleeps
-# RV_SLEEP seconds first when the PR is RV_SLOW, and appends every argument it was given to RV_LOG.
+# RV_SLEEP seconds first when the PR is RV_SLOW (`all`: every PR), and appends every argument it was given to RV_LOG.
 cat > "$RVB/coord-review-verify" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$RV_LOG"
 pr="${1##*#}"
-if [ "$pr" = "${RV_SLOW:-}" ]; then sleep "${RV_SLEEP:-0}"; fi
+if [ "$pr" = "${RV_SLOW:-}" ] || [ "${RV_SLOW:-}" = all ]; then sleep "${RV_SLEEP:-0}"; fi
 for kv in ${RV_MAP:-}; do
   if [ "${kv%%=*}" = "$pr" ]; then exit "${kv#*=}"; fi
 done
@@ -1672,6 +1672,50 @@ _rv "$RV_MID" RELEASE_PR_REVIEW_VERIFIER=off
 eq "RELEASE_PR_REVIEW_VERIFIER=off → rc 0"               "0" "$RV_RC"
 eq "…the turned-off sentence, with its denominator"     "Review: not measured for any of the 3 bundled changes (the review-record verifier is turned off on this machine)." "$RV_LINE"
 eq "…and the verifier on PATH was never called"        "" "$RV_CALLS"
+
+_rv "$RV_MID" RV_SLOW=all RV_SLEEP=20 RELEASE_PR_REVIEW_VERIFIER_TIMEOUT=1
+eq "a verifier that hangs on EVERY PR → rc 0"            "0" "$RV_RC"
+eq "…the first timeout ends the asking: only the first PR was asked, so the wait is one bound, not M" "acme/widget#11" "$RV_CALLS"
+eq "…and every PR is not measured"                      "Review: 0 of 3 bundled changes have an independent review record; not measured: #11, #12, #13." "$RV_LINE"
+eq "…the rest are named on stderr as not asked"         "true" "$(has 'release-pr-body: review: #12 not measured (not asked: the verifier timed out on #11)' "$RV_ERR")"
+
+for _bad in 0 abc; do
+  _rv "$RV_MID" RELEASE_PR_REVIEW_VERIFIER_TIMEOUT="$_bad"
+  eq "RELEASE_PR_REVIEW_VERIFIER_TIMEOUT=$_bad → rc 0"   "0" "$RV_RC"
+  eq "…falls back to 30s, so the calls still answer"    "Review: 3 of 3 bundled changes have an independent review record." "$RV_LINE"
+  eq "…and stderr names the bad value"                  "true" "$(has "release-pr-body: review: RELEASE_PR_REVIEW_VERIFIER_TIMEOUT='$_bad' is not a positive whole number of seconds; using 30" "$RV_ERR")"
+done
+_rv "$RV_MID" RELEASE_PR_REVIEW_VERIFIER_TIMEOUT=5
+eq "control: a valid bound draws no note"               "false" "$(has 'RELEASE_PR_REVIEW_VERIFIER_TIMEOUT=' "$RV_ERR")"
+
+_rv v0.1.0
+eq "zero bundled changes, with a verifier"              "Review: no bundled changes." "$RV_LINE"
+eq "…and nothing is asked"                              "" "$RV_CALLS"
+_rv v0.1.0 RELEASE_PR_REVIEW_VERIFIER=off
+eq "zero bundled changes, verifier turned off"          "Review: no bundled changes." "$RV_LINE"
+_rv v0.1.0 PATH="$RV_PATH"
+eq "zero bundled changes, no verifier"                  "Review: no bundled changes." "$RV_LINE"
+
+# CTRL-C REACHES IT. A terminal's Ctrl-C is a SIGINT to the foreground process GROUP; `timeout`
+# runs the verifier in a group of its own, so only an interrupt the generator itself acts on stops
+# the wait. The generator runs as its own group leader (setsid) under a wrapper that records its
+# rc; SIGINT goes to that group while the verifier hangs 20s on the first PR, under a 30s bound.
+_need -x "$(command -v setsid || echo setsid)" setsid
+printf '%s\n' '#!/usr/bin/env bash' 'echo $$ > "$RV_PG"' "trap ':' INT" '"$@"' 'echo $? > "$RV_RCF"' > "$RV/int-run"
+chmod +x "$RV/int-run"
+rm -f "$RV/pg" "$RV/rcf"
+RV_T0="$(date +%s)"
+( cd "$RVR" && RV_PG="$RV/pg" RV_RCF="$RV/rcf" setsid "$RV/int-run" env -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
+    PATH="$RVB:$RV_PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" RV_SLOW=all RV_SLEEP=20 \
+    "$BIN" --version 0.2.0 --base v0.1.0 --head "$RV_MID" >"$RV/out" 2>"$RV/err" & )
+for _i in $(seq 1 50); do [[ -s "$RV/pg" ]] && break; sleep 0.1; done
+sleep 1.5
+kill -INT -- "-$(cat "$RV/pg")" 2>/dev/null || true
+for _i in $(seq 1 300); do [[ -s "$RV/rcf" ]] && break; sleep 0.1; done
+RV_SECS=$(( $(date +%s) - RV_T0 ))
+eq "SIGINT while the verifier hangs: the generator stops promptly (<10s of a 20s hang)" "true" "$([[ -s "$RV/rcf" && "$RV_SECS" -lt 10 ]] && echo true || echo false)"
+eq "…as an interrupted run (rc 130), not a finished one" "130" "$(cat "$RV/rcf" 2>/dev/null)"
+eq "…and it prints no body"                              "" "$(cat "$RV/out")"
 
 _rv HEAD
 eq "a bundled line with no PR number → rc 0"             "0" "$RV_RC"

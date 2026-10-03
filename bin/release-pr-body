@@ -591,7 +591,8 @@ repo_from_origin_url() {
 #   exit 1  no independent review record                         → `not covered: #N`
 #   exit 2  the verifier could not tell                         → `not measured: #N`
 #   any other exit, a call killed at the time bound, no `timeout` to bound it with, no repo to ask
-#   about, or a verifier that cannot be run                     → `not measured: #N`
+#   about, a verifier that cannot be run, or a PR not asked because an earlier call
+#   timed out                                                   → `not measured: #N`
 # Unmeasured is NEVER folded into a record or a no: the sentence states its denominator, so a run
 # that measured nothing cannot read as a clean result. Each unmeasured PR gets one stderr line
 # saying why (`release-pr-body: review: …`). The verifier's stdout (an optional JSON line) is not
@@ -599,12 +600,23 @@ repo_from_origin_url() {
 #   Which verifier: `RELEASE_PR_REVIEW_VERIFIER=<path>` if set; `=off` turns the check off; else
 #   `coord-review-verify` on PATH. With none, or turned off, the sentence says so with M in it.
 #   Which repo: `$GITHUB_REPOSITORY`, else the `origin` remote of the current directory.
-#   The time bound: `RELEASE_PR_REVIEW_VERIFIER_TIMEOUT` seconds per call (default 30).
+#   The time bound: `RELEASE_PR_REVIEW_VERIFIER_TIMEOUT` seconds per call, a positive integer
+#   (default 30; any other value is noted on stderr and replaced by 30 — `0` would switch GNU
+#   `timeout` off, and a non-number makes `timeout` itself fail).
+#   With zero bundled changes the sentence is `Review: no bundled changes.` and nothing is asked.
 #
-# IT REPORTS AND NEVER BLOCKS: nothing here changes the exit status, and the time bound is what
-# keeps a hung verifier from hanging the generator. The verifier's output goes to /dev/null and is
-# NEVER captured with `$(…)`: a killed verifier can leave a child holding a captured pipe open, and
-# the capture would then wait for that child, which is the hang the bound exists to prevent.
+# IT REPORTS AND NEVER BLOCKS: nothing here changes the exit status. The wait is bounded, in total,
+# by ONE time bound (plus `timeout -k`'s 5s grace): the first call that times out ends the asking,
+# and every PR after it is not measured, so a hung verifier costs one bound, not M of them.
+# AN INTERRUPT STOPS IT AT ONCE. `timeout` runs the verifier in a process group of its own, so a
+# Ctrl-C at the terminal never reaches it, and a shell waiting on a foreground child does not run
+# its own trap until that child exits. So the call runs in the background and is waited for with
+# the `wait` builtin, which a trapped signal does interrupt; on INT or TERM the call is killed and
+# this subshell re-raises the signal on itself, so the generator stops as an interrupted run
+# (rc 130 on Ctrl-C) rather than printing a body.
+# The verifier's output goes to /dev/null and is NEVER captured with `$(…)`: a killed verifier
+# can leave a child holding a captured pipe open, and the capture would then wait for that child,
+# which is the hang the bound exists to prevent.
 # This generator makes no network call of its own here; whatever the verifier does is the
 # verifier's.
 review_note() { printf 'release-pr-body: review: %s\n' "$1" >&2; }
@@ -619,6 +631,10 @@ review_sentence() {
   done <<< "$log"
   prs="$(printf '%s' "$prs" | sort -nu)"
   for pr in $prs; do m=$((m + 1)); done
+  if [ "$m" = 0 ]; then
+    printf 'Review: no bundled changes.\n'
+    return 0
+  fi
 
   local verifier="${RELEASE_PR_REVIEW_VERIFIER:-}"
   if [ "$verifier" = off ]; then
@@ -634,6 +650,13 @@ review_sentence() {
   fi
 
   local repo="${GITHUB_REPOSITORY:-}" budget="${RELEASE_PR_REVIEW_VERIFIER_TIMEOUT:-30}" why=""
+  case "$budget" in
+    *[!0123456789]*) budget="" ;;
+  esac
+  if [ -z "$budget" ] || [ "$((10#$budget))" -le 0 ]; then
+    review_note "RELEASE_PR_REVIEW_VERIFIER_TIMEOUT='${RELEASE_PR_REVIEW_VERIFIER_TIMEOUT}' is not a positive whole number of seconds; using 30"
+    budget=30
+  fi
   if [ -z "$repo" ]; then
     repo="$(repo_from_origin_url "$(git config --get remote.origin.url 2>/dev/null || true)")"
   fi
@@ -645,25 +668,39 @@ review_sentence() {
     why="no \`timeout\` on PATH (coreutils) to bound the verifier with, so it is not run"
   fi
 
-  local n=0 none="" unm="" rc
+  local n=0 none="" unm="" rc pid sig=""
+  trap 'sig=INT' INT
+  trap 'sig=TERM' TERM
   for pr in $prs; do
     if [ -n "$why" ]; then
       review_note "#$pr not measured ($why)"; unm="${unm:+$unm, }#$pr"; continue
     fi
+    if [ -n "$sig" ]; then trap - INT TERM; kill -s "$sig" "$BASHPID"; fi
     rc=0
-    timeout -k 5 "$budget" "$verifier" "$repo#$pr" </dev/null >/dev/null 2>&1 || rc=$?
+    timeout -k 5 "$budget" "$verifier" "$repo#$pr" </dev/null >/dev/null 2>&1 &
+    pid=$!
+    wait "$pid" || rc=$?
+    if [ -n "$sig" ]; then
+      kill -TERM "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      trap - INT TERM
+      kill -s "$sig" "$BASHPID"
+    fi
     case "$rc" in
       0) n=$((n + 1)) ;;
       1) none="${none:+$none, }#$pr" ;;
       *)
         case "$rc" in
           2)   review_note "#$pr not measured (the verifier answered unmeasured, exit 2)" ;;
-          124|137) review_note "#$pr not measured (the verifier was killed after ${budget}s)" ;;
+          124|137)
+            review_note "#$pr not measured (the verifier was killed after ${budget}s)"
+            why="not asked: the verifier timed out on #$pr" ;;
           *)   review_note "#$pr not measured (the verifier exited $rc)" ;;
         esac
         unm="${unm:+$unm, }#$pr" ;;
     esac
   done
+  trap - INT TERM
   if [ -n "$shas" ]; then
     review_note "$shas not measured (no pull request number in the commit subject)"
     unm="${unm:+$unm, }$shas"
