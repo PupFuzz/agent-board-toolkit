@@ -37,7 +37,13 @@
 #     ending `_FILE` or `_REGEX`), and a CALL of fetch_board_cards, kb_mask_token or
 #     kb_auth_header. A token held under a name WITHOUT `TOKEN` in it (a `token` / `tok` local, a
 #     header variable) and expanded in a traced line is invisible to it; only the `bash -x` runs
-#     can catch that, and only on the paths they drive.
+#     can catch that, and only on the paths they drive. Nor does it see an indirect `${!v}`
+#     whose target is a token variable.
+#   * § 4 reads lines, not the shell's grammar. Its suspension rule (stated at the leg) counts a
+#     suspension only where it runs unconditionally, and judges every expansion on a line; a
+#     shape it cannot place is scored `bad`, but a suspension made conditional by a construct
+#     spanning lines it does not model (anything other than a less-indented block closer) is
+#     outside it.
 #   * § 6's message rule is bounded by its PRINTER list (named at the leg) and does not follow a
 #     path into a callee's positional parameters, or out of a multi-field printf. § 7 drives the
 #     bins it names; a token-path line on another path is held only by § 6's message rule, which
@@ -180,83 +186,127 @@ echo "== § 4. the call-site rule, over every shipped shell file =="
 # expands a token-bearing variable, or CALLS one of the three functions that take the token by
 # value.
 #   * A token-bearing variable is DERIVED from its name, not listed: any name containing `TOKEN`,
-#     except one ending `_FILE` (a path, § 6–7's subject) or `_REGEX` (a pattern). `${NAME:+…}` /
-#     `${NAME+…}` and `${#NAME}` expand to a fixed word or a length, never the value, and are not
-#     members — `${KANBAN_WRITEBACK_TOKEN:+set}` is the spelling for "is it set".
+#     except one ending `_FILE` (a path, § 6–7's subject) or `_REGEX` (a pattern), expanded as
+#     `$NAME` or `${NAME…}`. `${NAME:+…}` / `${NAME+…}` and `${#NAME}` expand to a fixed word or a
+#     length, never the value, and are not members — `${KANBAN_WRITEBACK_TOKEN:+set}` is the
+#     spelling for "is it set". An indirect `${!v}` is not seen at all.
 #   * A call is the name in command position — line start, or after `;` `&` `|` `(` `{` `$(`, or
 #     after `then`/`do`/`else` — followed by whitespace. A name in an argument list, a message, or
 #     its own definition is not a call.
-# A member is `ok` when xtrace is off where its FIRST expansion is traced:
-#   * a `kb_xtrace_off <var>` in command position EARLIER on the line, or a bare `kb_xtrace_off`
-#     earlier on the line directly after `$(` or `(` — the bare form keeps no record, so it is only
-#     sound where a subshell ends the suspension;
-#   * or the line is inside a REGION: opened by a `kb_xtrace_off <var>` line with no restore of
-#     <var> after it, closed by a line that STARTS with `kb_xtrace_restore <var>` (a mid-line
-#     restore before a `return` does not close it), or by the function's closing `}`; or the
-#     standalone bins' form, `case $- in *x*) V=x; set +x …` closed by a line `[ -z "$V" ] || set -x`.
+# EVERY expansion and call on a member line is judged, not only the first; the line is `ok` only
+# when xtrace is off at each of them:
+#   * a `kb_xtrace_off <var>` EARLIER on the line that is UNCONDITIONAL — it starts the line, or
+#     follows a plain `;` with no `if`/`then`/`do`/`else`/`elif`/`while`/`until`/`for`/`case`,
+#     `{`, `}`, `(`, `)`, `|`, `&`, `&&` or `||` before it on the line — with no
+#     `kb_xtrace_restore <var>` between it and the expansion;
+#   * or a `kb_xtrace_off` (bare or not) directly after `(` / `$(`, with the expansion inside
+#     that same parenthesis — the subshell ends the suspension, so the bare form is sound there;
+#   * or the line is inside a REGION and no restore of it comes earlier on the line. A region
+#     OPENS on a line holding an unconditional `kb_xtrace_off <var>` (as above) with no restore
+#     of <var> after it on that line — never inside `then`/`do`/`else`/`{`/`||`/`&&`. It CLOSES
+#     on any line holding `kb_xtrace_restore <var>`, anywhere on the line; on a line starting
+#     `}` in column 0; or on a block closer (`fi`, `done`, `esac`, `else`, `elif`, `}`, `;;`)
+#     indented LESS than the opening line, so a suspension inside a block does not cover the
+#     lines after it. The standalone bins' form, `case $- in *x*) V=x; set +x …` (unconditional,
+#     as above), is a region closed by any line holding `[ -z "$V" ] || set -x`, or by a
+#     less-indented block closer.
 # Anything else — a suspension after the expansion, one in a trailing comment, a bare one outside
-# a subshell — is `bad`.
+# a subshell, a conditional one, an expansion after a same-line restore — is `bad`. The rule reads
+# lines, not the shell's grammar: a construct it cannot place (a region opened after a
+# `$(…)` on the same line, a `{ …; }` group) is scored `bad`, the safe direction.
 _xt_scan() {
     awk '
-        function cmdpos(s, name,   r) {
-            # where <name> stands in command position in s (the start of the match, separator
-            # included), else 0
-            r = "(^|[;&|({]|\\$\\(|then|do|else)[[:space:]]*" name "([[:space:]]|;|\\)|$)"
-            return match(s, r) ? RSTART : 0
+        function cmdpos_all(s, name,   r, rest, off, out) {
+            # every position where <name> stands in command position in s (the start of the
+            # match, separator included), space-separated
+            r = "([;&|({]|\\$\\(|then|do|else)[[:space:]]*" name "([[:space:]]|;|\\)|$)"
+            out = ""
+            if (match(s, "^[[:space:]]*" name "([[:space:]]|;|\\)|$)")) out = " 1"
+            rest = s; off = 0
+            while (match(rest, r)) {
+                out = out " " (off + RSTART)
+                off += RSTART + RLENGTH - 1; rest = substr(rest, RSTART + RLENGTH)
+            }
+            return out
         }
-        function first_exp(s,   rest, off, p, m, nm, after, best) {
-            best = 0
+        function exps(s,   rest, off, p, m, nm, after, out) {
+            out = ""
             rest = s; off = 0
             while (match(rest, /\$\{?#?[A-Za-z_][A-Za-z0-9_]*/)) {
                 p = off + RSTART; m = substr(rest, RSTART, RLENGTH)
                 nm = m; sub(/^\$\{?/, "", nm)
                 after = substr(rest, RSTART + RLENGTH, 2)
                 if (nm !~ /^#/ && nm ~ /TOKEN/ && nm !~ /_FILE$/ && nm !~ /_REGEX$/ &&
-                    !(m ~ /^\$\{/ && (after ~ /^:\+/ || after ~ /^\+/))) {
-                    if (!best || p < best) best = p
-                    break
-                }
+                    !(m ~ /^\$\{/ && (after ~ /^:\+/ || after ~ /^\+/)))
+                    out = out " " p
                 off += RSTART + RLENGTH - 1; rest = substr(rest, RSTART + RLENGTH)
             }
-            p = cmdpos(s, "(fetch_board_cards|kb_mask_token|kb_auth_header)")
-            if (p && (!best || p < best)) best = p
-            return best
+            return out cmdpos_all(s, "(fetch_board_cards|kb_mask_token|kb_auth_header)")
+        }
+        # plain(pre) — the text before a statement runs it unconditionally
+        function plain(pre) {
+            if (pre ~ /^[[:space:]]*$/) return 1
+            if (pre !~ /;[[:space:]]*$/) return 0
+            if (pre ~ /[{}()|&]/) return 0
+            if (pre ~ /(^|[^A-Za-z0-9_])(if|then|do|else|elif|while|until|for|case|select)([^A-Za-z0-9_]|$)/) return 0
+            return 1
+        }
+        function rre(v) { return "kb_xtrace_restore[[:space:]]+" v "([^A-Za-z0-9_]|$)" }
+        function srestored(s, v) { return s ~ /\|\|[[:space:]]*set -x/ && index(s, "\"$" v "\"") }
+        function ind(s) { match(s, /^[[:space:]]*/); return RLENGTH }
+        function closer(s, i) { return s ~ /^[[:space:]]*(fi|done|esac|else|elif|\}|;;)([[:space:];]|$)/ && ind(s) < i }
+        # inparen(s, a, b) — position b is still inside the parenthesis opened at position a
+        function inparen(s, a, b,   i, d, c) {
+            d = 0
+            for (i = a; i < b; i++) {
+                c = substr(s, i, 1)
+                if (c == "(") d++
+                else if (c == ")" && --d == 0) return 0
+            }
+            return d > 0
+        }
+        function covered(s, q,   pq, rest, off, p, pre, post, v) {
+            pq = substr(s, 1, q - 1)
+            if (reg != "" && pq !~ rre(reg)) return 1
+            if (sreg != "" && !srestored(pq, sreg)) return 1
+            rest = pq; off = 0
+            while (match(rest, /kb_xtrace_off/)) {
+                p = off + RSTART
+                pre = substr(s, 1, p - 1); post = substr(s, p + 13)
+                if (pre ~ /\([[:space:]]*$/ && inparen(s, p - 1, q)) return 1
+                if (match(post, /^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
+                    v = substr(post, RSTART, RLENGTH); sub(/^[[:space:]]+/, "", v)
+                    if (plain(pre) && substr(s, p, q - p) !~ rre(v)) return 1
+                }
+                off = p + 12; rest = substr(pq, off + 1)
+            }
+            return 0
         }
         FNR == 1 { reg = ""; sreg = "" }
         /^[[:space:]]*#/ { next }
         {
             line = $0
-            inreg = (reg != "" || sreg != "")
-            fp = first_exp(line)
-            if (fp) {
-                v = "bad"
-                if (inreg) v = "ok"
-                else {
-                    s = substr(line, 1, fp - 1)
-                    rest = s; off = 0
-                    while (match(rest, /kb_xtrace_off/)) {
-                        p = off + RSTART
-                        pre = substr(line, 1, p - 1); post = substr(line, p + 13)
-                        incmd = (pre ~ /(^|[;&|({]|\$\(|then|do|else)[[:space:]]*$/)
-                        hasvar = (post ~ /^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)
-                        insub = (pre ~ /\(([[:space:]]*)$/)
-                        if (incmd && (hasvar || insub)) { v = "ok"; break }
-                        off = p + 12; rest = substr(line, off + 1, fp - 1 - off)
-                    }
-                }
+            e = exps(line)
+            if (e != "") {
+                n = split(e, Q, " "); v = "ok"
+                for (i = 1; i <= n; i++) if (Q[i] != "" && !covered(line, Q[i] + 0)) { v = "bad"; break }
                 printf "%s:%d:%s:%s\n", FILENAME, FNR, v, line
             }
             # region bookkeeping, AFTER the verdict: an opening line does not cover itself
-            if (reg != "" && (line ~ ("^[[:space:]]*kb_xtrace_restore[[:space:]]+" reg "([[:space:]]|;|$)") || line ~ /^}/)) reg = ""
-            if (sreg != "" && line ~ /\|\|[[:space:]]*set -x/ && index(line, "\"$" sreg "\"")) sreg = ""
-            if (reg == "" && match(line, /(^|[;&|{]|then|do|else)[[:space:]]*kb_xtrace_off[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
-                o = substr(line, RSTART, RLENGTH); sub(/.*kb_xtrace_off[[:space:]]+/, "", o)
-                tail = substr(line, RSTART + RLENGTH)
-                if (tail !~ ("kb_xtrace_restore[[:space:]]+" o "([^A-Za-z0-9_]|$)")) reg = o
+            if (reg != "" && (line ~ rre(reg) || line ~ /^}/ || closer(line, regi))) reg = ""
+            if (sreg != "" && (srestored(line, sreg) || closer(line, sregi))) sreg = ""
+            if (reg == "") {
+                rest = line; off = 0
+                while (match(rest, /kb_xtrace_off[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
+                    p = off + RSTART; rs = RSTART; rl = RLENGTH
+                    o = substr(rest, rs, rl); sub(/^kb_xtrace_off[[:space:]]+/, "", o)
+                    if (plain(substr(line, 1, p - 1)) && substr(line, p + 13) !~ rre(o)) { reg = o; regi = ind(line) }
+                    off += rs + rl - 1; rest = substr(rest, rs + rl)
+                }
             }
-            if (sreg == "" && match(line, /case \$- in \*x\*\) [A-Za-z_][A-Za-z0-9_]*=x; set \+x/)) {
+            if (sreg == "" && match(line, /case \$- in \*x\*\) [A-Za-z_][A-Za-z0-9_]*=x; set \+x/) && plain(substr(line, 1, RSTART - 1))) {
                 o = substr(line, RSTART, RLENGTH); sub(/^case \$- in \*x\*\) /, "", o); sub(/=x.*/, "", o)
-                sreg = o
+                sreg = o; sregi = ind(line)
             }
         }
     ' "$@"
@@ -320,6 +370,40 @@ echo "$RAW_TOKEN"
 kb_xtrace_off _s; x="$KB_TOKEN"; kb_xtrace_restore _s
 y="$KB_TOKEN"
 (kb_xtrace_off; fetch_board_cards "$API" "$KB_TOKEN" 1)
+kb_xtrace_off _m
+x=1; kb_xtrace_restore _m
+echo "leak $KB_TOKEN"
+if [[ -n "$z" ]]; then kb_xtrace_off _c; fi
+echo "leak $KB_TOKEN"
+kb_xtrace_restore _c
+[[ -n "$z" ]] && kb_xtrace_off _e
+echo "$KB_TOKEN"
+kb_xtrace_restore _e
+[[ -n "$z" ]] || kb_xtrace_off _f
+echo "$KB_TOKEN"
+kb_xtrace_restore _f
+for _z in $list; do kb_xtrace_off _l; done
+echo "$KB_TOKEN"
+kb_xtrace_restore _l
+{ kb_xtrace_off _d; }
+echo "$KB_TOKEN"
+kb_xtrace_restore _d
+if [[ -n "$z" ]]; then
+    kb_xtrace_off _h
+fi
+echo "$KB_TOKEN"
+kb_xtrace_restore _h
+local _g; kb_xtrace_off _g
+echo "$KB_TOKEN"
+kb_xtrace_restore _g
+kb_xtrace_off _i; kb_xtrace_restore _i; echo "$KB_TOKEN"
+[[ -n "$z" ]] || kb_xtrace_off _j; echo "$KB_TOKEN"; kb_xtrace_restore _j
+kb_xtrace_off _k
+kb_xtrace_restore _k; echo "$KB_TOKEN"
+kb_xtrace_off _s; x="$KB_TOKEN"; kb_xtrace_restore _s; echo "$KB_TOKEN"
+x="$(kb_xtrace_off; fetch_board_cards "$A" "$KB_TOKEN" 1)"; echo "$KB_TOKEN"
+case $- in *x*) _q=x; set +x ;; *) _q= ;; esac
+[ -z "$_q" ] || set -x; echo "$KB_TOKEN"
 PLANT
 planted="$(_xt_scan "$TMP/plant.sh")"
 pv="$(printf '%s\n' "$planted" | _xt_violations)"
@@ -347,6 +431,23 @@ eq "control: a line inside a standalone \`case \$- …set +x\` region is ok" "fa
 eq "control: …and the line after its \`|| set -x\` is a violation"  "true"  "$(_pv 23)"
 eq "control: a same-line pair does not leave a region open"        "true"  "$(_pv 25)"
 eq "control: a bare suspension directly after \`(\` is ok"         "false" "$(_pv 26)"
+# Rows 27–60: each line below was scored ok by the previous scanner, and each but the `{ …; }`
+# group and the plain `;` control traces the token when run (the group is a shape the rule does
+# not place, scored bad on purpose).
+eq "control: a MID-LINE restore closes the region — the next token line is a violation" "true" "$(_pv 29)"
+eq "control: a region is not opened inside \`then … fi\`"         "true"  "$(_pv 31)"
+eq "control: …nor after \`&&\`"                                    "true"  "$(_pv 34)"
+eq "control: …nor after \`||\`"                                    "true"  "$(_pv 37)"
+eq "control: …nor inside \`do … done\` (zero iterations skip it)"  "true"  "$(_pv 40)"
+eq "control: …nor inside a \`{ …; }\` group"                       "true"  "$(_pv 43)"
+eq "control: a suspension inside a block does not cover the lines after its less-indented \`fi\`" "true" "$(_pv 48)"
+eq "control: a suspension after a plain \`;\` does open a region"  "false" "$(_pv 51)"
+eq "control: an expansion after a same-line pair is a violation"     "true"  "$(_pv 53)"
+eq "control: a same-line suspension after \`||\` does not count"   "true"  "$(_pv 54)"
+eq "control: inside a region, an expansion after a same-line restore is a violation" "true" "$(_pv 56)"
+eq "control: EVERY expansion on a line is judged, not only the first" "true" "$(_pv 57)"
+eq "control: …an expansion after a suspended \$(…) closes is a violation" "true" "$(_pv 58)"
+eq "control: …and one after the standalone form's same-line \`|| set -x\`" "true" "$(_pv 60)"
 
 echo "== § 5. KBCARD_DEBUG=1: the request a trace would show, without the token =="
 # The alternative this card offers to reaching for `-x`: one stderr line per request. RED when the
