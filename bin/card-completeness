@@ -287,7 +287,13 @@ fi
 case "$API" in https://*) ;; *) die "--api is not an https:// URL — refusing to send a credential over it";; esac
 API="${API%/}"
 
+# The token and the header built from it are held with xtrace suspended, and later lines test it
+# as `${TOKEN:+set}`, so a `bash -x` run never prints it (card#11204). This bin does not source
+# the lib, so it suspends xtrace itself rather than through kb_xtrace_off.
+case $- in *x*) _cc_x=x; set +x ;; *) _cc_x= ;; esac
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+AUTH_HEADER=""; [ -z "$TOKEN" ] || AUTH_HEADER="$(printf 'Authorization: Bearer %s' "$TOKEN")"
+[ -z "$_cc_x" ] || set -x
 TMPD="$(mktemp -d)"; trap 'rm -rf "$TMPD"' EXIT
 BODY="$TMPD/resp.json"
 
@@ -301,11 +307,11 @@ BODY="$TMPD/resp.json"
 api() {
   local code
   : > "$BODY"
-  if [ -n "$TOKEN" ]; then
+  if [ -n "${TOKEN:+set}" ]; then
     code="$(curl -sS -g --retry 5 --retry-connrefused --retry-max-time 60 \
               -o "$BODY" -w '%{http_code}' -H @- \
               -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
-              "$1" <<<"$(printf 'Authorization: Bearer %s' "$TOKEN")")" || code='000'
+              "$1" <<<"$AUTH_HEADER")" || code='000'
   else
     code="$(curl -sS -g --retry 5 --retry-connrefused --retry-max-time 60 \
               -o "$BODY" -w '%{http_code}' \

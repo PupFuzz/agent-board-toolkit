@@ -349,6 +349,12 @@ The coupling itself predates this flag and is coherent — a blocked card should
 
 **Out of scope, deliberately:** `_kbc-stale-blocker.py` still greps card **prose** for `blocked behind card#N`. That leg has to keep working for every card written before this writer existed, and switching it to the structured field is a separate change with its own denominator.
 
+## Debugging a board tool without `bash -x` — `KBCARD_DEBUG=1`
+
+**`KBCARD_DEBUG=1` prints one stderr line for each kanban request the lib sends** (`kb_api`, `kb_api_status` and `fetch_board_cards`, so every `kbcard` verb): `<tool>: debug: GET https://<host>/api/v3/tasks/505.json -> HTTP 200 (143 ms)`. The line names the method, the url (userinfo masked, as every rendered url is) and the status, `000` when the request did not complete. It never carries the bearer token. A request a tool sends with its own `curl` does not print the line: `next-dl`'s DL-sequence claim, and `promote-released-cards` / `card-completeness`, which do not source the lib. A whole-board read prints one line per page it fetched, which makes it the instrument for a slow `kbcard list`.
+
+**`bash -x` is safe as well, but it shows less** (card#11204). xtrace prints every command with its words expanded, and it used to print the board token: the token-file read, the header built from it, and every call that takes it as an argument. Each of those now runs with xtrace suspended (`kb_xtrace_off` / `kb_xtrace_restore` in the lib), and the caller's state is restored afterwards, so the rest of the trace is unchanged. As a result the whole-board walk (`fetch_board_cards`) runs untraced, so use `KBCARD_DEBUG=1` to see its requests. `tests/xtrace-token-selftest.sh` runs the tools under `bash -x` with a planted token, and checks every shipped shell file for a `$KB_TOKEN` expansion, or a call that passes the token by value, on a line that does not suspend xtrace. Its header says what it does not cover: a response body in which a server echoes the request's own Authorization header is printed by a trace like any other body.
+
 ## Get started
 
 - **Adopting this for a new project/agent? Start here:** [`ADOPTION.md`](ADOPTION.md) (who it's for + how it fits the cross-project standard)

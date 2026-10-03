@@ -71,7 +71,7 @@ kb_load_config "$board_name" || exit 2   # sets KB_API / KB_BOARD_ID (required) 
 # catches rc 1, 2, 3 and 4, and the lib's line above it is the one that knows
 # which occurred.
 KB_FETCH_LOUD=1
-cards_json="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID")" || {
+cards_json="$(kb_xtrace_off; fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID")" || {
     fetch_rc=$?
     echo "$KB_PROG: board $KB_BOARD_ID did not return a complete card list (fetch rc=$fetch_rc) — aborting (no partial backfill)" >&2
     exit 1

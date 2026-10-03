@@ -1041,6 +1041,12 @@
 # including what a `[]` from `list` does and does not establish. It is the ONE owner of that
 # statement: this block deliberately does not restate it.
 #
+# DEBUGGING WITHOUT `bash -x` (card#11204): KBCARD_DEBUG=1 prints one stderr line per request —
+# method, url (userinfo masked), HTTP status and elapsed ms — and never the bearer token. A trace
+# is safe too: `bash -x kbcard …` suspends xtrace on every line that expands the token, so it never
+# prints it. The cost is that a whole-board read (`list`, `search`, …) runs untraced, so
+# KBCARD_DEBUG=1 is how to see its pages.
+#
 # Source of truth for IDs:
 #   ~/.kanban-dev-board.env — sourced for stage/type/cf ID lookups.
 
@@ -3617,7 +3623,7 @@ cmd_list() {
     # at fetch_board_cards' header. This bin DOES set KB_FETCH_LOUD, so the paginator's
     # own line (which is the one that knows the cause) prints directly above.
     local cards frc
-    cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
+    cards="$(kb_xtrace_off; fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
         || { frc=$?; echo "kbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$frc)" >&2; exit 1; }
     local out
     out="$(printf '%s' "$cards" | _kbc_list_project \
@@ -3671,7 +3677,7 @@ cmd_owner_migrate() {
     fi
     host="$(kb_url_host "$KB_API")"
     local cards frc
-    cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
+    cards="$(kb_xtrace_off; fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" \
         || { frc=$?; echo "kbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$frc)" >&2; return 1; }
     local rows
     rows="$(jq -c --slurpfile cfg "$cfg" --arg h "$host" "$KB_JQ_OWNER$KB_JQ_ROSTER"'
@@ -4054,7 +4060,7 @@ cmd_unlink() {
     [[ "$del" == *$'\n'* ]] && errbody="${del#*$'\n'}"
     # Quoted to stderr below, so masked first (card#9777): the DELETE sent $KB_TOKEN in its
     # Authorization header, and a server echoing request headers hands it back in this body.
-    kb_mask_token errbody "${KB_TOKEN:-}" "$errbody"
+    local _kbx; kb_xtrace_off _kbx; kb_mask_token errbody "${KB_TOKEN:-}" "$errbody"; kb_xtrace_restore _kbx
     case "$http" in
         2*) : ;;
         000) echo "kbcard: unlink: the DELETE of link $link_id DID NOT COMPLETE — no HTTP status came back at all, so whether the server received it is UNKNOWN. Re-read card $witness before retrying; nothing here claims an outcome in either direction." >&2
@@ -4574,7 +4580,7 @@ cmd_search() {
     # the wording rule at fetch_board_cards' header; this bin sets KB_FETCH_LOUD, so the
     # paginator's own line — the one that knows the cause — prints directly above it.
     local cards frc
-    cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}" "$query")" \
+    cards="$(kb_xtrace_off; fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}" "$query")" \
         || { frc=$?; echo "kbcard: board $KB_BOARD_ID did not return a complete card list for this search (fetch rc=$frc) — refusing to present a partial match set as a whole one" >&2; exit 1; }
     local hits matched total
     hits="$(printf '%s' "$cards" | _kbc_card_filter "${stage_filter:-}" "${type_filter:-}" "${type:+type:$type}" "")"
@@ -4673,7 +4679,7 @@ _kbc_archive_decision() {
     # wording rule at fetch_board_cards' header gives: this site sees all four rcs, and
     # they share none. Fewer twins is the fail-closed direction, per this function's
     # header — and this site makes no operator-facing claim at all, by design.
-    board="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" 2>/dev/null)" || true
+    board="$(kb_xtrace_off; fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" 2>/dev/null)" || true
     [[ -n "$board" ]] || board="[]"
     repo="$(_kbc_board_repo)" || true
     # The board array (~200KB) AND the card both reach jq via STDIN, never argv: one argv
@@ -5266,7 +5272,7 @@ _kbc_field_census_population_note() {
 # consumer, leaving the other stating the same unqualified number.
 _kbc_field_populated() {
     local key="$1" cards rc=0 rows n m
-    cards="$(fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" || rc=$?
+    cards="$(kb_xtrace_off; fetch_board_cards "$KB_API" "$KB_TOKEN" "$KB_BOARD_ID" "${BOARD_PAGE_CAP:-50}")" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
         echo "kbcard: board $KB_BOARD_ID did not return a complete card list (fetch rc=$rc) — refusing to act on a truncated denominator" >&2
         return 1
@@ -5542,7 +5548,7 @@ _kbc_field_change_type_report() {
     local fid="$1" http="$2" resp="$3" fkey="$4" from="$5" to="$6" have_options="$7"
     local path="/custom_fields/$fid/change-type.json" resp_shown
     # The bearer is masked by kb_api's own mask, kb_mask_token (card#9777) — this is the mirror of that print.
-    kb_mask_token resp_shown "${KB_TOKEN:-}" "$resp"
+    local _kbx; kb_xtrace_off _kbx; kb_mask_token resp_shown "${KB_TOKEN:-}" "$resp"; kb_xtrace_restore _kbx
     echo "kbcard: HTTP $http on POST $path (field '$fkey': $from -> $to)" >&2
     echo "$resp_shown" >&2
     [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) POST $path HTTP-$http $resp_shown" >> "$KB_LOG_FILE"
@@ -6097,9 +6103,15 @@ cmd_field() {
     # server's answer. Asked for here, before that POST, rather than inside the report: no other
     # field sub-verb calls kb_mask_token, so gating at the shared dispatch above would refuse them
     # for an absence they do not depend on (card#9777).
-    if [[ "$sub" == retype ]] && ! declare -F kb_mask_token >/dev/null; then
-        _kbc_lib_unruled "field retype" "the conversion" kb_mask_token undefined
-        return 2
+    # kb_xtrace_off is asked the same way: the masking line suspends xtrace around the token it
+    # expands (card#11204), and under `set -e` an undefined one would abort that report.
+    if [[ "$sub" == retype ]]; then
+        local _kbc_fn
+        for _kbc_fn in kb_mask_token kb_xtrace_off; do
+            declare -F "$_kbc_fn" >/dev/null && continue
+            _kbc_lib_unruled "field retype" "the conversion" "$_kbc_fn" undefined
+            return 2
+        done
     fi
     case "$sub" in
         list)        _kbc_field_list "$@" ;;
@@ -6159,7 +6171,10 @@ main() {
                 || { _kbc_lib_unruled "$cmd" "the write" kb_stage_write undefined; exit 2; } ;;
         unlink)
             declare -F kb_mask_token >/dev/null \
-                || { _kbc_lib_unruled "$cmd" "the delete" kb_mask_token undefined; exit 2; } ;;
+                || { _kbc_lib_unruled "$cmd" "the delete" kb_mask_token undefined; exit 2; }
+            # The mask line suspends xtrace around the token (card#11204) — same rc-127 hazard.
+            declare -F kb_xtrace_off >/dev/null \
+                || { _kbc_lib_unruled "$cmd" "the delete" kb_xtrace_off undefined; exit 2; } ;;
     esac
     case "$cmd" in
         create-card) cmd_create_card "$@" ;;

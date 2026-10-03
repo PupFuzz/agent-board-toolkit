@@ -656,7 +656,7 @@ tokfile="$(kb_declared_token_file "$tok_where" "$board_tok" "${KB_HOST_TOKEN_FIL
     || bcs_skip "no kanban token file is declared for this board (see docs/INSTALL.md §3)"
 kb_read_token "$tokfile" \
     || bcs_skip "kanban token file not readable: $tokfile (see docs/INSTALL.md §3)"
-token="$KB_TOKEN"
+kb_xtrace_off _bcs_x; token="$KB_TOKEN"; kb_xtrace_restore _bcs_x
 
 # Effective api_base: the committed value, unless it is a documentation-placeholder host
 # (host-scrubbed) or absent (committed_api empty — a non-release repo) — then the host-env-
@@ -689,7 +689,7 @@ kb_require_https_host "$api" || bcs_skip "api_base '$api_shown' failed the https
 # resolve the host and bearer from KB_API / KB_TOKEN. api is the effective base resolved+guarded
 # above; KB_TOKEN is already this board's token (kb_read_token set it), but pin both explicitly
 # so the shared callers can't reach for a stale ambient value.
-KB_API="$api"; KB_TOKEN="$token"
+KB_API="$api"; kb_xtrace_off _bcs_x; KB_TOKEN="$token"; kb_xtrace_restore _bcs_x
 
 # Stage ids for THIS board, from the SAME board env resolved above (a second matcher here
 # was free to pick a different file than the token's on a duplicate KB_BOARD_ID), via the
@@ -751,7 +751,7 @@ if [ -n "$dl" ]; then
     # discarded anyway. What survives there is kb_bcs_log's durable log FILE, which
     # carries this line and nothing from the lib, so a cause named here would be the
     # operator's only lead and wrong on three rcs out of four.
-    cards="$(fetch_board_cards "$api" "$token" "$board")" \
+    cards="$(kb_xtrace_off; fetch_board_cards "$api" "$token" "$board")" \
         || bcs_skip "board $board did not return a complete card list (fetch rc=$?)"
     cid="$(printf '%s' "$cards" | jq -r --argjson want "$dl" "$KB_JQ_REF_CANON"'
         [ .[]

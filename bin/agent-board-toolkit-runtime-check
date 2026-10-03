@@ -376,46 +376,51 @@ _rc_looks_like_pasted_secret() {
 # exactly, because each of them means the tools resolve NOTHING from the store — a mirror that
 # resolved one anyway would invent a source and then report a duplicate against it.
 _rc_store_pointer() {
-    local store="${COORD_CREDENTIALS:-$HOME/.config/coord/credentials.ini}"
-    [[ -r "$store" ]] || return 1
-    local parsed verdict ptr
-    parsed="$(awk -v sec='kanban' -v want='api_token_file' -v inl='api_token' '
-        function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
-        {
-            l = trim($0)
-            if (l == "") next
-            if (substr(l, 1, 1) == "#" || substr(l, 1, 1) == ";") next
-            if (substr(l, 1, 1) == "[") {
-                p = 0
-                for (i = length(l); i >= 2; i--) if (substr(l, i, 1) == "]") { p = i; break }
-                cur = p ? substr(l, 2, p - 2) : ""
-                next
-            }
-            if (cur != sec) next
-            e = index(l, "="); c = index(l, ":")
-            if (e && c) d = (e < c) ? e : c; else d = e ? e : c
-            if (!d) next
-            k = trim(substr(l, 1, d - 1))
-            v = trim(substr(l, d + 1))
-            if (k == want) { nexact++; if (nexact == 1) pv = v }
-            else if (tolower(k) == want) { if (!nfold) { nfold++; fv = v } }
-            else if ((k == inl || tolower(k) == inl) && v != "") ninline++
-        }
-        END {
-            if (nexact > 1) { print "dup"; exit }
-            if (ninline) { print "inline"; exit }
-            if (nexact) { printf "ok\n%s\n", pv; exit }
-            if (nfold)  { printf "ok\n%s\n", fv; exit }
-            print "none"
-        }
-    ' "$store" 2>/dev/null)"
-    verdict="${parsed%%$'\n'*}"
-    ptr=""
-    [[ "$parsed" == *$'\n'* ]] && ptr="${parsed#*$'\n'}"
-    [[ "$verdict" == "ok" && -n "$ptr" ]] || return 1
-    [[ "$ptr" == *'%%'* || "$ptr" == *'%('* ]] && return 1
-    _rc_looks_like_pasted_secret "$ptr" && return 1
-    _rc_expand_home "$ptr"
+    # Untraced, in a subshell, as the lib's kb_coord_store_token_file is: in the mis-paste case
+    # the pointer's text IS the token and every line below expands it (card#11204). This tool
+    # does not source the lib, so it suspends xtrace itself.
+    ( { set +x; } 2>/dev/null
+      local store="${COORD_CREDENTIALS:-$HOME/.config/coord/credentials.ini}"
+      [[ -r "$store" ]] || return 1
+      local parsed verdict ptr
+      parsed="$(awk -v sec='kanban' -v want='api_token_file' -v inl='api_token' '
+          function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+          {
+              l = trim($0)
+              if (l == "") next
+              if (substr(l, 1, 1) == "#" || substr(l, 1, 1) == ";") next
+              if (substr(l, 1, 1) == "[") {
+                  p = 0
+                  for (i = length(l); i >= 2; i--) if (substr(l, i, 1) == "]") { p = i; break }
+                  cur = p ? substr(l, 2, p - 2) : ""
+                  next
+              }
+              if (cur != sec) next
+              e = index(l, "="); c = index(l, ":")
+              if (e && c) d = (e < c) ? e : c; else d = e ? e : c
+              if (!d) next
+              k = trim(substr(l, 1, d - 1))
+              v = trim(substr(l, d + 1))
+              if (k == want) { nexact++; if (nexact == 1) pv = v }
+              else if (tolower(k) == want) { if (!nfold) { nfold++; fv = v } }
+              else if ((k == inl || tolower(k) == inl) && v != "") ninline++
+          }
+          END {
+              if (nexact > 1) { print "dup"; exit }
+              if (ninline) { print "inline"; exit }
+              if (nexact) { printf "ok\n%s\n", pv; exit }
+              if (nfold)  { printf "ok\n%s\n", fv; exit }
+              print "none"
+          }
+      ' "$store" 2>/dev/null)"
+      verdict="${parsed%%$'\n'*}"
+      ptr=""
+      [[ "$parsed" == *$'\n'* ]] && ptr="${parsed#*$'\n'}"
+      [[ "$verdict" == "ok" && -n "$ptr" ]] || return 1
+      [[ "$ptr" == *'%%'* || "$ptr" == *'%('* ]] && return 1
+      _rc_looks_like_pasted_secret "$ptr" && return 1
+      _rc_expand_home "$ptr"
+    )
 }
 
 # _rc_declared_token_file <env file> [prelude env file] — the KBCARD_TOKEN_FILE that <env file>

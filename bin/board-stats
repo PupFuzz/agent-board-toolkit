@@ -785,7 +785,7 @@ _bs_one_board() {
             elif ! kb_read_token "$tokfile"; then
                 fails+=("token file unreadable: $tokfile — this board contributes nothing to the report")
             else
-                fetch_board_cards "$API" "$KB_TOKEN" "$board_id" "$_BS_CARD_PAGE_CAP" \
+                (kb_xtrace_off; fetch_board_cards "$API" "$KB_TOKEN" "$board_id" "$_BS_CARD_PAGE_CAP") \
                     > "$cardfile" 2>/dev/null
                 rc=$?
                 # `stock_complete` is FAIL-CLOSED: it is initialised false and exactly ONE arm

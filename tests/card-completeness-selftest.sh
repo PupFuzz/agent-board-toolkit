@@ -278,6 +278,16 @@ prs '[]'
 ( unset GITHUB_TOKEN GH_TOKEN; "$CC" "${RH[@]}" --cards 9606 >/dev/null 2>&1 )
 eq "tokenless: control — the reads DID happen"   "true"  "$([ -s "$CALL_LOG" ] && echo true || echo false)"
 eq "tokenless: no Authorization on stdin"      "false" "$(has 'Authorization' "$(cat "$TMP_STDIN_LOG")")"
+# NOR IS IT IN A TRACE (card#11204). `bash -x` prints every command with its words expanded, so the
+# token's assignment and the header built from it are held with xtrace suspended. THE CONTROLS: the
+# token still reached curl's stdin on this run, and the trace was live after the token was in hand
+# (the `api` calls that use it are traced). RED when the suspension is dropped from either line.
+prs '[]'
+rc=0; bash -x "$CC" "${RH[@]}" --cards 9606 >/dev/null 2>"$TMP/xtrace.err" || rc=$?
+eq "bash -x: the token is NOT in the trace"     "false" "$(has "$GITHUB_TOKEN" "$(cat "$TMP/xtrace.err")")"
+eq "  … control: it IS on stdin"               "true"  "$(has "$GITHUB_TOKEN" "$(cat "$TMP_STDIN_LOG")")"
+eq "  … control: the trace was live after it"  "true"  "$(grep -qE '^\++ api ' "$TMP/xtrace.err" && echo true || echo false)"
+eq "  … and the traced run answers as before"  "0"     "$rc"
 
 echo "== 10. REFUSALS are refusals (rc 2), never a guessed answer =="
 # RED when: any refusal below falls through to a read (an empty --cards read as "all

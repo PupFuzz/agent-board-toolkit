@@ -169,7 +169,7 @@ board_report() {  # $1 = board env file   $2 = label ;  snapshot → stdout, unt
     kb_read_token "$tokfile" \
         || { board_unread "$label" "token file unreadable: $tokfile"; return 0; }
     local data rc
-    data="$(fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
+    data="$(kb_xtrace_off; fetch_board_cards "$API" "$KB_TOKEN" "$KB_BOARD_ID" "${SNAPSHOT_PAGE_CAP:-25}")"; rc=$?
     [[ $rc -eq 0 || $rc -eq 3 || $rc -eq 4 ]] \
         || { board_unread "$label" "board read failed — fetch rc=$rc"; return 0; }
     # A PARTIAL read is rendered — and now SAYS SO ON THE CHANNEL THE READER SEES.
