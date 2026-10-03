@@ -858,11 +858,9 @@ kb_board_env_get() {
 # token argument of fetch_board_cards / kb_mask_token / kb_auth_header (positional, so the CALL is
 # where it is traced) — runs with xtrace suspended, by a `kb_xtrace_off` ON THAT SAME LINE (or, inside
 # a lib function that owns the token, a region the function opens and closes itself, as
-# kb_token_file_read does). tests/xtrace-token-selftest.sh § 4 checks, across the shipped shell,
-# every expansion of a variable whose name carries `TOKEN` (not `*_FILE` / `*_REGEX`) and the three
-# by-value calls: suspended BEFORE the first expansion on the line (the bare form only right after
-# `$(` or `(`), or inside such a region. A token under a name without `TOKEN` is outside that
-# check and is caught only by the `bash -x` runs, on the verbs they drive. A token-PATH (where a
+# kb_token_file_read does). tests/xtrace-token-selftest.sh § 4 scans the shipped shell for the
+# common ways to get this wrong — a heuristic whose predicate and known false negatives that file
+# states; its `bash -x` / `bash -v` runs are the gate, on the verbs they drive. A token-PATH (where a
 # pasted secret lands) is suspended the same way wherever it is resolved — kb_resolve_env,
 # kb_load_host_env, kb_board_env_for / _get, and the bins' own tier reads (§ 7 drives them).
 #

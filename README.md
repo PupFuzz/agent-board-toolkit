@@ -357,18 +357,7 @@ The coupling itself predates this flag and is coherent — a blocked card should
 
 **`bash -v` and `bash -xv` are covered too** (card#11224). Verbose mode echoes every line the shell reads, so sourcing an env file printed a secret pasted into its `KBCARD_TOKEN_FILE` line verbatim. `kb_xtrace_off` / `kb_xtrace_restore` now suspend and restore `-v` as well as `-x`. The token itself was never exposed by `-v`, because the token file is read with `cat`, never sourced.
 
-`tests/xtrace-token-selftest.sh` runs the tools under `bash -x` with a planted token, and with a secret pasted into the path slot at each tier. It also reads every shipped shell file line by line:
-- **What it checks:** every expansion (`$NAME` or `${NAME…}`) of a variable whose name contains `TOKEN` (not `*_FILE` or `*_REGEX`; `${NAME:+…}`, `${NAME+…}` and `${#NAME}` never expand to the value), and every call of `fetch_board_cards`, `kb_mask_token` or `kb_auth_header`. Each one on a line must have xtrace off where it is expanded.
-- **What counts as off:**
-  - a `kb_xtrace_off <var>` earlier on the line that runs unconditionally (it starts the line, or follows a plain `;` with no `if`/`then`/`do`/`else`/`elif`/`while`/`until`/`for`/`case`, `{`, `}`, `(`, `)`, `|` or `&` before it), with no `kb_xtrace_restore <var>` between it and the expansion;
-  - a `kb_xtrace_off` directly after `(` or `$(`, with the expansion inside that parenthesis;
-  - a region, with no restore earlier on the line. A region opens on a line holding such an unconditional `kb_xtrace_off <var>` with no restore of it later on that line. It closes on any line holding `kb_xtrace_restore <var>`, on a `}` in column 0, or on a block closer (`fi`, `done`, `esac`, `else`, `elif`, `}`, `;;`) indented less than the line that opened it. The standalone bins' `case $- in *x*) V=x; set +x` is a region too, closed by `[ -z "$V" ] || set -x`.
-
-Its header says what it does not cover:
-- a token held under a name without `TOKEN`, or reached through `${!v}` indirection, is caught only on the paths the runs drive;
-- the line rule reads lines, not the shell's grammar: a suspension made conditional by a construct spanning lines, other than a less-indented block closer, is outside it;
-- the rule that keeps a pasted secret out of refusal messages reads only the printers it lists: `logger`, `kb_warn`, a heredoc body and a nameref (`local -n`) are outside it, as are a callee's positional parameters;
-- a response body in which a server echoes the request's own Authorization header is printed by a trace like any other body.
+`tests/xtrace-token-selftest.sh` runs the tools under `bash -x` with a planted token, and under `bash -x`, `bash -v` and `bash -xv` with a secret pasted into the path slot; those runs are the gate, on the paths they drive. Its § 4 line scan over every shipped shell file is a heuristic over common shapes, not a proof: its predicate and its known false negatives are stated in that file's header and at § 4, and nowhere else.
 
 ## Get started
 
