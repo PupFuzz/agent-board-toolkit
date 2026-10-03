@@ -214,8 +214,8 @@ eq "control: a comment naming it is NOT a member"              "false" "$(has ':
 eq "control: its own definition line is NOT a member"          "false" "$(has ':9:' "$planted")"
 eq "control: the four unguarded members are the violations"    "4" \
     "$(printf '%s\n' "$planted" | _xt_violations | grep -c . || true)"
-eq "control: the guarded spelling is a member and NOT a violation" "true" \
-    "$(has ':8:' "$planted")$(printf '%s\n' "$planted" | _xt_violations | grep -q ':8:' && echo -bad)"
+eq "control: the guarded spelling is a member"                 "true"  "$(has ':8:' "$planted")"
+eq "control: …and NOT a violation"                             "false" "$(has ':8:' "$(printf '%s\n' "$planted" | _xt_violations)")"
 
 echo "== § 5. KBCARD_DEBUG=1: the request a trace would show, without the token =="
 # The alternative this card offers to reaching for `-x`: one stderr line per request. RED when the
