@@ -31,6 +31,8 @@
 #          message line that names a token-path variable — the names DERIVED to a fixed point.
 #   § 7    The same pasted path under `bash -x`, at the board-env, host-env and ambient tiers,
 #          through every lib-sourcing bin that resolves one and the runtime check.
+#   § 8    The same pasted path under `bash -v` / `bash -xv` (card#11224): verbose mode echoes
+#          every line a sourced env file holds, so the pair suspends `-v` too.
 #
 # WHAT A GREEN RUN DOES NOT COVER — read before citing it:
 #   * § 4's predicate is an expansion of a variable whose name contains `TOKEN` (upper case; not
@@ -57,7 +59,9 @@
 #     agent-board-toolkit-runtime-check — suspend xtrace by hand (`case $- in *x*) V=x; set +x`),
 #     which § 4 reads as a region. The `bash -x` legs of the first two live in their own selftests
 #     (promote-refusal-detail-selftest.sh, card-completeness-selftest.sh); release-pr-body's is in
-#     release-pr-body-selftest.sh.
+#     release-pr-body-selftest.sh. That hand form suspends `-x` only, not `-v`, and § 8 does not
+#     drive these bins: none of them sources an env file onto a live stderr today (the runtime
+#     check's env reads run under `>/dev/null 2>&1`), which is what keeps them out of `-v`'s reach.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -181,6 +185,35 @@ eq "a caller WITHOUT -x does not get it turned on by a token read" "true" "$(has
 eq "…nor by a pair"                                           "true" "$(has 'untraced-after-pair=off' "$h")"
 eq "control: the in-process run printed no token"             "false" "$(_contains "$TOK" "$TMP/h.err")"
 eq "control: …and its trace was live"                         "true"  "$(grep -q '^+ ' "$TMP/h.err" && echo true || echo false)"
+
+# The same pair suspends `set -v` too (card#11224): verbose mode echoes every line the shell READS,
+# so a sourced env file's `KBCARD_TOKEN_FILE=…` line reaches stderr verbatim. RED on the pre-fix
+# pair: `v` stays on inside it. `say` reads `$-` outside any `$(…)`: bash clears `v` in a command
+# substitution, so a probe inside one reads `off` whatever the caller's state.
+# shellcheck disable=SC2016
+hv="$(bash -c '
+    source "$1"
+    say() { local s=off; case $- in *v*) s=on ;; esac; printf "%s=%s\n" "$1" "$s"; }
+    set -v
+    f() { local a b
+          kb_xtrace_off a; say outer-off
+          kb_xtrace_off b; say inner-off
+          kb_xtrace_restore b; say inner-restored
+          kb_xtrace_restore a; say outer-restored; }
+    f
+    set +v
+    g() { local c; kb_xtrace_off c; kb_xtrace_restore c; say untraced-after-pair; }
+    g
+    set -xv
+    k() { local d; kb_xtrace_off d; say xv-off; kb_xtrace_restore d; say xv-restored; }
+    k
+' _ "$LIB" 2>/dev/null)"
+eq "-v: a pair turns verbose off"                             "true" "$(has 'outer-off=off' "$hv")"
+eq "-v: a NESTED pair's restore leaves it off"                "true" "$(has 'inner-restored=off' "$hv")"
+eq "-v: the OUTERMOST restore turns it back on"               "true" "$(has 'outer-restored=on' "$hv")"
+eq "-v: a caller WITHOUT -v does not get it turned on"        "true" "$(has 'untraced-after-pair=off' "$hv")"
+eq "-xv: a pair turns verbose off with xtrace on"             "true" "$(has 'xv-off=off' "$hv")"
+eq "-xv: …and its restore turns verbose back on"              "true" "$(has 'xv-restored=on' "$hv")"
 
 echo "== § 4. the call-site rule, over every shipped shell file =="
 # _xt_scan <file…> — "<file>:<line>:<ok|bad>:<text>" for every MEMBER: a non-comment line that
@@ -880,5 +913,51 @@ done
 eq "runtime-check: control — the run WAS traced"           "true" "$(grep -q '^+ ' "$TMP/rc.err" && echo true || echo false)"
 eq "runtime-check: control — it judged the pasted declarations (and named them as credential-shaped)" "true" \
     "$(has 'SHAPE OF A CREDENTIAL' "$rcall")"
+
+echo "== § 8. bash -v / -xv and a credential pasted into a token-PATH slot (card#11224) =="
+# Verbose mode echoes every line the shell READS, so sourcing an env file printed its
+# `export KBCARD_TOKEN_FILE="<pasted secret>"` line verbatim, whatever xtrace did. The pair now
+# suspends `v` with `x`. RED on the pre-fix pair: the pasted value is in stderr. The ambient tier
+# is not driven: an ambient value is never read as shell input, so `-v` cannot echo it. CONTROLS:
+# the run WAS verbose (the bin's own source text is in stderr), and it reached the refusal that
+# follows resolution.
+# _v8 <label> <flags> <value> <host env> <cmd…> — one run under `bash <flags>`, from $X7_DIR
+_v8() {
+    local label="$1" flags="$2" val="$3" henv="$4"; shift 4
+    kb_stub_reset
+    ( cd "${X7_DIR:-$TMP}" && KANBAN_HOST_ENV="$henv" KBCARD_TOKEN_FILE="" KB_BCS_LOG="$TMP/bcs.log" \
+        bash "$flags" "$@" ) >"$TMP/v8.out" 2>"$TMP/v8.err" || true
+    eq "$label: the pasted value is in no stream" "false" "$(has "$val" "$(cat "$TMP/v8.out" "$TMP/v8.err" "$TMP/bcs.log" 2>/dev/null)")"
+    eq "$label: control — the run WAS verbose"    "true"  "$(_contains 'source "$KB_LIB"' "$TMP/v8.err")"
+    eq "$label: control — it reached the refusal" "true" \
+        "$(has '<value not shown: not a path>' "$(cat "$TMP/v8.out" "$TMP/v8.err" "$TMP/bcs.log" 2>/dev/null)")"
+}
+for fl in -v -xv; do
+    _v8 "kbcard $fl, board-env tier"   "$fl" "$PB" "$KANBAN_HOST_ENV"     "$KBC" --board pasted show --task 505
+    _v8 "kbcard $fl, host-env tier"    "$fl" "$PH" "$TMP/host-pasted.env" "$KBC" --board notok show --task 505
+done
+printf 'pasted:P\n' > "$HOME/.kanban-snapshot-boards"
+_v8 "board-snapshot -v, board-env tier" -v "$PB" "$KANBAN_HOST_ENV"     "$SNAP"
+printf 'notok:N\n' > "$HOME/.kanban-snapshot-boards"
+_v8 "board-snapshot -v, host-env tier"  -v "$PH" "$TMP/host-pasted.env" "$SNAP"
+X7_DIR="$TMP/x7repo"
+git -C "$X7_DIR" config kanban.board-id 45
+_v8 "board-card-start -v, host-env tier" -v "$PH" "$TMP/host-pasted.env" "$ROOT/bin/board-card-start"
+X7_DIR=""
+# In-process: the resolver runs inside a caller's `set -v`, and a file sourced AFTER it is still
+# echoed — so verbose came back once the pasted path was handled, rather than staying off.
+printf 'echo marker-after-resolve >/dev/null\n' > "$TMP/marker.sh"
+# shellcheck disable=SC2016
+( KANBAN_HOST_ENV="$TMP/host-pasted.env" KBCARD_TOKEN_FILE="" bash -c '
+    source "$1"
+    set -v
+    kb_resolve_env "$2" >/dev/null
+    kb_load_host_env
+    source "$3"
+' _ "$LIB" "$HOME/.kanban-pasted-board.env" "$TMP/marker.sh" ) >/dev/null 2>"$TMP/v8in.err" || true
+eq "in-process -v: kb_resolve_env does not echo the board env's pasted value" "false" "$(_contains "$PB" "$TMP/v8in.err")"
+eq "in-process -v: kb_load_host_env does not echo the host env's pasted value" "false" "$(_contains "$PH" "$TMP/v8in.err")"
+eq "in-process -v: control — a file sourced after them IS echoed (verbose resumed)" "true" \
+    "$(_contains 'echo marker-after-resolve' "$TMP/v8in.err")"
 
 _summary "xtrace-token-selftest"

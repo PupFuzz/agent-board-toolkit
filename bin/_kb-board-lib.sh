@@ -837,8 +837,13 @@ kb_board_env_get() {
     )
 }
 
-# kb_xtrace_off [<var>] / kb_xtrace_restore <var>: suspend `set -x` around a line that expands a
-# credential, then put the caller's own trace state back (card#11204).
+# kb_xtrace_off [<var>] / kb_xtrace_restore <var>: suspend `set -x` AND `set -v` around a line that
+# expands a credential, then put the caller's own state of each back (card#11204, card#11224).
+#
+# `-v` because verbose mode echoes every line the shell READS, so sourcing an env file under
+# `bash -v` / `bash -xv` printed its `KBCARD_TOKEN_FILE=…` line verbatim — a secret pasted into
+# that slot included — whatever xtrace did. <var> records which of the two were on (`x`, `v`,
+# `xv` or empty). bash already clears `v` inside a `$(…)`, so the bare form needs no `v` handling.
 #
 # WHY. xtrace prints every simple command with its words EXPANDED — an assignment, a `[[ … ]]`,
 # a function call's arguments, and every command a `$(…)` runs. kb_auth_header keeps the bearer
@@ -877,10 +882,13 @@ kb_xtrace_off() {
     { case $- in
         *x*) set +x; [[ -z "${1:-}" ]] || printf -v "$1" '%s' x ;;
         *)   [[ -z "${1:-}" ]] || printf -v "$1" '%s' '' ;;
+      esac
+      case $- in
+        *v*) set +v; [[ -z "${1:-}" ]] || printf -v "$1" '%sv' "${!1}" ;;
       esac; } 2>/dev/null
     return 0
 }
-kb_xtrace_restore() { [[ -z "${!1:-}" ]] || set -x; }
+kb_xtrace_restore() { [[ "${!1:-}" != *v* ]] || set -v; [[ "${!1:-}" != *x* ]] || set -x; }
 
 # kb_token_file_read <var> <token_file>: set the CALLER's <var> to the bearer token in
 # <token_file>, TRAILING WHITESPACE (space, tab, CR, LF, VT, FF) STRIPPED; rc 1, <var> untouched,
