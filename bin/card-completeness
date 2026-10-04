@@ -235,8 +235,9 @@ require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
 # repo_from_origin_url <url>: the `<owner>/<repo>` an origin remote URL names, or nothing.
 # `git@host:owner/repo(.git)`, `https://host/owner/repo(.git)`, `ssh://git@host/owner/repo`.
-# `bin/release-pr-body` carries the same function for the same question; the two are held equal
-# by tests/mirror-pair-parity-selftest.sh rather than by this comment.
+# `bin/release-pr-body` carries its own copy of this function for the same question;
+# tests/mirror-pair-parity-selftest.sh § 10 keeps the copies in step by requiring the same answer
+# over one corpus of origin URLs.
 repo_from_origin_url() {
   local url="$1" slug=""
   case "$url" in
