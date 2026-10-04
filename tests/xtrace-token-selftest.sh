@@ -1010,6 +1010,21 @@ _v8() {
 for fl in -v -xv; do
     _v8 "kbcard $fl, board-env tier"   "$fl" "$PB" "$KANBAN_HOST_ENV"     "$KBC" --board pasted show --task 505
     _v8 "kbcard $fl, host-env tier"    "$fl" "$PH" "$TMP/host-pasted.env" "$KBC" --board notok show --task 505
+    # board-stats reads a board env, and move-board its target env, inside a process or command
+    # substitution, which bash runs with `-v` cleared — so these rows go red only when such a read
+    # moves out of the substitution AND the pair stops suspending `v` (and, for board-stats, the
+    # source loses its `2>/dev/null`); each was shown red that way.
+    _v8 "board-stats $fl, board-env tier" "$fl" "$PB" "$KANBAN_HOST_ENV"     "$ROOT/bin/board-stats" --board pasted
+    _v8 "board-stats $fl, host-env tier"  "$fl" "$PH" "$TMP/host-pasted.env" "$ROOT/bin/board-stats" --board notok
+    # move-board reads the target env --no-token, so no refusal follows; its control is that the
+    # target was resolved and the card read (the dry run stops before any write).
+    kb_stub_reset
+    ( KBCARD_TOKEN_FILE="" bash "$fl" "$KBC" --board dev move-board --task 505 --to-board pasted --column backlog --dry-run ) \
+        >"$TMP/v8mb.out" 2>"$TMP/v8mb.err" || true
+    eq "kbcard move-board $fl, target's pasted path: in no stream" "false" "$(has "$PB" "$(cat "$TMP/v8mb.out" "$TMP/v8mb.err")")"
+    eq "kbcard move-board $fl: control — the run WAS verbose" "true" "$(_contains 'source "$KB_LIB"' "$TMP/v8mb.err")"
+    eq "kbcard move-board $fl: control — the target was resolved and the card read" "true" \
+        "$([[ "$(kb_stub_count GET /tasks/505.json)" -ge 1 ]] && echo true || echo false)"
 done
 printf 'pasted:P\n' > "$HOME/.kanban-snapshot-boards"
 _v8 "board-snapshot -v, board-env tier" -v "$PB" "$KANBAN_HOST_ENV"     "$SNAP"
