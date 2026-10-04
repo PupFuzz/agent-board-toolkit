@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-04
+
+**Minor — `KBCARD_DEBUG=1` prints one stderr line per kanban request a board tool sends, and `bash -x` / `bash -v` on a board tool no longer prints the bearer token or a secret pasted into a token-path slot (card#11204, card#11224); the release PR body opens `## Bundled` with a one-sentence review-provenance summary (card#11149).** The PRs in `v0.43.0..v0.44.0` are enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.43.0..origin/dev` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **minor** for new user-visible surface (a new debug flag and a new line in the release body). **No narrowings this release:** no input that succeeded before now fails — the changed outcomes are a token-path value shown as `<value not shown: not a path>` in a refusal message that was already a refusal, and a re-vendor skew (a new bin beside an older lib), neither of which turns a completing call into a failing one (`VERSIONING.md` § Bump sizing, *What this rule does NOT cover*). Upgrade actions: `docs/UPGRADE.md` §6 v0.44.0.
+
 ### Added
 
 - **card#11204** — **`KBCARD_DEBUG=1` prints one stderr line for each kanban request the lib sends: method, url (userinfo masked), HTTP status and elapsed ms, and never the bearer token.** It covers `kb_api`, `kb_api_status` and `fetch_board_cards`, so every `kbcard` verb and every page of a whole-board read. It gives a way to see what a tool sent without `bash -x`; a request a tool sends with its own `curl` (`next-dl`'s DL-sequence claim, `promote-released-cards`, `card-completeness`) does not print it. Documented in `kbcard`'s usage header and README § Debugging a board tool without `bash -x`.
