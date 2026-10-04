@@ -151,7 +151,7 @@ KB_PROG="next-dl"
 # The token read and its mask are the lib's (card#9777). Asked for by definedness before any
 # request: beside a lib that predates them the claim would go out with no bearer and the
 # board-max scan would die at rc 127, neither of which names the cause.
-declare -F kb_token_file_read kb_mask_token >/dev/null || { echo "next-dl: the _kb-board-lib.sh beside this script predates kb_token_file_read / kb_mask_token — re-vendor _kb-board-lib.sh alongside this tool (INSTALL.md §3). Nothing was requested." >&2; exit 1; }
+declare -F kb_token_file_read kb_mask_token kb_xtrace_off >/dev/null || { echo "next-dl: the _kb-board-lib.sh beside this script predates kb_token_file_read / kb_mask_token / kb_xtrace_off — re-vendor _kb-board-lib.sh alongside this tool (INSTALL.md §3). Nothing was requested." >&2; exit 1; }
 
 USAGE='usage: next-dl kanban|bridge|--board <name> [--peek] [--require-counter]'
 peek=0
@@ -423,12 +423,12 @@ dl_sequence_call() (
     # token is a different, measured outcome: nothing went out on the wire to find, and the body
     # is quoted whole.
     resp_excerpt() {
-        local tok body
+        local tok body _kbx
         kb_token_file_read tok "$token_file" || {
             printf '[withheld — this tool could not re-read its own token file to mask it out of this body]'
             return 0
         }
-        kb_mask_token body "$tok" "$1"
+        kb_xtrace_off _kbx; kb_mask_token body "$tok" "$1"; kb_xtrace_restore _kbx
         # One log LINE: newlines/tabs/CR to spaces, then C0 controls AND DEL dropped, runs squeezed
         # — `resp_detail`'s chain, and the reason it is a chain rather than one `tr` is in that
         # function's own comment. Then, and only then, the cut.
@@ -494,7 +494,7 @@ dl_sequence_call() (
     # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
     resp="$(curl -sS -w $'\n%{http_code}' -X "$method" \
         -H @- -H "Accept: application/json" \
-        "$api/boards/$board/$path" 2>/dev/null <<<"$(kb_token_file_read tok "$token_file" || tok=""; kb_auth_header "$tok")")" || {
+        "$api/boards/$board/$path" 2>/dev/null <<<"$(kb_xtrace_off; kb_token_file_read tok "$token_file" || tok=""; kb_auth_header "$tok")")" || {
         # THE TRANSPORT DIED. ONE cause, TWO dispositions, and the parameter — not the prose —
         # decides which (card#10230), exactly as the 2xx-undecodable arm below does. The CAUSE
         # line is unconditional and unchanged: it is still NOT a 404, because nothing was
@@ -701,7 +701,7 @@ board_dl_max() (
     # 2xx carrying no usable value under --peek only. Those last TWO do NOT reach here on the
     # claim — a number may already be spent in each of them, and this scan cannot see a
     # spent-but-unstamped DL, so it would answer at or below it.
-    cards="$(fetch_board_cards "$api" "$tok" "$board" "${NEXT_DL_PAGE_CAP:-50}")" || {
+    cards="$(kb_xtrace_off; fetch_board_cards "$api" "$tok" "$board" "${NEXT_DL_PAGE_CAP:-50}")" || {
         rc=$?
         [[ "$rc" -eq 1 ]] && { echo "next-dl: board $board could not be read at all (no response, a non-2xx status, or a 2xx carrying no card array) — refusing to mint from the local scan alone (would drop this board's DL floor and could re-mint a used DL)" >&2; exit 2; }
         echo "next-dl: board $board did not return a complete card list (fetch rc=$rc) — refusing to mint from a partial scan (could re-mint a used DL)" >&2

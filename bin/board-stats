@@ -749,7 +749,7 @@ _bs_one_board() {
     local name="$1" label="$2" cut="$3" now="$4" tmp="$5"
     local envf="$HOME/.kanban-${name}-board.env"
     local -a fails=() vals=()
-    local board_id="" tokfile="" bl="" pr="" sh="" rl="" wd=""
+    local _bst_x board_id="" tokfile="" bl="" pr="" sh="" rl="" wd=""
     local stock_ok=false stock_complete=false flow_ok=false flow_complete=false
     local rc pre map cls err termn pulln msg brmeta wip=null
     local cardfile="$tmp/cards.json" rowsfile="$tmp/rows.jsonl"
@@ -767,7 +767,7 @@ _bs_one_board() {
         mapfile -t vals < <(kb_board_env_get "$envf" KB_BOARD_ID KBCARD_TOKEN_FILE \
             KB_STAGE_BACKLOG KB_STAGE_PRIORITIZED \
             KB_STAGE_SHIPPED_TO_DEV KB_STAGE_RELEASED_TO_MAIN KB_STAGE_WONT_DO)
-        board_id="${vals[0]:-}"; tokfile="${vals[1]:-}"
+        kb_xtrace_off _bst_x; board_id="${vals[0]:-}"; tokfile="${vals[1]:-}"; kb_xtrace_restore _bst_x
         bl="${vals[2]:-}"; pr="${vals[3]:-}"
         sh="${vals[4]:-}"; rl="${vals[5]:-}"; wd="${vals[6]:-}"
 
@@ -780,12 +780,18 @@ _bs_one_board() {
             # ~/.kanban-dev-token, which was the credential every board that declared none
             # silently shared. The store rung is a DISCOVERY of a path an operator wrote in
             # their own credential store, which is why it sits below every declaration.
+            # The tests below expand the token-PATH slot, where a pasted secret lands, so they run
+            # untraced, and each arm restores the trace first (card#11204).
+            kb_xtrace_off _bst_x
             if ! tokfile="$(kb_declared_token_file "$envf" "$tokfile" "${KB_HOST_TOKEN_FILE:-}")"; then
+                kb_xtrace_restore _bst_x
                 fails+=("no KBCARD_TOKEN_FILE declared in $envf or ~/.kanban-host.env, and no usable [kanban] api_token_file in the coord credential store — this board contributes nothing to the report")
             elif ! kb_read_token "$tokfile"; then
-                fails+=("token file unreadable: $tokfile — this board contributes nothing to the report")
+                kb_xtrace_restore _bst_x
+                fails+=("token file unreadable: $(kb_xtrace_off; kb_path_shown "$tokfile") — this board contributes nothing to the report")
             else
-                fetch_board_cards "$API" "$KB_TOKEN" "$board_id" "$_BS_CARD_PAGE_CAP" \
+                kb_xtrace_restore _bst_x
+                (kb_xtrace_off; fetch_board_cards "$API" "$KB_TOKEN" "$board_id" "$_BS_CARD_PAGE_CAP") \
                     > "$cardfile" 2>/dev/null
                 rc=$?
                 # `stock_complete` is FAIL-CLOSED: it is initialised false and exactly ONE arm

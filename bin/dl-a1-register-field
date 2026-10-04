@@ -95,7 +95,7 @@ KB_API_QUIET=1
 # before either write: beside a lib that predates them the register POST goes out and this
 # tool then dies at `command not found` (rc 127) quoting the response, rather than at rc 2
 # before any request — this tool's own published "refused before any request" rc.
-declare -F kb_mask_token kb_stage_write >/dev/null || { echo "dl-a1-register-field: the _kb-board-lib.sh beside this script predates kb_mask_token / kb_stage_write — re-vendor _kb-board-lib.sh alongside this tool (INSTALL.md §3). Nothing was requested." >&2; exit 2; }
+declare -F kb_mask_token kb_stage_write kb_xtrace_off >/dev/null || { echo "dl-a1-register-field: the _kb-board-lib.sh beside this script predates kb_mask_token / kb_stage_write / kb_xtrace_off — re-vendor _kb-board-lib.sh alongside this tool (INSTALL.md §3). Nothing was requested." >&2; exit 2; }
 
 USAGE='usage: dl-a1-register-field [--board NAME] [--stage ID] [--swimlane ID] [--sentinel N]'
 
@@ -211,7 +211,7 @@ reg_body="${reg_out#*$'\n'}"
 # Quoted to stderr on the FATAL register arm, so masked here, once (card#9777): the POST sent
 # $KB_TOKEN in its Authorization header, and a server echoing request headers hands it back.
 # The 2xx arm only reads .data.id out of it, which the mask cannot change for a real token.
-kb_mask_token reg_body "${KB_TOKEN:-}" "$reg_body"
+kb_xtrace_off _dla1_x; kb_mask_token reg_body "${KB_TOKEN:-}" "$reg_body"; kb_xtrace_restore _dla1_x
 if [[ "$reg_http" =~ ^2 ]]; then
     # 2>/dev/null alone silenced the MESSAGE and kept the STATUS: a 2xx whose body is not JSON
     # (a proxy's HTML, a truncated read) still exited 5 through `set -e` — quietly, which is

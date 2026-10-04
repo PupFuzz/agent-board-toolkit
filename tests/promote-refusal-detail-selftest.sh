@@ -578,4 +578,20 @@ eq "empty-string token: the SAME unset wording (never seen as whitespace-only)" 
 
 export KANBAN_WRITEBACK_TOKEN="$TOKEN_VALUE"
 
+echo "== § 10 — UNDER bash -x THE TOKEN IS NOT TRACED (card#11204) =="
+# xtrace prints every command with its words expanded, so the token's read, its strip and the
+# header built from it are held with xtrace suspended, and api() feeds curl that header as a
+# variable. THE CONTROLS: the move really happened (so the token was used), and the trace was live
+# after the token was in hand (api() is traced). Only a success is driven: on a refusal a server
+# that ECHOES the header puts the token into a body the trace then prints — a body, not an
+# expansion of the token, and outside what this suspension can reach.
+: > "$PATCH_LOG"
+rc=0
+out="$(cd "$TMP" && bash -x "$PRC" --config "$TMP/release-pr.json" --dls "DL-100" 2>"$TMP/xtrace.err")" || rc=$?
+eq "bash -x: the token is NOT in the trace"                 "false" "$(has "$TOKEN_VALUE" "$(cat "$TMP/xtrace.err")")"
+eq "bash -x: …nor on stdout"                                "false" "$(has "$TOKEN_VALUE" "$out")"
+eq "bash -x: control — the move was really sent"            "true"  "$(has '/tasks/1.json' "$(cat "$PATCH_LOG")")"
+eq "bash -x: control — the trace was live after the token"  "true"  "$(grep -qE '^\++ api ' "$TMP/xtrace.err" && echo true || echo false)"
+eq "bash -x: the traced run still succeeds"                 "0"     "$rc"
+
 _summary "promote-refusal-detail-selftest"

@@ -939,7 +939,7 @@ _ndl_stale="$(_bin_beside_stale_lib "$TMP/ndl-stale" "$NDL" kb_token_file_read)"
 kb_stub_reset; rc=0
 out="$("$_ndl_stale" --board dev 2>"$TMP/err")" || rc=$?; err="$(cat "$TMP/err")"
 eq "lib without kb_token_file_read → rc 1, mints nothing, NO request" "1||0" "$rc|$out|$(kb_stub_total)"
-eq "…and says which lib to re-vendor" "true" "$(has 'predates kb_token_file_read / kb_mask_token — re-vendor _kb-board-lib.sh' "$err")"
+eq "…and says which lib to re-vendor" "true" "$(has 'predates kb_token_file_read / kb_mask_token / kb_xtrace_off — re-vendor _kb-board-lib.sh' "$err")"
 unset _ndl_stale
 # ⭐ THE THIRD CELL OF THAT PAIR, which neither of the two above reaches: a 2xx with a body that is
 # GENUINELY EMPTY. The arm DID read an answer, so it passes "" as the excerpt argument — set, and

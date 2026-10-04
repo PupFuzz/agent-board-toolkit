@@ -635,6 +635,9 @@ board_envf="$(kb_board_env_for "$board" || true)"
 # host-local opt-in. (Inverting the board_id order alone would NOT have closed this: the two
 # sources are mutually-exclusive populations, so the inversion only ever helps the population
 # that never had the exposure — the gate is the real fix.)
+# Every line from here to the token read expands the token-PATH slot, where a pasted secret
+# lands, so they run untraced (card#11204); each skip restores the trace before it speaks.
+kb_xtrace_off _bcs_px
 board_tok=""
 if [ "$board_src" = "hostlocal" ] && [ -n "$board_envf" ]; then
     IFS= read -r board_tok <<<"$(kb_board_env_get "$board_envf" KBCARD_TOKEN_FILE)"
@@ -653,10 +656,14 @@ fi
 # fail-soft policy.
 tok_where="${board_envf:-$HOME/.kanban-host.env}"
 tokfile="$(kb_declared_token_file "$tok_where" "$board_tok" "${KB_HOST_TOKEN_FILE:-}")" \
-    || bcs_skip "no kanban token file is declared for this board (see docs/INSTALL.md §3)"
-kb_read_token "$tokfile" \
-    || bcs_skip "kanban token file not readable: $tokfile (see docs/INSTALL.md §3)"
-token="$KB_TOKEN"
+    || { kb_xtrace_restore _bcs_px; bcs_skip "no kanban token file is declared for this board (see docs/INSTALL.md §3)"; }
+if ! kb_read_token "$tokfile"; then
+    tokfile_shown="$(kb_path_shown "$tokfile")"
+    kb_xtrace_restore _bcs_px
+    bcs_skip "kanban token file not readable: $tokfile_shown (see docs/INSTALL.md §3)"
+fi
+kb_xtrace_restore _bcs_px
+kb_xtrace_off _bcs_x; token="$KB_TOKEN"; kb_xtrace_restore _bcs_x
 
 # Effective api_base: the committed value, unless it is a documentation-placeholder host
 # (host-scrubbed) or absent (committed_api empty — a non-release repo) — then the host-env-
@@ -689,7 +696,7 @@ kb_require_https_host "$api" || bcs_skip "api_base '$api_shown' failed the https
 # resolve the host and bearer from KB_API / KB_TOKEN. api is the effective base resolved+guarded
 # above; KB_TOKEN is already this board's token (kb_read_token set it), but pin both explicitly
 # so the shared callers can't reach for a stale ambient value.
-KB_API="$api"; KB_TOKEN="$token"
+KB_API="$api"; kb_xtrace_off _bcs_x; KB_TOKEN="$token"; kb_xtrace_restore _bcs_x
 
 # Stage ids for THIS board, from the SAME board env resolved above (a second matcher here
 # was free to pick a different file than the token's on a duplicate KB_BOARD_ID), via the
@@ -751,7 +758,7 @@ if [ -n "$dl" ]; then
     # discarded anyway. What survives there is kb_bcs_log's durable log FILE, which
     # carries this line and nothing from the lib, so a cause named here would be the
     # operator's only lead and wrong on three rcs out of four.
-    cards="$(fetch_board_cards "$api" "$token" "$board")" \
+    cards="$(kb_xtrace_off; fetch_board_cards "$api" "$token" "$board")" \
         || bcs_skip "board $board did not return a complete card list (fetch rc=$?)"
     cid="$(printf '%s' "$cards" | jq -r --argjson want "$dl" "$KB_JQ_REF_CANON"'
         [ .[]
@@ -803,7 +810,7 @@ if [ "$http" != "200" ]; then
     case "$http" in
         404) ;;   # fall through to the not-a-card handling below
         000) bcs_skip "card #$cid could not be read — the kanban API at $api_shown is unreachable; the card was NOT confirmed missing" ;;
-        401|403) bcs_skip "card #$cid could not be read — the kanban API rejected the token from ${KB_TOKEN_FILE:-?} (HTTP $http); the card was NOT confirmed missing" ;;
+        401|403) bcs_skip "card #$cid could not be read — the kanban API rejected the token from $(kb_xtrace_off; kb_path_shown "${KB_TOKEN_FILE:-}") (HTTP $http); the card was NOT confirmed missing" ;;
         *) bcs_skip "card #$cid could not be read — the kanban API returned HTTP $http; the card was NOT confirmed missing" ;;
     esac
 fi

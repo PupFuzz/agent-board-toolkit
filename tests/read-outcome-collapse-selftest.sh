@@ -254,7 +254,6 @@ ROOT="$(cd "$HERE/.." && pwd)"
 DISPOSITIONED=(
   "bin/agent-board-toolkit-runtime-check:p|SAME OUTCOME — command -v: a tool this seat cannot resolve cannot be run, so 'missing' is true of absent and unreadable alike."
   "bin/agent-board-toolkit-runtime-check:newest|SAME OUTCOME — empty warns 'cannot judge staleness (UNKNOWN, not ok)' and continues; it never reports current. The offline case is named separately at the fetch above."
-  "bin/agent-board-toolkit-runtime-check:rc_store_tok|SAME OUTCOME — the store rung answers rc 1 with nothing on stdout for every state it refuses (absent store, duplicated key, inline token, %-bearing or credential-shaped pointer), mirroring the lib's rung, which the TOOLS also resolve nothing from. 'No usable pointer' and 'no store' must therefore both mean 'not a source here'; the lib is what speaks about a refused store, at each tool's use site."
   "bin/agent-board-toolkit-runtime-check:d|SAME OUTCOME — a digest is empty only when nothing could produce one (no sha256sum, or the file stopped being readable between the two probes), and the emptiness test IS the honest-UNKNOWN branch: it warns 'CANNOT BE VERIFIED (UNKNOWN, not ok)' and classifies nothing. A verdict is never derived from a missing digest."
   "bin/agent-board-toolkit-runtime-check:v|NO READ of the answer — the subshell's rc is the SOURCED env file's last-command status, which says nothing about whether that file DECLARED KBCARD_TOKEN_FILE; the declaration's presence is exactly the emptiness test. Same contract as the lib's kb_board_env_get, which reports an empty line for a var the file does not set."
   "bin/board-card-start:dltok|NO READ — grep over \$branch, already in memory."
@@ -276,6 +275,7 @@ DISPOSITIONED=(
   "bin/board-stats:obj|SAME OUTCOME — empty emits a stub object carrying the board identity and an explicit failure string, so no board is ever dropped from the report."
   "bin/board-stats:(top)():envelope|SAME OUTCOME — the default is _BS_BREACH_JQ's '(.data // null)', which is immediately CLASSIFIED: anything but an object whose columns/swimlanes/cells are all arrays emits nothing, and _bs_wip_breaches turns that empty into error 'the response is not the shape this tool reads' with breaches null. A measured preview with nothing at limit is an object of three empty arrays, which is non-empty, so no unreadable body reads as 'nothing at limit'."
   "bin/card-completeness:IDS|NO READ — grep over \$CARDS_IN, the caller's own --cards value, already in memory; an empty result dies '--cards … contains no card ids' before any request, so no verdict is ever built from it."
+  "bin/card-completeness:REPO|SAME OUTCOME — repo_from_origin_url over the origin remote's URL: no origin, an unreadable git config and a URL naming no <owner>/<repo> all leave REPO empty, and the next line dies 'no repo to read PRs from' — every one of them refuses."
   "bin/install-board-hooks:root|SAME OUTCOME — both exit 1 'cannot resolve the work-tree root'; git's own refusal is captured separately just above."
   "bin/install-board-hooks:cdir|SAME OUTCOME — both exit 1 'cannot resolve the git common directory', the fail-closed direction for an installer."
   "bin/install-board-hooks:super|SAME OUTCOME — an unresolvable superproject and no superproject both take the non-submodule wording; the install target is unchanged either way."
@@ -300,6 +300,8 @@ DISPOSITIONED=(
   "bin/release-pr-body:promote|SAME OUTCOME — falls back to the sibling directory, then returns BEFORE any coverage line is printed, so an unresolvable mover yields no coverage report rather than a clean one."
   "bin/release-pr-body:miss|DISPOSED — the mover's rc is captured at the call ('&& rc=0 || rc=\$?') and a non-zero rc prints 'could not run'; this grep only reads output already accepted."
   "bin/release-pr-body:stranded|DISPOSED — line 2 of the mover's no-card report (card#8421), read at the same site and out of the same already-accepted \$out as miss above: the mover's rc is captured at the call ('&& rc=0 || rc=\$?') and a non-zero rc prints 'could not run' and RETURNS before either grep runs."
+  "bin/release-pr-body:repo|SAME OUTCOME — no origin, an unreadable git config and an origin naming no <owner>/<repo> all leave repo empty, and that branch asks the verifier nothing: every PR is reported 'not measured', with the reason on stderr — never a record and never a no (card#11149)."
+  "bin/release-pr-body:verifier|SAME OUTCOME — command -v: a verifier this seat cannot resolve cannot be run, so absent and unresolvable both render 'not measured for any of the M bundled changes (no review-record verifier on this machine)', which claims nothing was measured (card#11149)."
   "bin/_kb-board-lib.sh:fetch_board_cards()|DISTINCT — rc 1 is only 'page 1 was not read' (no response, a non-2xx, or a 2xx with no card array); an empty board answers rc 0 with [] (card#6594), so no read-and-absent outcome shares it. Where its rc is used it is branched on (the DL minter refuses on every non-zero one, card#6631); the one discard is the archive census above, where a partial read is the conservative direction."
   "bin/_kb-board-lib.sh:kb_owner_resolve()|SAME OUTCOME — rc 1 is 'no kanban user can be resolved for this seat' for every cause (config unreadable, not a JSON object, no seat, not on the roster, no API base, no kanban_user_id or none for this instance, a malformed id, a roster jq could not evaluate), and every rc-1 arm names its cause in KB_OWNER_WHY; the one caller that tests it (kb_owner_claim) assigns nothing and prints KB_OWNER_WHY. Nothing is guessed and no absence is claimed."
   "bin/_kb-board-lib.sh:kb_owner_claim:if kb_owner_resolve|SAME OUTCOME — the only reads are of the LOCAL coord config and \$KB_API, and every false answer assigns nothing and prints KB_OWNER_WHY, naming which; nothing is guessed and no absence is claimed."
@@ -408,6 +410,13 @@ function pieces(s, arr, so,   i, c, n, q, d, k, cur) {
     }
     arr[++k] = cur; return k
 }
+# untraced(s) — s with every `kb_xtrace_off [var];` statement removed (card#11204). The xtrace
+# suspension in the lib prints nothing and answers 0, and a token-bearing call carries it on its
+# own line — `x="$(kb_xtrace_off; fetch_board_cards …)"`, `(kb_xtrace_off; fetch_board_cards …) >f`.
+# Without this the capture resolves to kb_xtrace_off, the rc of the paginator stops being seen as
+# USED, and its rc1-merge member silently drops out of the scan. (No apostrophe in this comment:
+# it sits inside a single-quoted bash string.)
+function untraced(s) { gsub(/kb_xtrace_off([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)?[[:space:]]*;[[:space:]]*/, "", s); return s }
 BEGIN { SQ = sprintf("%c", 39) }
 '
 _roc_awk="$_roc_awk_lib"'
@@ -564,6 +573,7 @@ END {
             if (opcont(J)) { cont = J; continue }
             cont = ""
             if (iscomment(J)) continue
+            J = untraced(J)
             fn = fnat[F, st]; fk = (fn == "" ? "(top)" : fn)
             write = (J ~ /(^|[^A-Za-z])(PATCH|POST|PUT|DELETE)([^A-Za-z]|$)/)
             if (rep && (J ~ /\.data[[:space:]]*\/\/|\.data\[\]\?/ || J ~ /\.data(\.[A-Za-z_][A-Za-z0-9_]*|\[[^]]*\])+\??[[:space:]]*\/\/[[:space:]]*(\[|\{|"|[0-9]|false|true|null|\$)/)) rec(F, (fn == "" ? "(top)" : fn) "():envelope", st, "envelope-default")
@@ -1227,6 +1237,27 @@ EOF
 )"
 eq "card#6631 respelled 'if ! cards=\"\$(fetch_board_cards …)\"; then exit 1; fi'" \
    "$(printf '%s\n' 'bin/next-dl:board_dl_max()' 'bin/next-dl:board_dl_max:if fetch_board_cards')" "$(_roc_members "$S6631B")"
+# card#11204 put `kb_xtrace_off;` at the head of every token-bearing call. The paginator's rc must
+# still read as USED through both spellings that shipped — a capture whose `|| { rc=$?` keeps it,
+# and a subshell whose status is taken on the next line — or its rc1-merge member drops out.
+SXTRACE="$(_seam xtrace board-stats <<'EOF'
+fetch_board_cards() {
+    local resp
+    resp="$(curl -sS "$1/tasks/search.json")" || return 1
+    printf '%s' "$resp"
+}
+other_reader() {
+    local resp
+    resp="$(curl -sS "$1/other.json")" || return 1
+    printf '%s' "$resp"
+}
+cards="$(kb_xtrace_off; fetch_board_cards "$api" "$tok" 42)" || { rc=$?; echo "fetch rc=$rc" >&2; exit 2; }
+(kb_xtrace_off; other_reader "$api" "$tok") > "$f" 2>/dev/null
+rc=$?
+EOF
+)"
+eq "an rc kept through \$(kb_xtrace_off; F …) and through (kb_xtrace_off; F …) is still F's (card#11204)" \
+   "$(printf '%s\n' 'bin/board-stats:fetch_board_cards()' 'bin/board-stats:other_reader()')" "$(_roc_members "$SXTRACE")"
 eq "card#10241 respelled 'if ! out=\"\$(by_ref_has …)\"'" \
    "$(printf '%s\n' 'bin/dl-a1-register-field:(top):if by_ref_has' 'bin/dl-a1-register-field:by_ref_has()' 'bin/dl-a1-register-field:kb_by_ref_hit():envelope')" \
    "$(_roc_members "$S10241B")"
