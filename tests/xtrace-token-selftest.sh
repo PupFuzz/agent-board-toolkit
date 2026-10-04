@@ -23,32 +23,48 @@
 #   § 3    THE HELPER'S SEMANTICS, in-process: re-entrancy, and that a caller's `set -x` is on
 #          again when a token-handling lib call returns — and stays off for a caller without it.
 #   § 4    THE CALL-SITE RULE, statically, over every shipped shell file (CI's own population,
-#          `_shipped_shell_files`). § 1–2 can only see the verbs they run; this sees every line
-#          that expands a variable whose NAME carries `TOKEN` (not `*_FILE` / `*_REGEX`).
+#          `_shipped_shell_files`). § 1–2 can only see the verbs they run; this reads every line,
+#          and catches the common shapes of a token line run with xtrace on — a heuristic, bounded
+#          below.
 #   § 5    KBCARD_DEBUG=1, the per-request view offered instead of `-x`: present, and token-free.
 #   § 6    A second leak, no `-x` needed: a secret pasted into a token-PATH slot is not echoed by
 #          the refusal (kb_path_shown), driven through the bins, and held statically over every
 #          message line that names a token-path variable — the names DERIVED to a fixed point.
 #   § 7    The same pasted path under `bash -x`, at the board-env, host-env and ambient tiers,
 #          through every lib-sourcing bin that resolves one and the runtime check.
+#   § 8    The same pasted path under `bash -v` / `bash -xv` (card#11224): verbose mode echoes
+#          every line a sourced env file holds, so the pair suspends `-v` too.
 #
 # WHAT A GREEN RUN DOES NOT COVER — read before citing it:
-#   * § 4's predicate is an expansion of a variable whose name contains `TOKEN` (upper case; not
-#     ending `_FILE` or `_REGEX`), and a CALL of fetch_board_cards, kb_mask_token or
+#   * § 4 IS A HEURISTIC OVER COMMON SHAPES, NOT A PROOF. The gate on a leak is the `bash -x`
+#     runs (§ 1–2, § 7) and the `bash -v` / `-xv` runs (§ 8), on the paths they drive; § 4 adds a
+#     line scan over every shipped file that catches the common ways to get the suspension wrong.
+#     Its full predicate is stated at the leg, and is stated nowhere else — README and CHANGELOG
+#     point here.
+#   * § 4 sees only an expansion of, or an assignment to, a variable whose name contains `TOKEN`
+#     (not `*_FILE` / `*_REGEX`), and a CALL of fetch_board_cards, kb_mask_token or
 #     kb_auth_header. A token held under a name WITHOUT `TOKEN` in it (a `token` / `tok` local, a
-#     header variable) and expanded in a traced line is invisible to it; only the `bash -x` runs
-#     can catch that, and only on the paths they drive. Nor does it see an indirect `${!v}`
-#     whose target is a token variable.
-#   * § 4 reads lines, not the shell's grammar. Its suspension rule (stated at the leg) counts a
-#     suspension only where it runs unconditionally, and judges every expansion on a line; a
-#     shape it cannot place is scored `bad`, but a suspension made conditional by a construct
-#     spanning lines it does not model (anything other than a less-indented block closer) is
-#     outside it.
+#     header variable), or reached through an indirect `${!v}`, is invisible to it.
+#   * KNOWN FALSE NEGATIVES of § 4, each scored `ok` (or not a member) while the line traces the
+#     token. They are named here rather than patched into the scanner, which reads lines, not the
+#     shell's grammar:
+#       - a comment or a string that opens a region: `x=1  # note; kb_xtrace_off _v`, or
+#         `echo "a; kb_xtrace_off _v"`, opens one the shell never ran;
+#       - a multi-line `$(` / `(` block: a region opened inside it stays open past the `)` that
+#         ended the subshell, and so the suspension;
+#       - `set -x` inside a region: the lines after it are traced but scored `ok`;
+#       - `;;` at the case arm's BODY indent: only a closer indented less than the opener closes
+#         a region, so a suspension in one arm covers the next arm's lines;
+#       - `select` is left out of the call-position keywords (the word after it is a name, not
+#         a command); a call in its word list or body is still seen through `$(` and `do`, and
+#         no false negative through it has been shown — it is named here as an exclusion;
+#       - a token-named variable filled by `read`, `mapfile` / `readarray`, or as an array element
+#         (`KB_TOKEN[0]=…`): not members.
 #   * § 6's message rule is bounded by its PRINTER list (named at the leg; `logger`, `kb_warn` and
 #     any other printer outside it are not seen) and does not follow a path into a callee's
 #     positional parameters, out of a multi-field printf, into a heredoc body, or through a
-#     nameref (`local -n`). § 7 drives the bins it names; a token-path line on another path is
-#     held only by § 6's message rule, which does not look at traces.
+#     nameref (`local -n`). § 7 and § 8 drive the bins they name; a token-path line on another
+#     path is held only by § 6's message rule, which does not look at traces.
 #   * A server that ECHOES the request's Authorization header into its response body (a debug
 #     error page, measured once — card#9301) puts the token into the traced response variables.
 #     That is a body the server sent back, not an expansion of the token, and nothing here
@@ -57,7 +73,9 @@
 #     agent-board-toolkit-runtime-check — suspend xtrace by hand (`case $- in *x*) V=x; set +x`),
 #     which § 4 reads as a region. The `bash -x` legs of the first two live in their own selftests
 #     (promote-refusal-detail-selftest.sh, card-completeness-selftest.sh); release-pr-body's is in
-#     release-pr-body-selftest.sh.
+#     release-pr-body-selftest.sh. That hand form suspends `-x` only, not `-v`, and § 8 does not
+#     drive these bins: none of them sources an env file onto a live stderr today (the runtime
+#     check's env reads run under `>/dev/null 2>&1`), which is what keeps them out of `-v`'s reach.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -181,24 +199,57 @@ eq "a caller WITHOUT -x does not get it turned on by a token read" "true" "$(has
 eq "…nor by a pair"                                           "true" "$(has 'untraced-after-pair=off' "$h")"
 eq "control: the in-process run printed no token"             "false" "$(_contains "$TOK" "$TMP/h.err")"
 eq "control: …and its trace was live"                         "true"  "$(grep -q '^+ ' "$TMP/h.err" && echo true || echo false)"
+# The same pair suspends `set -v` too (card#11224): verbose mode echoes every line the shell READS,
+# so a sourced env file's `KBCARD_TOKEN_FILE=…` line reaches stderr verbatim. RED on the pre-fix
+# pair: `v` stays on inside it. `say` reads `$-` outside any `$(…)`: bash clears `v` in a command
+# substitution, so a probe inside one reads `off` whatever the caller's state.
+# shellcheck disable=SC2016
+hv="$(bash -c '
+    source "$1"
+    say() { local s=off; case $- in *v*) s=on ;; esac; printf "%s=%s\n" "$1" "$s"; }
+    set -v
+    f() { local a b
+          kb_xtrace_off a; say outer-off
+          kb_xtrace_off b; say inner-off
+          kb_xtrace_restore b; say inner-restored
+          kb_xtrace_restore a; say outer-restored; }
+    f
+    set +v
+    g() { local c; kb_xtrace_off c; kb_xtrace_restore c; say untraced-after-pair; }
+    g
+    set -xv
+    k() { local d; kb_xtrace_off d; say xv-off; kb_xtrace_restore d; say xv-restored; }
+    k
+' _ "$LIB" 2>/dev/null)"
+eq "-v: a pair turns verbose off"                             "true" "$(has 'outer-off=off' "$hv")"
+eq "-v: a NESTED pair's restore leaves it off"                "true" "$(has 'inner-restored=off' "$hv")"
+eq "-v: the OUTERMOST restore turns it back on"               "true" "$(has 'outer-restored=on' "$hv")"
+eq "-v: a caller WITHOUT -v does not get it turned on"        "true" "$(has 'untraced-after-pair=off' "$hv")"
+eq "-xv: a pair turns verbose off with xtrace on"             "true" "$(has 'xv-off=off' "$hv")"
+eq "-xv: …and its restore turns verbose back on"              "true" "$(has 'xv-restored=on' "$hv")"
 
 echo "== § 4. the call-site rule, over every shipped shell file =="
 # _xt_scan <file…> — "<file>:<line>:<ok|bad>:<text>" for every MEMBER: a non-comment line that
-# expands a token-bearing variable, or CALLS one of the three functions that take the token by
-# value.
+# expands a token-bearing variable, ASSIGNS one, or CALLS one of the three functions that take the
+# token by value. THIS IS THE RULE'S ONE FULL STATEMENT; the file header says what it is worth.
 #   * A token-bearing variable is DERIVED from its name, not listed: any name containing `TOKEN`,
 #     except one ending `_FILE` (a path, § 6–7's subject) or `_REGEX` (a pattern), expanded as
 #     `$NAME` or `${NAME…}`. `${NAME:+…}` / `${NAME+…}` and `${#NAME}` expand to a fixed word or a
 #     length, never the value, and are not members — `${KANBAN_WRITEBACK_TOKEN:+set}` is the
 #     spelling for "is it set". An indirect `${!v}` is not seen at all.
+#   * An assignment is `NAME=<value>` at a word start (after line start, whitespace, `;` `&` `|`
+#     `(` `{`, so `local NAME=…` too) whose value word holds a `$` or a backquote — xtrace prints
+#     it as `NAME=<expanded value>`; a literal value (`KB_TOKEN=""`) is not a member — and
+#     `printf -v NAME`, whatever follows it.
 #   * A call is the name in command position — line start, or after `;` `&` `|` `(` `{` `$(`, or
-#     after `then`/`do`/`else` — followed by whitespace. A name in an argument list, a message, or
+#     after `then`/`do`/`else`, or after a WHOLE word `if`/`elif`/`while`/`until`/`!`/`command`/
+#     `time` and whitespace — followed by whitespace. A name in an argument list, a message, or
 #     its own definition is not a call.
 # EVERY expansion and call on a member line is judged, not only the first; the line is `ok` only
 # when xtrace is off at each of them:
 #   * a `kb_xtrace_off <var>` EARLIER on the line that is UNCONDITIONAL — it starts the line, or
-#     follows a plain `;` with no `if`/`then`/`do`/`else`/`elif`/`while`/`until`/`for`/`case`,
-#     `{`, `}`, `(`, `)`, `|`, `&`, `&&` or `||` before it on the line — with no
+#     follows a plain `;` with no `if`/`then`/`do`/`else`/`elif`/`while`/`until`/`for`/`case`/
+#     `select`, `{`, `}`, `(`, `)`, `|`, `&`, `&&` or `||` before it on the line — with no
 #     `kb_xtrace_restore <var>` between it and the expansion;
 #   * or a `kb_xtrace_off` (bare or not) directly after `(` / `$(`, with the expansion inside
 #     that same parenthesis — the subshell ends the suspension, so the bare form is sound there;
@@ -213,14 +264,15 @@ echo "== § 4. the call-site rule, over every shipped shell file =="
 #     less-indented block closer.
 # Anything else — a suspension after the expansion, one in a trailing comment, a bare one outside
 # a subshell, a conditional one, an expansion after a same-line restore — is `bad`. The rule reads
-# lines, not the shell's grammar: a construct it cannot place (a region opened after a
-# `$(…)` on the same line, a `{ …; }` group) is scored `bad`, the safe direction.
+# lines, not the shell's grammar. Some constructs it cannot place are scored `bad`, the safe
+# direction (a region opened after a `$(…)` on the same line, a `{ …; }` group); others are
+# scored `ok` while the line traces the token — the header's KNOWN FALSE NEGATIVES.
 _xt_scan() {
     awk '
         function cmdpos_all(s, name,   r, rest, off, out) {
             # every position where <name> stands in command position in s (the start of the
             # match, separator included), space-separated
-            r = "([;&|({]|\\$\\(|then|do|else)[[:space:]]*" name "([[:space:]]|;|\\)|$)"
+            r = "(([;&|({]|\\$\\(|then|do|else)[[:space:]]*|(^|[^A-Za-z0-9_])(if|elif|while|until|command|time|!)[[:space:]]+)" name "([[:space:]]|;|\\)|$)"
             out = ""
             if (match(s, "^[[:space:]]*" name "([[:space:]]|;|\\)|$)")) out = " 1"
             rest = s; off = 0
@@ -240,6 +292,26 @@ _xt_scan() {
                 if (nm !~ /^#/ && nm ~ /TOKEN/ && nm !~ /_FILE$/ && nm !~ /_REGEX$/ &&
                     !(m ~ /^\$\{/ && (after ~ /^:\+/ || after ~ /^\+/)))
                     out = out " " p
+                off += RSTART + RLENGTH - 1; rest = substr(rest, RSTART + RLENGTH)
+            }
+            # an ASSIGNMENT to a token-named variable whose value expands something — traced as
+            # `NAME=<value>` — and a `printf -v NAME`
+            rest = s; off = 0
+            while (match(rest, /(^|[[:space:];&|({])[A-Za-z_][A-Za-z0-9_]*=/)) {
+                p = off + RSTART; m = substr(rest, RSTART, RLENGTH)
+                if (m !~ /^[A-Za-z_]/) { p++; m = substr(m, 2) }
+                nm = m; sub(/=$/, "", nm)
+                after = substr(rest, RSTART + RLENGTH)
+                match(after, "^(\"[^\"]*\"|\047[^\047]*\047|[^[:space:];&|\047\"])*")
+                if (nm ~ /TOKEN/ && nm !~ /_FILE$/ && nm !~ /_REGEX$/ && substr(after, 1, RLENGTH) ~ /[$`]/)
+                    out = out " " p
+                rest = after; off = p + length(m) - 1
+            }
+            rest = s; off = 0
+            while (match(rest, /printf[[:space:]]+-v[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
+                p = off + RSTART; m = substr(rest, RSTART, RLENGTH)
+                nm = m; sub(/^printf[[:space:]]+-v[[:space:]]+/, "", nm)
+                if (nm ~ /TOKEN/ && nm !~ /_FILE$/ && nm !~ /_REGEX$/) out = out " " p
                 off += RSTART + RLENGTH - 1; rest = substr(rest, RSTART + RLENGTH)
             }
             return out cmdpos_all(s, "(fetch_board_cards|kb_mask_token|kb_auth_header)")
@@ -405,6 +477,21 @@ kb_xtrace_off _s; x="$KB_TOKEN"; kb_xtrace_restore _s; echo "$KB_TOKEN"
 x="$(kb_xtrace_off; fetch_board_cards "$A" "$KB_TOKEN" 1)"; echo "$KB_TOKEN"
 case $- in *x*) _q=x; set +x ;; *) _q= ;; esac
 [ -z "$_q" ] || set -x; echo "$KB_TOKEN"
+if kb_mask_token out "$t" "$b"; then :; fi
+elif kb_auth_header "$t" >/dev/null; then :
+while fetch_board_cards "$A" "$t" 1; do :; done
+until fetch_board_cards "$A" "$t" 1; do :; done
+! kb_mask_token out "$t" "$b"
+command kb_auth_header "$t"
+time fetch_board_cards "$A" "$t" 1
+echo runtime kb_mask_token is a word here
+KB_TOKEN="$(cat -- "$f")"
+local GH_TOKEN="$raw"
+printf -v KB_TOKEN '%s' "$raw"
+KB_TOKEN=""
+kb_xtrace_off _t; KB_TOKEN="$(cat -- "$f")"; kb_xtrace_restore _t
+for _z in $list; do x=1; kb_xtrace_off _ka; done; echo "$KB_TOKEN"; kb_xtrace_restore _ka
+[[ -n "$z" ]] || { x=1; kb_xtrace_off _kb; }; echo "$KB_TOKEN"; kb_xtrace_restore _kb
 PLANT
 planted="$(_xt_scan "$TMP/plant.sh")"
 pv="$(printf '%s\n' "$planted" | _xt_violations)"
@@ -449,6 +536,27 @@ eq "control: inside a region, an expansion after a same-line restore is a violat
 eq "control: EVERY expansion on a line is judged, not only the first" "true" "$(_pv 57)"
 eq "control: …an expansion after a suspended \$(…) closes is a violation" "true" "$(_pv 58)"
 eq "control: …and one after the standalone form's same-line \`|| set -x\`" "true" "$(_pv 60)"
+# Rows 61–75 (card#11224). 61–67: a call in command position after `if`, `elif`, `while`,
+# `until`, `!`, `command` or `time` — none was a member before, so each traced the token unseen.
+eq "control: a call after \`if\` is a violation"                    "true"  "$(_pv 61)"
+eq "control: a call after \`elif\` is a violation"                  "true"  "$(_pv 62)"
+eq "control: a call after \`while\` is a violation"                 "true"  "$(_pv 63)"
+eq "control: a call after \`until\` is a violation"                 "true"  "$(_pv 64)"
+eq "control: a call after \`!\` is a violation"                     "true"  "$(_pv 65)"
+eq "control: a call after \`command\` is a violation"               "true"  "$(_pv 66)"
+eq "control: a call after \`time\` is a violation"                  "true"  "$(_pv 67)"
+eq "control: a keyword ending another word (\`runtime\`) does not make a call" "false" "$(_pm 68)"
+# 69–73: an ASSIGNMENT to a TOKEN-named variable is traced as `NAME=<value>`, so it is a member
+# when its value expands something; a literal value (`KB_TOKEN=""`) traces nothing secret.
+eq "control: \`KB_TOKEN=\"\$(cat …)\"\` is a violation"             "true"  "$(_pv 69)"
+eq "control: \`local GH_TOKEN=\"\$raw\"\` is a violation"            "true"  "$(_pv 70)"
+eq "control: \`printf -v KB_TOKEN …\` is a violation"              "true"  "$(_pv 71)"
+eq "control: a literal assignment (\`KB_TOKEN=\"\"\`) is NOT a member" "false" "$(_pm 72)"
+eq "control: a suspended assignment is a member…"                  "true"  "$(_pm 73)"
+eq "control: …and NOT a violation"                                 "false" "$(_pv 73)"
+# 74–75: plain()'s two sub-rules, each the only test that rejects its line's suspension.
+eq "control: a suspension after \`;\` inside \`do … done\` does not count (the keyword test)" "true" "$(_pv 74)"
+eq "control: a suspension after \`;\` inside \`|| { …; }\` does not count (the [{}()|&] test)" "true" "$(_pv 75)"
 
 echo "== § 5. KBCARD_DEBUG=1: the request a trace would show, without the token =="
 # The alternative this card offers to reaching for `-x`: one stderr line per request. RED when the
@@ -880,5 +988,66 @@ done
 eq "runtime-check: control — the run WAS traced"           "true" "$(grep -q '^+ ' "$TMP/rc.err" && echo true || echo false)"
 eq "runtime-check: control — it judged the pasted declarations (and named them as credential-shaped)" "true" \
     "$(has 'SHAPE OF A CREDENTIAL' "$rcall")"
+
+echo "== § 8. bash -v / -xv and a credential pasted into a token-PATH slot (card#11224) =="
+# Verbose mode echoes every line the shell READS, so sourcing an env file printed its
+# `export KBCARD_TOKEN_FILE="<pasted secret>"` line verbatim, whatever xtrace did. The pair now
+# suspends `v` with `x`. RED on the pre-fix pair: the pasted value is in stderr. The ambient tier
+# is not driven: an ambient value is never read as shell input, so `-v` cannot echo it. CONTROLS:
+# the run WAS verbose (the bin's own source text is in stderr), and it reached the refusal that
+# follows resolution.
+# _v8 <label> <flags> <value> <host env> <cmd…> — one run under `bash <flags>`, from $X7_DIR
+_v8() {
+    local label="$1" flags="$2" val="$3" henv="$4"; shift 4
+    kb_stub_reset
+    ( cd "${X7_DIR:-$TMP}" && KANBAN_HOST_ENV="$henv" KBCARD_TOKEN_FILE="" KB_BCS_LOG="$TMP/bcs.log" \
+        bash "$flags" "$@" ) >"$TMP/v8.out" 2>"$TMP/v8.err" || true
+    eq "$label: the pasted value is in no stream" "false" "$(has "$val" "$(cat "$TMP/v8.out" "$TMP/v8.err" "$TMP/bcs.log" 2>/dev/null)")"
+    eq "$label: control — the run WAS verbose"    "true"  "$(_contains 'source "$KB_LIB"' "$TMP/v8.err")"
+    eq "$label: control — it reached the refusal" "true" \
+        "$(has '<value not shown: not a path>' "$(cat "$TMP/v8.out" "$TMP/v8.err" "$TMP/bcs.log" 2>/dev/null)")"
+}
+for fl in -v -xv; do
+    _v8 "kbcard $fl, board-env tier"   "$fl" "$PB" "$KANBAN_HOST_ENV"     "$KBC" --board pasted show --task 505
+    _v8 "kbcard $fl, host-env tier"    "$fl" "$PH" "$TMP/host-pasted.env" "$KBC" --board notok show --task 505
+    # board-stats reads a board env, and move-board its target env, inside a process or command
+    # substitution, which bash runs with `-v` cleared — so these rows go red only when such a read
+    # moves out of the substitution AND the pair stops suspending `v` (and, for board-stats, the
+    # source loses its `2>/dev/null`); each was shown red that way.
+    _v8 "board-stats $fl, board-env tier" "$fl" "$PB" "$KANBAN_HOST_ENV"     "$ROOT/bin/board-stats" --board pasted
+    _v8 "board-stats $fl, host-env tier"  "$fl" "$PH" "$TMP/host-pasted.env" "$ROOT/bin/board-stats" --board notok
+    # move-board reads the target env --no-token, so no refusal follows; its control is that the
+    # target was resolved and the card read (the dry run stops before any write).
+    kb_stub_reset
+    ( KBCARD_TOKEN_FILE="" bash "$fl" "$KBC" --board dev move-board --task 505 --to-board pasted --column backlog --dry-run ) \
+        >"$TMP/v8mb.out" 2>"$TMP/v8mb.err" || true
+    eq "kbcard move-board $fl, target's pasted path: in no stream" "false" "$(has "$PB" "$(cat "$TMP/v8mb.out" "$TMP/v8mb.err")")"
+    eq "kbcard move-board $fl: control — the run WAS verbose" "true" "$(_contains 'source "$KB_LIB"' "$TMP/v8mb.err")"
+    eq "kbcard move-board $fl: control — the target was resolved and the card read" "true" \
+        "$([[ "$(kb_stub_count GET /tasks/505.json)" -ge 1 ]] && echo true || echo false)"
+done
+printf 'pasted:P\n' > "$HOME/.kanban-snapshot-boards"
+_v8 "board-snapshot -v, board-env tier" -v "$PB" "$KANBAN_HOST_ENV"     "$SNAP"
+printf 'notok:N\n' > "$HOME/.kanban-snapshot-boards"
+_v8 "board-snapshot -v, host-env tier"  -v "$PH" "$TMP/host-pasted.env" "$SNAP"
+X7_DIR="$TMP/x7repo"
+git -C "$X7_DIR" config kanban.board-id 45
+_v8 "board-card-start -v, host-env tier" -v "$PH" "$TMP/host-pasted.env" "$ROOT/bin/board-card-start"
+X7_DIR=""
+# In-process: the resolver runs inside a caller's `set -v`, and a file sourced AFTER it is still
+# echoed — so verbose came back once the pasted path was handled, rather than staying off.
+printf 'echo marker-after-resolve >/dev/null\n' > "$TMP/marker.sh"
+# shellcheck disable=SC2016
+( KANBAN_HOST_ENV="$TMP/host-pasted.env" KBCARD_TOKEN_FILE="" bash -c '
+    source "$1"
+    set -v
+    kb_resolve_env "$2" >/dev/null
+    kb_load_host_env
+    source "$3"
+' _ "$LIB" "$HOME/.kanban-pasted-board.env" "$TMP/marker.sh" ) >/dev/null 2>"$TMP/v8in.err" || true
+eq "in-process -v: kb_resolve_env does not echo the board env's pasted value" "false" "$(_contains "$PB" "$TMP/v8in.err")"
+eq "in-process -v: kb_load_host_env does not echo the host env's pasted value" "false" "$(_contains "$PH" "$TMP/v8in.err")"
+eq "in-process -v: control — a file sourced after them IS echoed (verbose resumed)" "true" \
+    "$(_contains 'echo marker-after-resolve' "$TMP/v8in.err")"
 
 _summary "xtrace-token-selftest"

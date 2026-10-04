@@ -311,8 +311,9 @@ _kb_pointer_fingerprint() {
 # direction. An empty value is withheld. The directory test is what withholds a token whose
 # alphabet includes `/` (standard base64): shaped like a path, but naming no directory. What is
 # left: a pasted value whose directory part happens to exist (relative to the cwd), or that has no
-# separator and starts with `~` or `.`, is still shown; and a real path under a directory that is
-# missing is withheld.
+# separator and starts with `~` or `.`, is still shown; a value whose ONLY separator is a single
+# leading `/` (`/<anything>`) is shown whenever it has no whitespace, because its directory part
+# is `/`; and a real path under a directory that is missing is withheld (card#11224).
 # Its body runs untraced, so its own `local` cannot echo the value under `bash -x`; a caller's
 # CALL line still expands the argument, so call it as `$(kb_xtrace_off; kb_path_shown "$p")`.
 kb_path_shown() {
@@ -837,8 +838,13 @@ kb_board_env_get() {
     )
 }
 
-# kb_xtrace_off [<var>] / kb_xtrace_restore <var>: suspend `set -x` around a line that expands a
-# credential, then put the caller's own trace state back (card#11204).
+# kb_xtrace_off [<var>] / kb_xtrace_restore <var>: suspend `set -x` AND `set -v` around a line that
+# expands a credential, then put the caller's own state of each back (card#11204, card#11224).
+#
+# `-v` because verbose mode echoes every line the shell READS, so sourcing an env file under
+# `bash -v` / `bash -xv` printed its `KBCARD_TOKEN_FILE=…` line verbatim — a secret pasted into
+# that slot included — whatever xtrace did. <var> records which of the two were on (`x`, `v`,
+# `xv` or empty); the bare form suspends both and records nothing.
 #
 # WHY. xtrace prints every simple command with its words EXPANDED — an assignment, a `[[ … ]]`,
 # a function call's arguments, and every command a `$(…)` runs. kb_auth_header keeps the bearer
@@ -853,11 +859,9 @@ kb_board_env_get() {
 # token argument of fetch_board_cards / kb_mask_token / kb_auth_header (positional, so the CALL is
 # where it is traced) — runs with xtrace suspended, by a `kb_xtrace_off` ON THAT SAME LINE (or, inside
 # a lib function that owns the token, a region the function opens and closes itself, as
-# kb_token_file_read does). tests/xtrace-token-selftest.sh § 4 checks, across the shipped shell,
-# every expansion of a variable whose name carries `TOKEN` (not `*_FILE` / `*_REGEX`) and the three
-# by-value calls: suspended BEFORE the first expansion on the line (the bare form only right after
-# `$(` or `(`), or inside such a region. A token under a name without `TOKEN` is outside that
-# check and is caught only by the `bash -x` runs, on the verbs they drive. A token-PATH (where a
+# kb_token_file_read does). tests/xtrace-token-selftest.sh § 4 scans the shipped shell for the
+# common ways to get this wrong — a heuristic whose predicate and known false negatives that file
+# states; its `bash -x` / `bash -v` runs are the gate, on the verbs they drive. A token-PATH (where a
 # pasted secret lands) is suspended the same way wherever it is resolved — kb_resolve_env,
 # kb_load_host_env, kb_board_env_for / _get, and the bins' own tier reads (§ 7 drives them).
 #
@@ -877,10 +881,13 @@ kb_xtrace_off() {
     { case $- in
         *x*) set +x; [[ -z "${1:-}" ]] || printf -v "$1" '%s' x ;;
         *)   [[ -z "${1:-}" ]] || printf -v "$1" '%s' '' ;;
+      esac
+      case $- in
+        *v*) set +v; [[ -z "${1:-}" ]] || printf -v "$1" '%sv' "${!1}" ;;
       esac; } 2>/dev/null
     return 0
 }
-kb_xtrace_restore() { [[ -z "${!1:-}" ]] || set -x; }
+kb_xtrace_restore() { [[ "${!1:-}" != *v* ]] || set -v; [[ "${!1:-}" != *x* ]] || set -x; }
 
 # kb_token_file_read <var> <token_file>: set the CALLER's <var> to the bearer token in
 # <token_file>, TRAILING WHITESPACE (space, tab, CR, LF, VT, FF) STRIPPED; rc 1, <var> untouched,
