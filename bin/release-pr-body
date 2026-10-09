@@ -528,8 +528,8 @@ fi
 pr_token() { printf '%s' "$1" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)' || true; }
 
 # pr_of_subject <subject>: the pull request a commit subject names, read from the subject alone, or
-# nothing. A merge commit's `(#N)` fallback (pr_of_merge), and a non-merge commit whose message
-# carries no `This reverts commit <sha>` line (pr_of_commit), are read here.
+# nothing. A merge commit's `(#N)` fallback (pr_of_merge), and a non-merge commit with no
+# `This reverts commit <sha>` line that applies to it (pr_of_commit), are read here.
 # A subject starting `Revert "` or `Reapply "` (git 2.43 and later writes `Reapply` for a revert
 # of a revert) is a revert whose message was hand-written or edited: it is read only AFTER its last
 # `"`, because the quoted original carries the PR it reverts, never the revert's own (card#11587).
@@ -549,23 +549,37 @@ pr_of_subject() {
 # A commit whose message carries git's `This reverts commit <sha>` line is a revert, and its subject
 # is built from the reverted commit's subject, so a trailing `(#N)` it shares with that subject is
 # inherited, not its own: it never takes the PR number of the commit it reverts (card#11587). Its
-# PR is its last `(#N)` unless that equals the last `(#N)` of a reverted commit's subject. So a
+# PR is its last `(#N)` unless that equals the last `(#N)` of the commit it reverts. So a
 # direct-push `Revert "x (#21)"`, and a direct-push `Reapply "x (#21)" (#25)` of revert-PR #25,
 # have none, while revert-PR #25's squash `Revert "x (#21)" (#25)` is #25.
-# A reverted commit that cannot be read here (a shallow clone, a missing object) credits NO PR: the
-# commit is not measured rather than guessed at. Without that line (a hand-written or edited
-# message) the subject alone decides, by pr_of_subject: such a commit has no other reading.
+# A body-line sha counts as WHAT THIS COMMIT REVERTS only if it is an ANCESTOR of the commit. A
+# squash of a multi-commit PR carries, in GitHub's default body, the `This reverts commit` line of
+# every revert on the PR's branch, naming a branch commit that is not an ancestor of the squash and
+# is unreadable once the branch is deleted, in a full clone too. Such a line says nothing about this
+# commit and is ignored, whether its sha is readable or not. A sha that cannot be read in a SHALLOW
+# clone may be an ancestor the clone cut off, so it cannot be ruled out: that alone credits NO PR,
+# and the commit is not measured rather than guessed at. In a full clone an unreadable sha cannot be
+# an ancestor, so it is ignored.
+# ONE PATH PER COMMIT: when every body line is ignored, or there is none (a hand-written or edited
+# message), the commit is read by pr_of_subject exactly as if it had no such line.
 pr_of_commit() {
-  local sha="$1" subj="$2" own refs r rs
+  local sha="$1" subj="$2" own refs r rs shallow counted=""
   own="$(pr_token "$subj")"
   [ -n "$own" ] || return 0
   refs="$(git log -1 --format=%b "$sha" | sed -nE 's/^This reverts commit ([0-9a-f]{7,40})([^0-9a-f].*)?$/\1/p')"
-  if [ -z "$refs" ]; then pr_of_subject "$subj"; return 0; fi
+  shallow="$(git rev-parse --is-shallow-repository 2>/dev/null || true)"
   while IFS= read -r r; do
-    rs="$(git rev-parse -q --verify "$r^{commit}" 2>/dev/null)" || return 0
-    [ "$(pr_token "$(git log -1 --format=%s "$rs")")" != "$own" ] || return 0
+    [ -n "$r" ] || continue
+    if rs="$(git rev-parse -q --verify "$r^{commit}" 2>/dev/null)"; then
+      git merge-base --is-ancestor "$rs" "$sha" 2>/dev/null || continue
+      [ "$(pr_token "$(git log -1 --format=%s "$rs")")" != "$own" ] || return 0
+      counted=1
+    else
+      [ "$shallow" = true ] || continue
+      return 0
+    fi
   done <<< "$refs"
-  printf '%s' "$own"
+  if [ -n "$counted" ]; then printf '%s' "$own"; else pr_of_subject "$subj"; fi
 }
 
 # pr_of_merge <subject>: the pull request a MERGE commit names — GitHub's `Merge pull request #N
