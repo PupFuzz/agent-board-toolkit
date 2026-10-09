@@ -524,10 +524,63 @@ if [ "$CARD_MANIFEST_ONLY" = 1 ]; then
   exit 0
 fi
 
-# pr_of_subject <subject>: the pull request a commit subject names — its LAST `(#N)` — or nothing.
-# The one reading of a NON-MERGE commit's PR number (a squash merge's subject). A merge commit is
-# read by pr_of_merge, which falls back to this.
-pr_of_subject() { printf '%s' "$1" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)' || true; }
+# pr_token <subject>: the LAST `(#N)` in a subject, as written, or nothing.
+pr_token() { printf '%s' "$1" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)' || true; }
+
+# pr_of_subject <subject>: the pull request a commit subject names, read from the subject alone, or
+# nothing. A merge commit's `(#N)` fallback (pr_of_merge), and a non-merge commit with no
+# `This reverts commit <sha>` line that applies to it (pr_of_commit), are read here.
+# A subject starting `Revert "` or `Reapply "` (git 2.43 and later writes `Reapply` for a revert
+# of a revert) is a revert whose message was hand-written or edited: it is read only AFTER its last
+# `"`, because the quoted original carries the PR it reverts, never the revert's own (card#11587).
+# With no closing `"` the whole rest is the quoted original. Not handled: a hand-written prefix git
+# never writes (`revert: x (#21)`, `Revert x (#21)`) reads as an ordinary squash title, #21.
+pr_of_subject() {
+  local s="$1"
+  case "$s" in
+    'Revert "'*|'Reapply "'*)
+      s="${s#*\"}"
+      case "$s" in *\"*) s="${s##*\"}" ;; *) s="" ;; esac ;;
+  esac
+  pr_token "$s"
+}
+
+# pr_of_commit <sha> <subject>: the pull request a NON-MERGE commit is, or nothing.
+# A commit whose message carries git's `This reverts commit <sha>` line is a revert, and its subject
+# is built from the reverted commit's subject, so a trailing `(#N)` it shares with that subject is
+# inherited, not its own: it never takes the PR number of the commit it reverts (card#11587). Its
+# PR is its last `(#N)` unless that equals the last `(#N)` of the commit it reverts. So a
+# direct-push `Revert "x (#21)"`, and a direct-push `Reapply "x (#21)" (#25)` of revert-PR #25,
+# have none, while revert-PR #25's squash `Revert "x (#21)" (#25)` is #25.
+# A body-line sha counts as WHAT THIS COMMIT REVERTS only if it is an ANCESTOR of the commit. A
+# squash of a multi-commit PR carries, in GitHub's default body, the `This reverts commit` line of
+# every revert on the PR's branch, naming a branch commit that is not an ancestor of the squash and
+# is unreadable once the branch is deleted, in a full clone too. Such a line says nothing about this
+# commit and is ignored, whether its sha is readable or not. A sha that cannot be read in a SHALLOW
+# clone may be an ancestor the clone cut off, so it cannot be ruled out: that alone credits NO PR,
+# and the commit is not measured rather than guessed at. In a full clone an unreadable sha cannot be
+# an ancestor, so it is ignored.
+# ONE PATH PER COMMIT: when every body line is ignored, or there is none (a hand-written or edited
+# message), the commit is read by pr_of_subject exactly as if it had no such line.
+pr_of_commit() {
+  local sha="$1" subj="$2" own refs r rs shallow counted=""
+  own="$(pr_token "$subj")"
+  [ -n "$own" ] || return 0
+  refs="$(git log -1 --format=%b "$sha" | sed -nE 's/^This reverts commit ([0-9a-f]{7,40})([^0-9a-f].*)?$/\1/p')"
+  shallow="$(git rev-parse --is-shallow-repository 2>/dev/null || true)"
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    if rs="$(git rev-parse -q --verify "$r^{commit}" 2>/dev/null)"; then
+      git merge-base --is-ancestor "$rs" "$sha" 2>/dev/null || continue
+      [ "$(pr_token "$(git log -1 --format=%s "$rs")")" != "$own" ] || return 0
+      counted=1
+    else
+      [ "$shallow" = true ] || continue
+      return 0
+    fi
+  done <<< "$refs"
+  if [ -n "$counted" ]; then printf '%s' "$own"; else pr_of_subject "$subj"; fi
+}
 
 # pr_of_merge <subject>: the pull request a MERGE commit names — GitHub's `Merge pull request #N
 # from …` subject, else a `(#N)` as pr_of_subject reads it — or nothing.
@@ -543,7 +596,7 @@ pr_of_merge() {
 # `read`): `<pr-number or empty><US><short sha><US><subject to render>`.
 #
 # A UNIT IS A PULL REQUEST, not a commit. Walked over the range's FIRST-PARENT history:
-#   * a non-merge commit is one unit, its PR read from its subject by pr_of_subject — a squash
+#   * a non-merge commit is one unit, its PR read by pr_of_commit — a squash
 #     merge, or a direct push with no PR number. A range with no merge commit in it walks exactly
 #     the commits `git log --no-merges` lists, in the same order, so its body is unchanged.
 #   * a merge commit M has its PR read by pr_of_merge; its rendered subject is the PR title GitHub
@@ -572,7 +625,7 @@ _units_walk() { # <tip> [<exclude>...]
     [ -n "$sha" ] || continue
     read -r -a ps <<< "$parents"
     if [ "${#ps[@]}" -lt 2 ]; then
-      printf '%s\x1f%s\x1f%s\n' "$(pr_of_subject "$subj")" "$h" "$subj"
+      printf '%s\x1f%s\x1f%s\n' "$(pr_of_commit "$sha" "$subj")" "$h" "$subj"
       continue
     fi
     ex=("$@" "${ps[0]}")
@@ -626,7 +679,10 @@ bundle_lines() {
     if [ -z "$ref" ] && [ -n "$CARD_TOKEN_REGEX" ]; then
       ref="$(printf '%s' "$subj" | grep -oiE "$CARD_TOKEN_REGEX" | head -1 || true)"
     fi
-    local clean; clean="$(printf '%s' "$subj" | sed -E 's/ *\(#[0-9]+\)$//')"
+    # Only the unit's OWN `(#N)` is stripped: a trailing one inside a revert's quoted original is
+    # the reverted PR's, and is part of the subject (card#11587).
+    local clean="$subj"
+    if [ -n "$pr" ]; then clean="$(printf '%s' "$subj" | sed -E "s/ *\(#$pr\)\$//")"; fi
     printf -- '- %s%s%s\n' \
       "${pr:+**#$pr** }" \
       "${ref:+(\`$ref\`) }" \
@@ -775,7 +831,7 @@ review_sentence() {
   done
   trap - INT TERM
   if [ -n "$shas" ]; then
-    review_note "$shas not measured (no pull request number in the commit subject)"
+    review_note "$shas not measured (no pull request number of its own)"
     unm="${unm:+$unm, }$shas"
   fi
   local s="Review: $n of $m bundled changes have an independent review record"
