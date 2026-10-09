@@ -1871,17 +1871,24 @@ eq "(c) a merge with no PR number whose side is only PRs is not a row: its PR is
 echo "== a direct-push revert is not credited to the PR it reverts (card#11587) =="
 # THE DEFECT: `git revert` of squash-merged #21, pushed straight to the integration branch, has the
 # subject `Revert "feat: x (#21)"`. Its LAST `(#N)` is #21's, inside the quoted original, so it was
-# bundled as `**#21**` and, #21 having a review record, counted as reviewed. A revert has a PR of its
-# own only where its subject carries a `(#N)` AFTER the quoted original: `Revert "x (#22)" (#25)`.
+# bundled as `**#21**` and, #21 having a review record, counted as reviewed. A revert never takes
+# the PR number of the commit it reverts: where its message carries git's `This reverts commit
+# <sha>` line, a trailing `(#N)` equal to the reverted subject's is inherited, not its own.
 # EVERY REVERT HERE IS WRITTEN BY `git revert`, so the fixture follows the installed git's spelling:
 # git 2.43 and later writes a revert of a revert as `Reapply "…"`, older git as `Revert "Revert "…""`.
-# A "through a PR" revert is git's subject with the squash ` (#N)` appended. On separate files,
-# first-parent oldest → newest:
-#   #21 · #22 · #23 · #24 (four squash PRs)
+# A "through a PR" revert is a squash: git's subject with ` (#N)` appended, body kept, as GitHub's
+# default squash message keeps it. On separate files, first-parent oldest → newest:
+#   #21 · #22 · #23 · #24 · #28 (squash PRs)
 #   A1 A2 A3 — direct pushes, each reverting the one before it, starting from #21
 #   B1 = #22 reverted through PR #25 · B2 = B1 reverted through PR #26
 #   C1 = #23 reverted by a direct push · C2 = C1 reverted through PR #27
-#   U  — a hand-written `Revert "feat: x (#21)` whose quote is never closed: all of it is the original
+#   E1 = #28 reverted through PR #29 · E2 = E1 reverted by a direct push: on git 2.43 and later
+#        `Reapply "feat: v (#28)" (#29)`, whose subject alone reads #29
+#   #30 — squashed from a branch commit, which is then pruned; F = that pruned branch commit
+#        reverted through PR #31: the commit its revert line names is not readable, so F credits no
+#        PR and is not measured
+#   U  — a hand-written `Revert "feat: x (#21)` with no body line and a quote never closed: the
+#        subject rule reads all of it as the original
 #   M  — `Merge branch 'r'` (no PR number) whose side is one direct-push revert of #24: the merge-side
 #        walk reads the same primitive, so M is a row of its own.
 RVT="$RV/revert"
@@ -1890,7 +1897,9 @@ echo 0 > "$RVT/f"; g -C "$RVT" add f; g -C "$RVT" commit -qm "chore: init"; g -C
 _rvtc() { echo "$RANDOM" >> "$RVT/$1"; g -C "$RVT" add "$1"; g -C "$RVT" commit -qm "$2"; g -C "$RVT" rev-parse HEAD; }
 _rvtr() { # <sha> [<pr>] — `git revert` <sha>; with <pr>, append the squash ` (#<pr>)`. Prints the new sha.
   g -C "$RVT" revert --no-edit "$1" >/dev/null
-  if [ -n "${2:-}" ]; then g -C "$RVT" commit -q --amend -m "$(g -C "$RVT" log -1 --format=%s) (#$2)"; fi
+  if [ -n "${2:-}" ]; then
+    g -C "$RVT" commit -q --amend -m "$(g -C "$RVT" log -1 --format=%s) (#$2)" -m "$(g -C "$RVT" log -1 --format=%b)"
+  fi
   g -C "$RVT" rev-parse HEAD
 }
 RVT_21="$(_rvtc a "feat: x (#21)")"; RVT_22="$(_rvtc b "fix: y (#22)")"
@@ -1898,6 +1907,10 @@ RVT_23="$(_rvtc c "docs: z (#23)")"; RVT_24="$(_rvtc e "chore: w (#24)")"
 RVT_A1="$(_rvtr "$RVT_21")"; RVT_A2="$(_rvtr "$RVT_A1")"; RVT_A3="$(_rvtr "$RVT_A2")"
 RVT_B1="$(_rvtr "$RVT_22" 25)"; RVT_B2="$(_rvtr "$RVT_B1" 26)"
 RVT_C1="$(_rvtr "$RVT_23")"; RVT_C2="$(_rvtr "$RVT_C1" 27)"
+RVT_28="$(_rvtc v "feat: v (#28)")"; RVT_E1="$(_rvtr "$RVT_28" 29)"; RVT_E2="$(_rvtr "$RVT_E1")"
+g -C "$RVT" checkout -qb gone; RVT_GONE="$(_rvtc q "chore: q")"; g -C "$RVT" checkout -q main
+g -C "$RVT" cherry-pick -n "$RVT_GONE"; g -C "$RVT" commit -qm "chore: q (#30)"; RVT_30="$(g -C "$RVT" rev-parse HEAD)"; RVT_F="$(_rvtr "$RVT_GONE" 31)"
+g -C "$RVT" branch -qD gone; g -C "$RVT" reflog expire --expire=now --all; g -C "$RVT" gc -q --prune=now
 RVT_U="$(_rvtc d 'Revert "feat: x (#21)')"
 g -C "$RVT" checkout -qb r "$RVT_U"; _rvtr "$RVT_24" >/dev/null
 g -C "$RVT" checkout -q main
@@ -1913,14 +1926,20 @@ _rvt_h() { g -C "$RVT" rev-parse --short "$1"; }
 RV_OUT="$(cat "$RV/out")"; RV_ERR="$(cat "$RV/err")"; RV_CALLS="$(cat "$RV/log")"
 RV_LINE="$(printf '%s\n' "$RV_OUT" | awk 'p { print; exit } $0 == "## Bundled (generated — do not hand-edit)" { p = 1 }')"
 RVT_ROWS="$(printf '%s\n' "$RV_OUT" | awk '/^## Bundled/ { p = 1; next } /^## / { p = 0 } p && /^- /')"
+eq "fixture: the reverted #30 commit is gone, so F's revert line names nothing readable" \
+   "false" "$(g -C "$RVT" cat-file -e "$RVT_GONE^{commit}" 2>/dev/null && echo true || echo false)"
+eq "fixture: a through-a-PR revert keeps git's \`This reverts commit\` line, as a squash does" \
+   "true" "$(has "This reverts commit $RVT_22" "$(g -C "$RVT" log -1 --format=%b "$RVT_B1")")"
 eq "a range with direct-push reverts → rc 0"              "0" "$RV_RC"
 eq "a direct-push revert, of any depth, carries no PR number; a revert made through a PR carries its own" \
-"$(_rvt_row "$RVT_M"; _rvt_row "$RVT_U"; _rvt_row "$RVT_C2" 27; _rvt_row "$RVT_C1"
+"$(_rvt_row "$RVT_M"; _rvt_row "$RVT_U"; _rvt_row "$RVT_F"; _rvt_row "$RVT_30" 30
+   _rvt_row "$RVT_E2"; _rvt_row "$RVT_E1" 29; _rvt_row "$RVT_28" 28; _rvt_row "$RVT_C2" 27; _rvt_row "$RVT_C1"
    _rvt_row "$RVT_B2" 26; _rvt_row "$RVT_B1" 25; _rvt_row "$RVT_A3"; _rvt_row "$RVT_A2"; _rvt_row "$RVT_A1"
    _rvt_row "$RVT_24" 24; _rvt_row "$RVT_23" 23; _rvt_row "$RVT_22" 22; _rvt_row "$RVT_21" 21)" "$RVT_ROWS"
-eq "…the reverts with no PR of their own are not measured, never credited to the PR they revert" \
-   "Review: 7 of 13 bundled changes have an independent review record; not measured: $(_rvt_h "$RVT_M"), $(_rvt_h "$RVT_U"), $(_rvt_h "$RVT_C1"), $(_rvt_h "$RVT_A3"), $(_rvt_h "$RVT_A2"), $(_rvt_h "$RVT_A1")." "$RV_LINE"
+eq "…a direct-push reapply of revert-PR #29 is not credited to #29" "false" "$(has "**#29** $(g -C "$RVT" log -1 --format=%s "$RVT_E2" | sed 's/ (#29)$//')" "$RVT_ROWS")"
+eq "…the reverts with no PR of their own, and the one whose reverted commit is unreadable, are not measured" \
+   "Review: 10 of 18 bundled changes have an independent review record; not measured: $(_rvt_h "$RVT_M"), $(_rvt_h "$RVT_U"), $(_rvt_h "$RVT_F"), $(_rvt_h "$RVT_E2"), $(_rvt_h "$RVT_C1"), $(_rvt_h "$RVT_A3"), $(_rvt_h "$RVT_A2"), $(_rvt_h "$RVT_A1")." "$RV_LINE"
 eq "…and the verifier is asked about each bundled PR once" \
-   "$(printf 'acme/widget#%s\n' 21 22 23 24 25 26 27)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+   "$(printf 'acme/widget#%s\n' 21 22 23 24 25 26 27 28 29 30)" "$(printf '%s\n' "$RV_CALLS" | sort)"
 
 _summary "release-pr-body-selftest"
