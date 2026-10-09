@@ -1752,4 +1752,120 @@ eq "the repo falls back to the origin remote"           "$(printf 'acme/gadget#%
 _rv "$RV_MID"
 eq "…and GITHUB_REPOSITORY outranks it"                 "$(printf 'acme/widget#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
 
+echo "== a merge-train range is bundled and reviewed per PR, not per commit (card#11580) =="
+# THE DEFECT (measured on agent-board-framework v0.64.0): a range carrying a merge-train commit
+# listed the train's PRs as raw branch-commit subjects with no PR number, and the Review: sentence's
+# denominator counted commits. Rows and sentence are now both one unit per bundled PR.
+#
+# (a) A range with NO merge commit is byte-identical to the per-commit generator: the GOLDEN body
+# below is that generator's output over the card#11149 fixture's `v0.1.0..HEAD` (squash commits, a
+# direct push with no PR number, a repeated PR number), verifier turned off.
+_rv HEAD RELEASE_PR_REVIEW_VERIFIER=off
+RV_GOLDEN="$(cat <<EOF
+**\`dev → main\` release PR — v0.2.0.** Bundles 5 commit(s) since v0.1.0.
+
+## Highlights
+<!-- AUTHOR: write the 1–3 human-readable highlights of this release here. This is
+     the ONLY non-deterministic section — everything below is generated from git. -->
+
+## Bundled (generated — do not hand-edit)
+Review: not measured for any of the 4 bundled changes (the review-record verifier is turned off on this machine).
+
+- **#11** fix: eleven again
+- chore: a direct push with no pull request
+- **#13** docs: thirteen
+- **#12** fix: twelve
+- **#11** feat: eleven
+EOF
+)"
+eq "(a) squash-only range: the body is byte-identical to the per-commit generator's" "$RV_GOLDEN" "$RV_OUT"
+
+# (b)/(c) THE TRAIN FIXTURE, built on `main` from v0.1.0, first-parent oldest → newest:
+#   #21 squash · #22 squash · `Merge pull request #30` (the train) · #23 squash ·
+#   `Merge branch 'hotfix'` (no PR number; two raw commits) · `Merge branch 'catchup'` (no PR
+#   number; its side is only the squash #40).
+# The train's side, oldest → newest: `Merge pull request #31` and `#32` (each over two raw branch
+# commits), a raw commit made on the train itself, `Merge pull request #33` (a NESTED train: a
+# `Merge pull request #34` over raw commits, then a squash #35), and `Merge branch 'main' into
+# train` (a back-merge bringing #22, which mainline already carries).
+TR="$RV/train"
+g init -q "$TR"
+echo 0 > "$TR/f"; g -C "$TR" add f; g -C "$TR" commit -qm "chore: init"; g -C "$TR" tag v0.1.0
+_trc() { echo "$RANDOM$2" >> "$TR/$1"; g -C "$TR" add "$1"; g -C "$TR" commit -qm "$2"; }
+_trm() { g -C "$TR" merge -q --no-ff "$1" -m "$2" ${3:+-m "$3"}; }
+_trc a "feat: twenty-one (#21)"
+g -C "$TR" checkout -qb train
+for _n in 31 32; do
+  g -C "$TR" checkout -qb "f$_n" train
+  _trc "b$_n" "wip: $_n part one"; _trc "b$_n" "wip: $_n part two"
+  g -C "$TR" checkout -q train
+  _trm "f$_n" "Merge pull request #$_n from acme/f$_n" "$([ "$_n" = 31 ] && echo "feat: thirty-one card#9031" || echo "feat: thirty-two")"
+done
+_trc c "chore: train bookkeeping"
+g -C "$TR" checkout -qb t2 train
+g -C "$TR" checkout -qb f34 t2
+_trc d "wip: 34 part one"; _trc d "wip: 34 part two"
+g -C "$TR" checkout -q t2
+_trm f34 "Merge pull request #34 from acme/f34" "feat: thirty-four"
+_trc e "fix: thirty-five (#35)"
+g -C "$TR" checkout -q train
+_trm t2 "Merge pull request #33 from acme/t2" "train: the nested one"
+g -C "$TR" checkout -q main
+_trc g "feat: twenty-two (#22)"
+g -C "$TR" checkout -q train
+_trm main "Merge branch 'main' into train"
+g -C "$TR" checkout -q main
+_trm train "Merge pull request #30 from acme/train" "release train"
+_trc h "fix: twenty-three (#23)"
+g -C "$TR" checkout -qb hotfix
+_trc i "fix: hot one"; _trc i "fix: hot two"
+g -C "$TR" checkout -q main
+_trm hotfix "Merge branch 'hotfix'"
+TR_HOT="$(g -C "$TR" log -1 --format=%h)"
+g -C "$TR" checkout -qb catchup
+_trc j "feat: forty (#40)"
+g -C "$TR" checkout -q main
+_trm catchup "Merge branch 'catchup'"
+echo '{"card_token_regex": "card#[0-9]+"}' > "$TR/.release-pr.json"
+g -C "$TR" add .release-pr.json; g -C "$TR" commit -qm "chore: config (#41)"
+
+# _tr [VAR=value ...] — _rv's run, over the train fixture's v0.1.0..HEAD. Sets the same RV_* names.
+_tr() {
+  : > "$RV/log"; RV_RC=0
+  ( cd "$TR" && env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
+      PATH="$RVB:$RV_PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" "$@" \
+      "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD ) >"$RV/out" 2>"$RV/err" || RV_RC=$?
+  RV_OUT="$(cat "$RV/out")"; RV_ERR="$(cat "$RV/err")"; RV_CALLS="$(cat "$RV/log")"
+  RV_LINE="$(printf '%s\n' "$RV_OUT" | awk 'p { print; exit } $0 == "## Bundled (generated — do not hand-edit)" { p = 1 }')"
+}
+_tr
+TR_ROWS="$(printf '%s\n' "$RV_OUT" | awk '/^## Bundled/ { p = 1; next } /^## / { p = 0 } p && /^- /')"
+eq "(b) a merge-train range → rc 0"                      "0" "$RV_RC"
+eq "(b) one row per bundled PR, each with its number — the train's, the nested train's and every PR they carry, in first-parent order" \
+"$(cat <<EOF
+- **#41** chore: config
+- **#40** feat: forty
+- Merge branch 'hotfix'
+- **#23** fix: twenty-three
+- **#30** release train
+- **#33** train: the nested one
+- **#35** fix: thirty-five
+- **#34** feat: thirty-four
+- **#32** feat: thirty-two
+- **#31** (\`card#9031\`) feat: thirty-one card#9031
+- **#22** feat: twenty-two
+- **#21** feat: twenty-one
+EOF
+)" "$TR_ROWS"
+eq "(b) …no raw branch commit of a numbered PR is a row of its own" "false" "$(has 'wip:' "$TR_ROWS")"
+eq "(b) …nor the train's own raw commit, which #30 stands for" "false" "$(has 'bookkeeping' "$TR_ROWS")"
+eq "(b) …the back-merge into the train brings nothing new and is not a row; #22 is listed once" "1" "$(printf '%s\n' "$TR_ROWS" | grep -c '#22')"
+eq "(b) the Review: denominator is the bundled PRs, plus the one unit with no PR number" \
+   "Review: 11 of 12 bundled changes have an independent review record; not measured: $TR_HOT." "$RV_LINE"
+eq "(b) …and the verifier is asked once per bundled PR" \
+   "$(printf 'acme/widget#%s\n' 21 22 23 30 31 32 33 34 35 40 41)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+eq "(c) a merge with no PR number that carries unnumbered commits is a row, not dropped" "true" "$(has_line "- Merge branch 'hotfix'" "$TR_ROWS")"
+eq "(c) …and stderr names it as not measured, by short sha" "true" "$(has "release-pr-body: review: $TR_HOT not measured" "$RV_ERR")"
+eq "(c) a merge with no PR number whose side is only PRs is not a row: its PR is" "false" "$(has "catchup" "$TR_ROWS")"
+
 _summary "release-pr-body-selftest"
