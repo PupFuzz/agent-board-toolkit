@@ -527,16 +527,18 @@ fi
 # pr_of_subject <subject>: the pull request a commit subject names — its LAST `(#N)` — or nothing.
 # The one reading of a NON-MERGE commit's PR number (a squash merge's subject). A merge commit is
 # read by pr_of_merge, which falls back to this.
-# A REVERT (`Revert "<original subject>"…`) is read only AFTER its last `"`: the quoted original
+# A REVERT — `Revert "<original subject>"…`, or `Reapply "<original subject>"…`, which git 2.43
+# and later writes for a revert of a revert — is read only AFTER its last `"`: the quoted original
 # carries the PR it reverts, never the revert's own (card#11587). So a direct-push
-# `Revert "x (#21)"` has no PR number and is not measured, while `Revert "x (#21)" (#25)` — a
-# revert made through a PR — is #25, nested reverts alike. With no closing `"` the whole rest is
-# the quoted original.
+# `Revert "x (#21)"` or `Reapply "x (#21)"` has no PR number and is not measured, while
+# `Revert "x (#21)" (#25)` — a revert made through a PR — is #25, at any nesting depth. With no
+# closing `"` the whole rest is the quoted original. Not handled: a hand-written prefix git never
+# writes (`revert: x (#21)`, `Revert x (#21)`) reads as an ordinary squash title, #21.
 pr_of_subject() {
   local s="$1"
   case "$s" in
-    'Revert "'*)
-      s="${s#Revert \"}"
+    'Revert "'*|'Reapply "'*)
+      s="${s#*\"}"
       case "$s" in *\"*) s="${s##*\"}" ;; *) s="" ;; esac ;;
   esac
   printf '%s' "$s" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)' || true

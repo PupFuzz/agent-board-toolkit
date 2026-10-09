@@ -1873,31 +1873,39 @@ echo "== a direct-push revert is not credited to the PR it reverts (card#11587) 
 # subject `Revert "feat: x (#21)"`. Its LAST `(#N)` is #21's, inside the quoted original, so it was
 # bundled as `**#21**` and, #21 having a review record, counted as reviewed. A revert has a PR of its
 # own only where its subject carries a `(#N)` AFTER the quoted original: `Revert "x (#22)" (#25)`.
-# The fixture, first-parent oldest → newest: #21 · #22 · a direct-push revert of #21 (RVT_A) · a
-# revert of #22 made through PR #25 · a direct-push revert of RVT_A (nested, RVT_N) · a nested
-# revert made through PR #26 · a hand-written revert whose quote is never closed (RVT_U: all of it
-# is the quoted original) · `Merge branch 'r'` (no PR number) whose side is a single direct-push
-# revert of #22 — the merge-side walk reads the same primitive, so the merge is a row of its own.
+# EVERY REVERT HERE IS WRITTEN BY `git revert`, so the fixture follows the installed git's spelling:
+# git 2.43 and later writes a revert of a revert as `Reapply "…"`, older git as `Revert "Revert "…""`.
+# A "through a PR" revert is git's subject with the squash ` (#N)` appended. On separate files,
+# first-parent oldest → newest:
+#   #21 · #22 · #23 · #24 (four squash PRs)
+#   A1 A2 A3 — direct pushes, each reverting the one before it, starting from #21
+#   B1 = #22 reverted through PR #25 · B2 = B1 reverted through PR #26
+#   C1 = #23 reverted by a direct push · C2 = C1 reverted through PR #27
+#   U  — a hand-written `Revert "feat: x (#21)` whose quote is never closed: all of it is the original
+#   M  — `Merge branch 'r'` (no PR number) whose side is one direct-push revert of #24: the merge-side
+#        walk reads the same primitive, so M is a row of its own.
 RVT="$RV/revert"
 g init -q "$RVT"
 echo 0 > "$RVT/f"; g -C "$RVT" add f; g -C "$RVT" commit -qm "chore: init"; g -C "$RVT" tag v0.1.0
-_rvtc() { echo "$RANDOM" >> "$RVT/f"; g -C "$RVT" commit -qam "$1"; }
-_rvtc "feat: x (#21)"
-_rvtc "fix: y (#22)"
-_rvtc 'Revert "feat: x (#21)"'
-RVT_A="$(g -C "$RVT" log -1 --format=%h)"
-_rvtc 'Revert "fix: y (#22)" (#25)'
-_rvtc 'Revert "Revert "feat: x (#21)""'
-RVT_N="$(g -C "$RVT" log -1 --format=%h)"
-_rvtc 'Revert "Revert "fix: y (#22)"" (#26)'
-_rvtc 'Revert "feat: x (#21)'
-RVT_U="$(g -C "$RVT" log -1 --format=%h)"
-g -C "$RVT" checkout -qb r
-echo "$RANDOM" > "$RVT/r"; g -C "$RVT" add r; g -C "$RVT" commit -qm 'Revert "fix: y (#22)"'
+_rvtc() { echo "$RANDOM" >> "$RVT/$1"; g -C "$RVT" add "$1"; g -C "$RVT" commit -qm "$2"; g -C "$RVT" rev-parse HEAD; }
+_rvtr() { # <sha> [<pr>] — `git revert` <sha>; with <pr>, append the squash ` (#<pr>)`. Prints the new sha.
+  g -C "$RVT" revert --no-edit "$1" >/dev/null
+  if [ -n "${2:-}" ]; then g -C "$RVT" commit -q --amend -m "$(g -C "$RVT" log -1 --format=%s) (#$2)"; fi
+  g -C "$RVT" rev-parse HEAD
+}
+RVT_21="$(_rvtc a "feat: x (#21)")"; RVT_22="$(_rvtc b "fix: y (#22)")"
+RVT_23="$(_rvtc c "docs: z (#23)")"; RVT_24="$(_rvtc e "chore: w (#24)")"
+RVT_A1="$(_rvtr "$RVT_21")"; RVT_A2="$(_rvtr "$RVT_A1")"; RVT_A3="$(_rvtr "$RVT_A2")"
+RVT_B1="$(_rvtr "$RVT_22" 25)"; RVT_B2="$(_rvtr "$RVT_B1" 26)"
+RVT_C1="$(_rvtr "$RVT_23")"; RVT_C2="$(_rvtr "$RVT_C1" 27)"
+RVT_U="$(_rvtc d 'Revert "feat: x (#21)')"
+g -C "$RVT" checkout -qb r "$RVT_U"; _rvtr "$RVT_24" >/dev/null
 g -C "$RVT" checkout -q main
-g -C "$RVT" merge -q --no-ff r -m "Merge branch 'r'"
-RVT_M="$(g -C "$RVT" log -1 --format=%h)"
+g -C "$RVT" merge -q --no-ff r -m "Merge branch 'r'"; RVT_M="$(g -C "$RVT" rev-parse HEAD)"
 echo '{}' > "$RVT/.release-pr.json"
+# _rvt_row <sha> [<pr>] — the row a unit renders: its own ` (#<pr>)` dropped, nothing else.
+_rvt_row() { local s; s="$(g -C "$RVT" log -1 --format=%s "$1")"; if [ -n "${2:-}" ]; then printf -- '- **#%s** %s\n' "$2" "${s% (#$2)}"; else printf -- '- %s\n' "$s"; fi; }
+_rvt_h() { g -C "$RVT" rev-parse --short "$1"; }
 : > "$RV/log"; RV_RC=0
 ( cd "$RVT" && env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
     PATH="$RVB:$RV_PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" \
@@ -1906,21 +1914,13 @@ RV_OUT="$(cat "$RV/out")"; RV_ERR="$(cat "$RV/err")"; RV_CALLS="$(cat "$RV/log")
 RV_LINE="$(printf '%s\n' "$RV_OUT" | awk 'p { print; exit } $0 == "## Bundled (generated — do not hand-edit)" { p = 1 }')"
 RVT_ROWS="$(printf '%s\n' "$RV_OUT" | awk '/^## Bundled/ { p = 1; next } /^## / { p = 0 } p && /^- /')"
 eq "a range with direct-push reverts → rc 0"              "0" "$RV_RC"
-eq "a direct-push revert, nested or not, carries no PR number; a revert made through a PR carries its own" \
-"$(cat <<'EOF'
-- Merge branch 'r'
-- Revert "feat: x (#21)
-- **#26** Revert "Revert "fix: y (#22)""
-- Revert "Revert "feat: x (#21)""
-- **#25** Revert "fix: y (#22)"
-- Revert "feat: x (#21)"
-- **#22** fix: y
-- **#21** feat: x
-EOF
-)" "$RVT_ROWS"
+eq "a direct-push revert, of any depth, carries no PR number; a revert made through a PR carries its own" \
+"$(_rvt_row "$RVT_M"; _rvt_row "$RVT_U"; _rvt_row "$RVT_C2" 27; _rvt_row "$RVT_C1"
+   _rvt_row "$RVT_B2" 26; _rvt_row "$RVT_B1" 25; _rvt_row "$RVT_A3"; _rvt_row "$RVT_A2"; _rvt_row "$RVT_A1"
+   _rvt_row "$RVT_24" 24; _rvt_row "$RVT_23" 23; _rvt_row "$RVT_22" 22; _rvt_row "$RVT_21" 21)" "$RVT_ROWS"
 eq "…the reverts with no PR of their own are not measured, never credited to the PR they revert" \
-   "Review: 4 of 8 bundled changes have an independent review record; not measured: $RVT_M, $RVT_U, $RVT_N, $RVT_A." "$RV_LINE"
+   "Review: 7 of 13 bundled changes have an independent review record; not measured: $(_rvt_h "$RVT_M"), $(_rvt_h "$RVT_U"), $(_rvt_h "$RVT_C1"), $(_rvt_h "$RVT_A3"), $(_rvt_h "$RVT_A2"), $(_rvt_h "$RVT_A1")." "$RV_LINE"
 eq "…and the verifier is asked about each bundled PR once" \
-   "$(printf 'acme/widget#%s\n' 21 22 25 26)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+   "$(printf 'acme/widget#%s\n' 21 22 23 24 25 26 27)" "$(printf '%s\n' "$RV_CALLS" | sort)"
 
 _summary "release-pr-body-selftest"
