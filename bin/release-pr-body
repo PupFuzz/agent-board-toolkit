@@ -527,7 +527,20 @@ fi
 # pr_of_subject <subject>: the pull request a commit subject names — its LAST `(#N)` — or nothing.
 # The one reading of a NON-MERGE commit's PR number (a squash merge's subject). A merge commit is
 # read by pr_of_merge, which falls back to this.
-pr_of_subject() { printf '%s' "$1" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)' || true; }
+# A REVERT (`Revert "<original subject>"…`) is read only AFTER its last `"`: the quoted original
+# carries the PR it reverts, never the revert's own (card#11587). So a direct-push
+# `Revert "x (#21)"` has no PR number and is not measured, while `Revert "x (#21)" (#25)` — a
+# revert made through a PR — is #25, nested reverts alike. With no closing `"` the whole rest is
+# the quoted original.
+pr_of_subject() {
+  local s="$1"
+  case "$s" in
+    'Revert "'*)
+      s="${s#Revert \"}"
+      case "$s" in *\"*) s="${s##*\"}" ;; *) s="" ;; esac ;;
+  esac
+  printf '%s' "$s" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)' || true
+}
 
 # pr_of_merge <subject>: the pull request a MERGE commit names — GitHub's `Merge pull request #N
 # from …` subject, else a `(#N)` as pr_of_subject reads it — or nothing.
@@ -626,7 +639,10 @@ bundle_lines() {
     if [ -z "$ref" ] && [ -n "$CARD_TOKEN_REGEX" ]; then
       ref="$(printf '%s' "$subj" | grep -oiE "$CARD_TOKEN_REGEX" | head -1 || true)"
     fi
-    local clean; clean="$(printf '%s' "$subj" | sed -E 's/ *\(#[0-9]+\)$//')"
+    # Only the unit's OWN `(#N)` is stripped: a trailing one inside a revert's quoted original is
+    # the reverted PR's, and is part of the subject (card#11587).
+    local clean="$subj"
+    if [ -n "$pr" ]; then clean="$(printf '%s' "$subj" | sed -E "s/ *\(#$pr\)\$//")"; fi
     printf -- '- %s%s%s\n' \
       "${pr:+**#$pr** }" \
       "${ref:+(\`$ref\`) }" \
@@ -775,7 +791,7 @@ review_sentence() {
   done
   trap - INT TERM
   if [ -n "$shas" ]; then
-    review_note "$shas not measured (no pull request number in the commit subject)"
+    review_note "$shas not measured (no pull request number of its own in the commit subject)"
     unm="${unm:+$unm, }$shas"
   fi
   local s="Review: $n of $m bundled changes have an independent review record"

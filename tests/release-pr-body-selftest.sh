@@ -1868,4 +1868,59 @@ eq "(c) a merge with no PR number that carries unnumbered commits is a row, not 
 eq "(c) …and stderr names it as not measured, by short sha" "true" "$(has "release-pr-body: review: $TR_HOT not measured" "$RV_ERR")"
 eq "(c) a merge with no PR number whose side is only PRs is not a row: its PR is" "false" "$(has "catchup" "$TR_ROWS")"
 
+echo "== a direct-push revert is not credited to the PR it reverts (card#11587) =="
+# THE DEFECT: `git revert` of squash-merged #21, pushed straight to the integration branch, has the
+# subject `Revert "feat: x (#21)"`. Its LAST `(#N)` is #21's, inside the quoted original, so it was
+# bundled as `**#21**` and, #21 having a review record, counted as reviewed. A revert has a PR of its
+# own only where its subject carries a `(#N)` AFTER the quoted original: `Revert "x (#22)" (#25)`.
+# The fixture, first-parent oldest → newest: #21 · #22 · a direct-push revert of #21 (RVT_A) · a
+# revert of #22 made through PR #25 · a direct-push revert of RVT_A (nested, RVT_N) · a nested
+# revert made through PR #26 · a hand-written revert whose quote is never closed (RVT_U: all of it
+# is the quoted original) · `Merge branch 'r'` (no PR number) whose side is a single direct-push
+# revert of #22 — the merge-side walk reads the same primitive, so the merge is a row of its own.
+RVT="$RV/revert"
+g init -q "$RVT"
+echo 0 > "$RVT/f"; g -C "$RVT" add f; g -C "$RVT" commit -qm "chore: init"; g -C "$RVT" tag v0.1.0
+_rvtc() { echo "$RANDOM" >> "$RVT/f"; g -C "$RVT" commit -qam "$1"; }
+_rvtc "feat: x (#21)"
+_rvtc "fix: y (#22)"
+_rvtc 'Revert "feat: x (#21)"'
+RVT_A="$(g -C "$RVT" log -1 --format=%h)"
+_rvtc 'Revert "fix: y (#22)" (#25)'
+_rvtc 'Revert "Revert "feat: x (#21)""'
+RVT_N="$(g -C "$RVT" log -1 --format=%h)"
+_rvtc 'Revert "Revert "fix: y (#22)"" (#26)'
+_rvtc 'Revert "feat: x (#21)'
+RVT_U="$(g -C "$RVT" log -1 --format=%h)"
+g -C "$RVT" checkout -qb r
+echo "$RANDOM" > "$RVT/r"; g -C "$RVT" add r; g -C "$RVT" commit -qm 'Revert "fix: y (#22)"'
+g -C "$RVT" checkout -q main
+g -C "$RVT" merge -q --no-ff r -m "Merge branch 'r'"
+RVT_M="$(g -C "$RVT" log -1 --format=%h)"
+echo '{}' > "$RVT/.release-pr.json"
+: > "$RV/log"; RV_RC=0
+( cd "$RVT" && env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
+    PATH="$RVB:$RV_PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" \
+    "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD ) >"$RV/out" 2>"$RV/err" || RV_RC=$?
+RV_OUT="$(cat "$RV/out")"; RV_ERR="$(cat "$RV/err")"; RV_CALLS="$(cat "$RV/log")"
+RV_LINE="$(printf '%s\n' "$RV_OUT" | awk 'p { print; exit } $0 == "## Bundled (generated — do not hand-edit)" { p = 1 }')"
+RVT_ROWS="$(printf '%s\n' "$RV_OUT" | awk '/^## Bundled/ { p = 1; next } /^## / { p = 0 } p && /^- /')"
+eq "a range with direct-push reverts → rc 0"              "0" "$RV_RC"
+eq "a direct-push revert, nested or not, carries no PR number; a revert made through a PR carries its own" \
+"$(cat <<'EOF'
+- Merge branch 'r'
+- Revert "feat: x (#21)
+- **#26** Revert "Revert "fix: y (#22)""
+- Revert "Revert "feat: x (#21)""
+- **#25** Revert "fix: y (#22)"
+- Revert "feat: x (#21)"
+- **#22** fix: y
+- **#21** feat: x
+EOF
+)" "$RVT_ROWS"
+eq "…the reverts with no PR of their own are not measured, never credited to the PR they revert" \
+   "Review: 4 of 8 bundled changes have an independent review record; not measured: $RVT_M, $RVT_U, $RVT_N, $RVT_A." "$RV_LINE"
+eq "…and the verifier is asked about each bundled PR once" \
+   "$(printf 'acme/widget#%s\n' 21 22 25 26)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+
 _summary "release-pr-body-selftest"
