@@ -483,9 +483,9 @@ else
 fi
 RANGE="${BASE:+$BASE..}$HEAD_REF"
 
-# Deterministic bundle: each non-merge commit subject in the range, with its PR
-# number (trailing "(#NNN)") and optional project ref token pulled out of git —
-# never hand-curated.
+# The `shipped-refs` / `shipped-cards` manifests read every non-merge commit subject in the range
+# for its ref token, never hand-curated. (The `## Bundled` rows are derived per PR instead — see
+# bundle_units below.)
 emit_manifest() {
   [ -n "$REF_TOKEN_REGEX" ] || return 0
   # `|| true`: grep exits 1 on no match — a release with no ref tokens is valid,
@@ -525,17 +525,89 @@ if [ "$CARD_MANIFEST_ONLY" = 1 ]; then
 fi
 
 # pr_of_subject <subject>: the pull request a commit subject names — its LAST `(#N)` — or nothing.
-# The one reading of a subject's PR number: the `## Bundled` rows and the review sentence both
-# take it from here, so the two cannot disagree about which PR a commit names.
+# The one reading of a NON-MERGE commit's PR number (a squash merge's subject). A merge commit is
+# read by pr_of_merge, which falls back to this.
 pr_of_subject() { printf '%s' "$1" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)' || true; }
 
+# pr_of_merge <subject>: the pull request a MERGE commit names — GitHub's `Merge pull request #N
+# from …` subject, else a `(#N)` as pr_of_subject reads it — or nothing.
+pr_of_merge() {
+  local n
+  n="$(printf '%s' "$1" | sed -nE 's/^Merge pull request #([0-9]+)( .*)?$/\1/p')"
+  if [ -n "$n" ]; then printf '%s' "$n"; else pr_of_subject "$1"; fi
+}
+
+# --- bundle_units: THE ONE POPULATION of `## Bundled` — one unit per bundled change (card#11580) ---
+# The rows and the review sentence both read it, so they cannot disagree about what was bundled.
+# One line per unit, fields separated by US (0x1f, never whitespace, so an empty field survives
+# `read`): `<pr-number or empty><US><short sha><US><subject to render>`.
+#
+# A UNIT IS A PULL REQUEST, not a commit. Walked over the range's FIRST-PARENT history:
+#   * a non-merge commit is one unit, its PR read from its subject by pr_of_subject — a squash
+#     merge, or a direct push with no PR number. A range with no merge commit in it walks exactly
+#     the commits `git log --no-merges` lists, in the same order, so its body is unchanged.
+#   * a merge commit M has its PR read by pr_of_merge; its rendered subject is the PR title GitHub
+#     writes as the first body line under `Merge pull request #N from …`, else the subject. Its
+#     SIDE is walked the same way, recursively, at any depth: the first-parent
+#     history of each later parent, minus everything reachable from M's first parent, from any
+#     enclosing walk's exclusions and from the base. In that side:
+#       - a PR it carries (a squash commit with `(#N)`, a nested `Merge pull request #N`) is a unit
+#         of its own — the merge-train case, where one merge carries many PRs;
+#       - a commit or merge with NO PR number is part of M's own change and is not listed
+#         separately: M's row stands for it. So M with no PR number is still a row of its own
+#         whenever its side holds such a change, named by short sha as not measured — the change
+#         is never dropped for want of a number. M with no PR number whose side is ENTIRELY PRs
+#         (a local catch-up merge of PRs into a release branch) adds nothing they do not, and is
+#         not a row: its PRs are.
+#     M with a PR number is a row of its own. A merge whose side holds NO commit outside those
+#     exclusions brings nothing into the range (a main→dev back-merge of an already-tagged release
+#     is the usual one) and is not a row, numbered or not.
+# Pure git: no forge API is asked which PR a commit belongs to.
+_units_walk() { # <tip> [<exclude>...]
+  local tip="$1"; shift
+  local log sha h parents subj pr side line title p
+  local -a ps ex
+  log="$(git log --first-parent --format='%H%x1f%h%x1f%P%x1f%s' "$tip" --not ${BASE:+"$BASE"} "$@")"
+  while IFS=$'\x1f' read -r sha h parents subj; do
+    [ -n "$sha" ] || continue
+    read -r -a ps <<< "$parents"
+    if [ "${#ps[@]}" -lt 2 ]; then
+      printf '%s\x1f%s\x1f%s\n' "$(pr_of_subject "$subj")" "$h" "$subj"
+      continue
+    fi
+    ex=("$@" "${ps[0]}")
+    side=""
+    for p in "${ps[@]:1}"; do
+      side="$side$(_units_walk "$p" "${ex[@]}")"$'\n'
+    done
+    [ -n "${side//$'\n'/}" ] || continue
+    pr="$(pr_of_merge "$subj")"
+    if [ -n "$pr" ] || [[ $'\n'"$side" == *$'\n\x1f'* ]]; then
+      title="$subj"
+      case "$subj" in
+        "Merge pull request #"*)
+          line="$(git log -1 --format=%b "$sha" | awk 'NF { print; exit }')"
+          if [ -n "$line" ]; then title="$line"; fi ;;
+      esac
+      printf '%s\x1f%s\x1f%s\n' "$pr" "$h" "$title"
+    fi
+    while IFS= read -r line; do
+      case "$line" in
+        ''|$'\x1f'*) ;;
+        *) printf '%s\n' "$line" ;;
+      esac
+    done <<< "$side"
+  done <<< "$log"
+}
+bundle_units() { _units_walk "$HEAD_REF"; }
+
 bundle_lines() {
-  local found=0
-  while IFS=$'\t' read -r subj; do
+  local found=0 units
+  units="$(bundle_units)"
+  while IFS=$'\x1f' read -r pr _ subj; do
     [ -n "$subj" ] || continue
     found=1
-    local pr ref
-    pr="$(pr_of_subject "$subj")"
+    local ref
     # The trailing `|| true` on each grep pipeline is load-bearing under `set -o
     # pipefail`, not decoration: a subject with no token makes grep exit 1 and the
     # assignment inherit it. Today the whole function runs inside `$(bundle_lines)`,
@@ -559,7 +631,7 @@ bundle_lines() {
       "${pr:+**#$pr** }" \
       "${ref:+(\`$ref\`) }" \
       "$clean"
-  done < <(git log "$RANGE" --no-merges --format='%s' 2>/dev/null)
+  done <<< "$units"
   [ "$found" = 1 ] || echo "_(no non-merge commits in \`$RANGE\`)_"
 }
 
@@ -582,9 +654,10 @@ repo_from_origin_url() {
 # because release PR bodies are installer-only (DL-224 and the 2026-09-27 operator ruling):
 # the operator ruled one sentence in, not a column of attestation prose.
 #
-# THE POPULATION, M, is the bundled PRs: each distinct `(#N)` the `## Bundled` rows carry (read by
-# `pr_of_subject`, the rows' own reader), plus every row with no PR number, which nothing can be
-# asked about and which is therefore named, by short sha, as not measured.
+# THE POPULATION, M, is the bundled PRs: each distinct PR number among the units `bundle_units`
+# derives (the rows' own population — a merge train counts each PR it carries, not each commit),
+# plus every unit with no PR number, which nothing can be asked about and which is therefore named,
+# by short sha, as not measured. The verifier is called once per distinct PR.
 #
 # THE VERIFIER, and its contract, are the framework's; this end only consumes them, so it holds no
 # reading of the review-record grammar of its own. One call per PR, `<verifier> <owner>/<repo>#<N>`:
@@ -622,14 +695,13 @@ repo_from_origin_url() {
 # verifier's.
 review_note() { printf 'release-pr-body: review: %s\n' "$1" >&2; }
 review_sentence() {
-  local log prs shas sha subj pr m
-  log="$(git log "$RANGE" --no-merges --format='%h%x09%s' 2>/dev/null || true)"
+  local units prs shas sha pr m
+  units="$(bundle_units)"
   prs=""; shas=""; m=0
-  while IFS=$'\t' read -r sha subj; do
+  while IFS=$'\x1f' read -r pr sha _; do
     [ -n "$sha" ] || continue
-    pr="$(pr_of_subject "$subj")"
     if [ -n "$pr" ]; then prs="$prs$pr"$'\n'; else shas="${shas:+$shas, }$sha"; m=$((m + 1)); fi
-  done <<< "$log"
+  done <<< "$units"
   prs="$(printf '%s' "$prs" | sort -nu)"
   for pr in $prs; do m=$((m + 1)); done
   if [ "$m" = 0 ]; then
