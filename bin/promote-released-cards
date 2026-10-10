@@ -116,6 +116,12 @@
 #     against a card's `payload.dl_number`;
 #   - PR numbers from each commit's trailing `(#NNN)` (the squash-merge marker GitHub appends),
 #     matched against the `(repo, number)` a card's `payload.pr_url` names (THE PR LEG below);
+#   both read through `release-pr-body --classify-commits`, the sibling in this bin/ that owns
+#   which pull request a commit is and whether it ships (card#11602): a revert — known by git's
+#   `This reverts commit` line — ships no DL of its own and never its original's `(#N)`, and a
+#   change a revert in the range takes back ships nothing. That sibling must be vendored beside
+#   this file for a range-derived run; without it the run refuses (rc 2). An explicit
+#   --dls/--cards run does not read the range and does not need it;
 #   - card IDs from `--cards` only, matched against the card's own `id`.
 #
 # WHY CARD IDS ARE EXPLICIT-ONLY AND NEVER DERIVED FROM COMMIT SUBJECTS. A `card#NNNN`
@@ -1075,7 +1081,8 @@ echo "promote-released-cards: api_base resolved from $API_SRC, host-guarded agai
 #   * DIVERGENT BY DESIGN on a value carrying SEVERAL digit runs. numlist SPLITS it — each run
 #     becomes its own candidate ref. `norm` REFUSES it — the card correlates to nothing. The
 #     asymmetry is the point: this side's value names what SHIPPED and every feed into it is
-#     already single-run (`--cards` is uint_csv_ok-validated; the PR marker is `\(#[0-9]+\)[[:space:]]*$`;
+#     already single-run (`--cards` is uint_csv_ok-validated; a PR number is the digit run
+#     release-pr-body's pr_token returns;
 #     DL tokens are whatever `ref_token_regex` matched), while the CARD side's value has
 #     arbitrary provenance and decides a PATCH on a card, so it fails safe. They agree
 #     byte-for-byte on every single-run value, which is the only shape either side is
@@ -1136,10 +1143,36 @@ else
   # first-ever release, or a shallow/tagless clone). Use --base or --dls explicitly.
   [ -n "$BASE" ] || die "no base tag found before $HEAD_REF — refusing a full-history sweep; pass --base <ref> or --dls"
   RANGE="$BASE..$HEAD_REF"
-  SUBJECTS="$(git log "$RANGE" --no-merges --format='%s' 2>/dev/null || true)"
-  DL_NUMS="$(printf '%s\n' "$SUBJECTS" | grep -oiE "$REF_RE" | numlist || true)"
-  # The squash-merge PR marker is the TRAILING (#NNN) — not the inline #card refs.
-  PR_NUMS="$(printf '%s\n' "$SUBJECTS" | grep -oE '\(#[0-9]+\)[[:space:]]*$' | numlist || true)"
+  # THE SHIPPED SET IS ASKED FOR, NEVER PARSED HERE (card#11602). Which pull request a commit is,
+  # and whether it ships what its subject names, has ONE implementation: `release-pr-body
+  # --classify-commits`, the sibling in this same bin/ (not a PATH lookup, so the two cannot be
+  # different toolkit versions disagreeing on the rule — the shape bin/release-tag-check uses for
+  # `--tag`). It reads git's `This reverts commit` line, so a revert ships no DL of its own, a change
+  # a revert in the range takes back ships nothing, and a revert's inherited `(#N)` is not its own;
+  # its contract is commit_rows' header in that file. A PR number is read ONLY from a row's
+  # <shipped pr> and a DL token ONLY from its <shipped text>, both empty whenever a commit ships
+  # nothing — so this end holds no subject rule at all.
+  # ⛔ A MISSING OR FAILING SIBLING IS FATAL (rc 2), never a fall-back to reading subjects: that
+  # fall-back is the second parser this replaced, and it promotes reverted cards.
+  RPB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-pr-body"
+  [ -x "$RPB" ] || die "$RPB is missing or not executable — it owns which commits in $RANGE ship (\`release-pr-body --classify-commits\`), and a range-derived promote refuses rather than guess. Vendor bin/release-pr-body beside this file (docs/INSTALL.md §6b), or pass the shipped set explicitly with --dls/--cards"
+  ROWS_RC=0
+  ROWS="$(env -u KANBAN_WRITEBACK_TOKEN "$RPB" --classify-commits --base "$BASE" --head "$HEAD_REF")" || ROWS_RC=$?
+  [ "$ROWS_RC" -eq 0 ] || die "$RPB --classify-commits exited $ROWS_RC over $RANGE — refusing to promote from a range nothing classified. A release-pr-body older than this mover has no --classify-commits (it refuses the flag as 'unknown arg'): re-vendor the two TOGETHER"
+  SHIPPED_TEXT=""; PR_NUMS=""
+  while IFS=$'\x1f' read -r rc_class rc_sha rc_pr rc_rel rc_text; do
+    [ -n "$rc_sha" ] || continue
+    if [ -n "$rc_text" ]; then SHIPPED_TEXT="$SHIPPED_TEXT$rc_text"$'\n'; fi
+    if [ -n "$rc_pr" ]; then PR_NUMS="$PR_NUMS$rc_pr"$'\n'; fi
+    case "$rc_class" in
+      reverted|revert-reverted)
+        echo "  ⊘ $(git rev-parse --short "$rc_sha"): reverted in this range by $(git rev-parse --short "$rc_rel") — it ships nothing, so no PR or DL it names is promoted from it" >&2 ;;
+      unmeasured)
+        echo "  ⚠ $(git rev-parse --short "$rc_sha"): NOT MEASURED — this is a shallow clone, and the commit its \`This reverts commit\` line names cannot be read, so whether it reverts anything is unknown; nothing it names is promoted from it. Deepen the clone (fetch-depth: 0) and re-run" >&2 ;;
+    esac
+  done <<< "$ROWS"
+  DL_NUMS="$(printf '%s' "$SHIPPED_TEXT" | grep -oiE "$REF_RE" | numlist || true)"
+  PR_NUMS="$(printf '%s' "$PR_NUMS" | numlist || true)"
 fi
 [ -n "$DL_NUMS$PR_NUMS$CARD_IDS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do."; exit 0; }
 jarr() { printf '%s' "$1" | jq -R . | jq -s 'map(select(. != ""))'; }
