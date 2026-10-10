@@ -533,7 +533,7 @@
 #   never the constraint; with both supplied from the environment it can move NEITHER.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.44.0'
+ABTK_TOOL_VERSION='0.45.0'
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 
