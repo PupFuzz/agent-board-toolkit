@@ -182,21 +182,76 @@ own_subject() {
 # pr_of_subject <subject>: the pull request a subject names, read from the subject alone, or nothing.
 pr_of_subject() { pr_token "$(own_subject "$1")"; }
 
+# CHECKED GIT READS (card#11662). A classification is only as good as its reads: a `git` call whose
+# failure is swallowed — in `$(…)` passed as an argument, in `< <(…)`, in a pipeline stage, or in an
+# `if` — reads as "nothing found", and for the revert paths "nothing found" means "ships". A partial
+# clone whose promisor is down is the live case: every commit and subject reads, but `git diff` and
+# `git log -p` cannot read a blob. So each read below is its own command whose status is tested, and a
+# failure is fatal (`die`, rc 2), never a result. `die` exits the SHELL it runs in: a caller that
+# reads one through `$(…)` adds `|| exit 2`, because errexit is off inside the `$(commit_rows …)`
+# these run under, and the body path hoists its own substitutions to top level (REVERTED_LINES,
+# BUNDLE_UNITS) so the exit is not swallowed by a here-document.
+# _gl <format> <rev>: `git log -1 --format=<format> <rev>`.
+_gl() { git log -1 --format="$1" "$2" || die "git log -1 $2 failed: a commit this range classifies cannot be read"; }
+# _parents <rev>: the parents of a commit, space separated (none for a root commit).
+_parents() {
+  local l
+  l="$(git rev-list --parents -n 1 "$1")" || die "git rev-list --parents $1 failed: the history cannot be read"
+  case "$l" in *" "*) printf '%s' "${l#* }" ;; esac
+}
+# _short <rev>: the abbreviated sha of a commit.
+_short() { git rev-parse --short "$1" || die "git rev-parse --short $1 failed: a commit this range classifies cannot be read"; }
+# _rl [<rev-list option>...] <range>: the non-merge commits of a range, one full sha per line.
+_rl() { git rev-list --no-merges "$@" || die "git rev-list $* failed: the history cannot be read"; }
+# _is_ancestor <a> <b>: 0 when <a> is an ancestor of <b>, 1 when it is not. Any OTHER status is a
+# failed read, which is fatal: it must not read as "not an ancestor" (a target would stop being one).
+_is_ancestor() {
+  local rc=0
+  git merge-base --is-ancestor "$1" "$2" 2>/dev/null || rc=$?
+  [ "$rc" -le 1 ] || die "git merge-base --is-ancestor $1 $2 failed (status $rc): the history cannot be read"
+  return "$rc"
+}
+
 # revert_scan <sha> <body>: what a commit REVERTS, read from git's `This reverts commit <sha>` body
 # lines. Sets RV_TARGETS (the full shas it reverts, one per line), RV_TAKEN (every commit it CERTAINLY
 # takes back, one per line: a target, plus, for a reverted merge, the commits that merge brought in),
-# RV_DOUBTED (every commit it MAY take back, in the same shape — see the two cases below),
-# RV_UNMEASURED (1 or empty) and RV_WHY (shallow, squash or merge: why it is not measured, or why
-# RV_DOUBTED is not empty; the first reason found).
-# A body-line sha counts as WHAT THIS COMMIT REVERTS only if it is an ANCESTOR of the commit. A
-# squash of a multi-commit PR carries, in GitHub's default body, the `This reverts commit` line of
-# every revert on the PR's branch, naming a branch commit that is not an ancestor of the squash and
-# is unreadable once the branch is deleted, in a full clone too. Such a line names no target of this
-# commit, whether its sha is readable or not. A sha that cannot be read in a SHALLOW clone may be an
-# ancestor the clone cut off, so whether the commit is a revert at all, and of what, cannot be ruled
-# out: the commit is NOT MEASURED (RV_UNMEASURED, why=shallow) rather than guessed at. In a full
-# clone an unreadable sha cannot be an ancestor. A commit is a REVERT exactly when RV_TARGETS is
-# non-empty: by its body line, never by its subject.
+# RV_DOUBTED (every commit it MAY take back, in the same shape — see the cases below), RV_COPIES (the
+# part of RV_DOUBTED that is a copy of a rewritten commit — see REWRITTEN), RV_KEPT (one
+# `<merge> <kept parent>` line per reverted merge whose kept parent is known), RV_LOST (the shas, as
+# written, of the lines that named a rewritten commit and matched none — see REWRITTEN),
+# RV_UNMEASURED (1 or empty) and RV_WHY (shallow, squash, merge or rewritten: why it is not measured,
+# or why RV_DOUBTED is not empty; the first reason found, in that order — RV_COPIES, not RV_WHY,
+# says which doubted commits are doubted as copies).
+# A body-line sha counts as a TARGET outright only if it is an ANCESTOR of the commit. A sha that
+# cannot be read in a SHALLOW clone may be an ancestor the clone cut off, so whether the commit is a
+# revert at all, and of what, cannot be ruled out: the commit is NOT MEASURED (RV_UNMEASURED,
+# why=shallow) rather than guessed at — and the line is ALSO searched for copies as below, since it
+# may as well name a rewritten commit, whose copy must not ship beside an unmeasured revert. A commit is a REVERT exactly when RV_TARGETS is non-empty: by
+# its body line, never by its subject.
+# REWRITTEN (card#11662): a line naming a commit that is NOT an ancestor — readable or not, in a full
+# clone, or unreadable in a shallow one — is never ignored: it is searched for copies, though one
+# that matches none on a commit with a non-revert subject then takes nothing back (below). A rebase or a cherry-pick copies a revert with its body unchanged, so its
+# line names the commit as it was BEFORE the rewrite, while the copy of that commit is what the range
+# holds. Its COPIES are looked for among the commits of the range being classified ($RANGE) that are
+# ancestors of this one: a commit whose subject — a trailing `(#N)` set aside on both sides — is the
+# one this commit's `Revert "…"` subject quotes (for `Reapply "X"`, which reverts `Revert "X"`, that
+# is `Revert "X"`), or whose change is exactly the one this commit undoes (`git patch-id`). The named
+# commit is not read even when it is readable, so the copies found — and so what is withheld — do not
+# depend on whether the named commit or its branch survives in this clone. They are the commits of
+# $RANGE, so a clone that CANNOT READ the range's commits, subjects or changes (a partial clone whose
+# promisor is down) does not guess: the run stops at rc 2 (CHECKED GIT READS). In a shallow clone the
+# reverting commit's own class also differs (`unmeasured`, not `revert`). Each copy is
+# a target and is DOUBTED (why=rewritten), never TAKEN: a subject or a change is evidence, not
+# identity, and a wrong TAKEN of a copy that is itself a revert would ship again what it took back. When
+# nothing matches and the commit's own subject is git's `Revert "…"` / `Reapply "…"` — a git revert
+# whose original is somewhere this range cannot point to — the commit is NOT MEASURED
+# (why=rewritten): it credits no PR and every reader names it. When nothing matches and its subject
+# is anything else, the commit is taken for a SQUASH: GitHub's squash body of a multi-commit PR
+# carries the `This reverts commit` line of every revert on the PR's branch, naming a branch commit
+# that never landed on its own, so the line takes nothing of the range back — the squash's own diff
+# already leaves the reverted branch work out. This REPLACES the card#11587 ruling that such a line,
+# its sha unreadable in a full clone and so no ancestor, names no target and is ignored: it is no
+# ancestor, but a copy of it can be in the range.
 # DOUBTED, why=squash (card#11652): a body holding an ancestor line AND a non-ancestor line. The
 # commit is certainly a revert, but the non-ancestor line may be a reapply on the PR branch that
 # cancels the ancestor line (branch: revert W, then reapply it — the squash body carries both lines,
@@ -204,18 +259,20 @@ pr_of_subject() { pr_token "$(own_subject "$1")"; }
 # ancestor line, and GitHub's squash body lists each branch commit as `* <subject>` and its message,
 # with NO sha of its own, so the body alone cannot say which commit wrote which line. Reading the
 # branch commit would make the answer depend on whether this clone happened to fetch a deleted
-# branch, so it is not read: every target, in every clone alike, is in RV_DOUBTED, not RV_TAKEN.
-# Where the lines sit in the body is not read either: an edited body can reorder them.
+# branch, so it is not read: every ancestor target, in every clone alike, is in RV_DOUBTED, not
+# RV_TAKEN. Where the lines sit in the body is not read either: an edited body can reorder them.
 # A REVERTED MERGE (card#11652): git writes `This reverts commit <merge>, reversing` and, on the next
 # line, `changes made to <P>.`, P being the parent `-m` KEPT. What the revert took back is every
 # commit the merge brought in relative to P — `git rev-list P..<merge>` — so `-m 1` takes back the
 # merged side and `-m 2` the mainline commits the side lacked. A merge line with no such next line,
 # or one naming no parent of the merge, is DOUBTED (why=merge): the merge and every commit it brought
-# in relative to ANY parent are in RV_DOUBTED, since which of them it took back is unknown.
+# in relative to ANY of its parents are in RV_DOUBTED — with `-m 1` in mind that is the merged side,
+# but relative to the side parent it is also every mainline commit made while the branch was open —
+# since which of them it took back is unknown.
 IS_SHALLOW=""
 revert_scan() {
-  local sha="$1" lines r k rs ks p other="" anc="" one doubtful
-  RV_TARGETS=""; RV_TAKEN=""; RV_DOUBTED=""; RV_UNMEASURED=""; RV_WHY=""
+  local sha="$1" lines r k rs ks p other="" anc="" one doubtful copies="" par subj_self quoted_self out
+  RV_TARGETS=""; RV_TAKEN=""; RV_DOUBTED=""; RV_COPIES=""; RV_KEPT=""; RV_LOST=""; RV_UNMEASURED=""; RV_WHY=""
   # One line per `This reverts commit` line: `<sha> <kept parent or ->`. A sha is the line's whole
   # hex run, 7 to 40 long, ending the line or followed by a non-hex character.
   lines="$(printf '%s\n' "$2" | awk '
@@ -228,35 +285,112 @@ revert_scan() {
   while read -r r k; do
     [ -n "$r" ] || continue
     if rs="$(git rev-parse -q --verify "$r^{commit}" 2>/dev/null)"; then
-      if git merge-base --is-ancestor "$rs" "$sha" 2>/dev/null; then
+      if _is_ancestor "$rs" "$sha"; then
         RV_TARGETS="$RV_TARGETS$rs"$'\n'; anc="$anc$rs $k"$'\n'
-      else
-        other=1
+        continue
       fi
     elif [ "$IS_SHALLOW" != false ]; then
       RV_UNMEASURED=1; RV_WHY="${RV_WHY:-shallow}"
-    else
-      other=1
     fi
+    other="$other$r"$'\n'
   done <<< "$lines"
-  [ -n "$anc" ] || return 0
-  if [ -n "$other" ]; then RV_WHY="${RV_WHY:-squash}"; fi
+  if [ -n "$other" ]; then
+    # Explicit `|| exit 2`: the search runs in its own subshell, and errexit is off inside the
+    # `$(commit_rows …)` this runs under. Every git read in the search is a checked command that
+    # `die`s (CHECKED GIT READS); without this the die would end only that subshell and `copies` would
+    # be empty, which reads as "no copy" and ships it.
+    copies="$(_rv_copies "$sha")" || exit 2
+    RV_COPIES="$copies"
+    subj_self="$(_gl %s "$sha")" || exit 2
+    quoted_self="$(_rv_quoted "$subj_self")"
+    if [ -z "$copies" ] && [ -n "$quoted_self" ]; then RV_LOST="$other"; fi
+  fi
+  if [ -n "$anc" ] && [ -n "$other" ]; then RV_WHY="${RV_WHY:-squash}"; fi
   while read -r rs k; do
     [ -n "$rs" ] || continue
     one="$rs"$'\n'; doubtful="$other"
-    if git rev-parse -q --verify "$rs^2" >/dev/null; then
-      ks=""
-      if [ "$k" != - ]; then ks="$(git rev-parse -q --verify "$k^{commit}" 2>/dev/null)" || ks=""; fi
-      case $'\n'"$(git rev-parse "$rs^@")"$'\n' in *$'\n'"${ks:-none}"$'\n'*) ;; *) ks="" ;; esac
-      if [ -n "$ks" ]; then
-        one="$one$(git rev-list --no-merges "$ks..$rs")"$'\n'
-      else
-        doubtful=1; RV_WHY="${RV_WHY:-merge}"
-        for p in $(git rev-parse "$rs^@"); do one="$one$(git rev-list --no-merges "$p..$rs")"$'\n'; done
-      fi
-    fi
+    par="$(_parents "$rs")" || exit 2
+    case "$par" in
+      *" "*)   # a merge: two or more parents
+        ks=""
+        if [ "$k" != - ]; then ks="$(git rev-parse -q --verify "$k^{commit}" 2>/dev/null)" || ks=""; fi
+        case " $par " in *" ${ks:-none} "*) ;; *) ks="" ;; esac
+        if [ -n "$ks" ]; then
+          RV_KEPT="$RV_KEPT$rs $ks"$'\n'
+          out="$(_rl "$ks..$rs")" || exit 2
+          one="$one$out"$'\n'
+        else
+          doubtful=1; RV_WHY="${RV_WHY:-merge}"
+          for p in $par; do
+            out="$(_rl "$p..$rs")" || exit 2
+            one="$one$out"$'\n'
+          done
+        fi ;;
+    esac
     if [ -n "$doubtful" ]; then RV_DOUBTED="$RV_DOUBTED$one"; else RV_TAKEN="$RV_TAKEN$one"; fi
   done <<< "$anc"
+  if [ -n "$copies" ]; then
+    RV_TARGETS="$(printf '%s\n%s\n' "$RV_TARGETS" "$copies" | awk 'NF && !seen[$0]++')"$'\n'
+    RV_DOUBTED="$RV_DOUBTED$copies"$'\n'; RV_WHY="${RV_WHY:-rewritten}"
+  fi
+  if [ -n "$RV_LOST" ]; then RV_UNMEASURED=1; RV_WHY="${RV_WHY:-rewritten}"; fi
+  return 0
+}
+
+# _rv_quoted <subject>: the subject a git-written revert subject says it reverts, its trailing
+# `(#N)` set aside — `Revert "X"…` reverts X, `Reapply "X"…` (git 2.43 and later) reverts
+# `Revert "X"` — or nothing for any other subject, or a quote never closed.
+_rv_quoted() {
+  local s="$1" q
+  case "$s" in 'Revert "'*|'Reapply "'*) ;; *) return 0 ;; esac
+  q="${s#*\"}"
+  case "$q" in *\"*) q="${q%\"*}" ;; *) return 0 ;; esac
+  case "$s" in 'Reapply "'*) q="Revert \"$q\"" ;; esac
+  printf '%s' "$q" | _rv_bare
+}
+# _rv_bare: a subject on stdin with its trailing `(#N)` set aside — a squash merge appends one.
+_rv_bare() { sed -E 's/[[:space:]]*\(#[0-9]+\)[[:space:]]*$//'; }
+# _rv_pid: the `git patch-id --stable` of each `commit <sha>` + diff on stdin, as `<pid> <sha>`.
+# Diffs are made with --no-renames on both sides of every comparison, so a user's rename config
+# cannot make one change hash two ways.
+_rv_pid() { git patch-id --stable; }
+
+# _rv_copies <sha>: the commits of $RANGE that are ancestors of <sha> and may be the copy of the
+# commit a non-ancestor `This reverts commit` line of <sha> names (revert_scan, REWRITTEN), one full
+# sha per line. Read from <sha> alone — never from the named commit. EVERY git read here is its own
+# checked command (CHECKED GIT READS), and the matching runs over the captured strings in this shell,
+# not in a pipeline stage, so a read that fails — a blob a partial clone cannot fetch — is fatal and
+# can never read as "no copies".
+_rv_copies() {
+  local sha="$1" par key subj undo_src undo log_s log_p pids h s pid cands="" found=""
+  [ -n "${RANGE:-}" ] || die "internal: revert_scan needs RANGE, the range being classified, to look for a rewritten commit's copies"
+  par="$(_parents "$sha")" || exit 2
+  [ -n "$par" ] || return 0   # a root commit: nothing precedes it to be a copy of
+  subj="$(_gl %s "$sha")" || exit 2
+  key="$(_rv_quoted "$subj")"
+  undo_src="$(git diff --no-color --no-ext-diff --no-renames "$sha" "${par%% *}")" \
+    || die "git diff $sha failed: the change this commit undoes cannot be read (a partial clone with its promisor down?)"
+  undo="$(printf 'commit %s\n%s\n' "$sha" "$undo_src" | _rv_pid | cut -d' ' -f1)" \
+    || die "git patch-id failed over the change $sha undoes"
+  if [ -n "$key" ]; then
+    log_s="$(git log --no-merges --format='%H%x1f%s' "$RANGE")" || die "git log $RANGE failed: the range cannot be read"
+    while IFS=$'\x1f' read -r h s; do
+      if [ -n "$h" ] && [ "$(printf '%s' "$s" | _rv_bare)" = "$key" ]; then cands="$cands$h"$'\n'; fi
+    done <<< "$log_s"
+  fi
+  if [ -n "$undo" ]; then
+    log_p="$(git log --no-merges --no-color --no-ext-diff --no-renames -p --format='commit %H' "$RANGE")" \
+      || die "git log -p $RANGE failed: the changes of the range cannot be read (a partial clone with its promisor down?)"
+    pids="$(printf '%s\n' "$log_p" | _rv_pid)" || die "git patch-id failed over the changes of $RANGE"
+    while read -r pid h; do
+      if [ "$pid" = "$undo" ]; then cands="$cands$h"$'\n'; fi
+    done <<< "$pids"
+  fi
+  while read -r h; do
+    [ -n "$h" ] || continue
+    if [ "$h" != "$sha" ] && _is_ancestor "$h" "$sha"; then found="$found$h"$'\n'; fi
+  done <<< "$cands"
+  printf '%s' "$found" | awk '!seen[$0]++'
 }
 
 # _pr_of_scanned <subject>: pr_of_commit's answer for the commit revert_scan last scanned.
@@ -268,20 +402,23 @@ revert_scan() {
 # commit not measured credits NO PR. ONE PATH PER COMMIT: a commit that reverts nothing (every body
 # line ignored, or none — a hand-written or edited message) is read by pr_of_subject.
 _pr_of_scanned() {
-  local own t
+  local own t ts
   own="$(pr_token "$1")"
   [ -n "$own" ] && [ -z "$RV_UNMEASURED" ] || return 0
   if [ -z "$RV_TARGETS" ]; then pr_of_subject "$1"; return 0; fi
   while IFS= read -r t; do
     [ -n "$t" ] || continue
-    [ "$(pr_token "$(git log -1 --format=%s "$t")")" != "$own" ] || return 0
+    ts="$(_gl %s "$t")" || exit 2
+    [ "$(pr_token "$ts")" != "$own" ] || return 0
   done <<< "$RV_TARGETS"
   printf '%s' "$own"
 }
 
 # pr_of_commit <sha> <subject>: the pull request a NON-MERGE commit is, or nothing.
 pr_of_commit() {
-  revert_scan "$1" "$(git log -1 --format=%b "$1")"
+  local body
+  body="$(_gl %b "$1")" || exit 2
+  revert_scan "$1" "$body"
   _pr_of_scanned "$2"
 }
 
@@ -311,7 +448,8 @@ pr_of_commit() {
 #   unmeasured       whether a revert takes this commit back, or what it takes back, is unknown: it
 #                    ships NOTHING and is named by every reader, never counted as shipped and never
 #                    left out in silence. <related> is EMPTY for a commit revert_scan could not
-#                    measure (a shallow clone). Otherwise it is the commit that MAY take this one
+#                    measure (a shallow clone, or a git revert of a rewritten commit no commit of
+#                    the range is a copy of). Otherwise it is the commit that MAY take this one
 #                    back: a live revert whose targets are doubted (RV_DOUBTED), or an unmeasured
 #                    commit — so a possibly-reverted change is not promoted, and is not called
 #                    reverted.
@@ -328,11 +466,33 @@ pr_of_commit() {
 # commit's own sha (revert_scan). The squash ships its own PR and title as usual; W is unmeasured,
 # so W's card and DL are WITHHELD (in no manifest, not promoted) whether or not W is live — promote
 # W's card by hand once a person has read the PR. A reverted merge whose `changes made to` line was
-# edited away still ships its own PR; the merge and every commit it brought in are unmeasured, and
-# withheld the same way (revert_scan).
+# edited away still ships its own PR; the merge and every commit it brought in relative to ANY of its
+# parents — the merged side, and also every mainline commit made while that branch was open — are
+# unmeasured, and withheld the same way (revert_scan).
+# A revert whose `This reverts commit` line names a commit a rebase or cherry-pick REWROTE (no
+# ancestor, readable or not, or unreadable in a shallow clone) is matched to that commit's copy in the range by the subject it quotes
+# or the change it undoes, never by identity (revert_scan, REWRITTEN), so the copy is unmeasured and
+# WITHHELD, not reverted — and so is a copy a rewritten REAPPLY made live again: a branch that
+# committed, reverted and reapplied a change, then was rebased, withholds that live change. Promote
+# its card by hand. What is withheld does not depend on whether the named commit or its branch
+# survives; a clone that cannot read the range stops at rc 2; in a shallow clone the revert is also
+# unmeasured itself. A copy whose subject was reworded AND whose change differs from the one the
+# revert undoes (a conflict resolved differently on the way) matches nothing: the revert is then
+# unmeasured itself and credits no PR, but the copy SHIPS. A squash, or any commit whose subject is
+# not git's `Revert "…"` / `Reapply "…"`, whose non-ancestor line matches nothing takes nothing back
+# — that is the PR branch's own revert, already outside the squash's diff — so a squash whose branch
+# reverted a commit a copy of which is in the range, and whose diff holds more than that revert,
+# ships that copy.
 commit_rows() {
-  local range="$1" sha subj body class rel t dead="" doubt="" kind="" out
-  while IFS=$'\x1f' read -r -d '' sha subj body; do
+  local range="$1" sha subj body class rel t dead="" doubt="" kind="" out recs prs own
+  # Both `git log` streams are captured by a checked command, never read through `< <(git log …)`:
+  # a stream that dies partway would end its loop quietly and leave the commits after it with no row
+  # (CHECKED GIT READS). A record is three US-separated fields ended by a 0x1e, so a body of any
+  # text survives.
+  recs="$(git log --topo-order --no-merges --format='%H%x1f%s%x1f%b%x1e' "$range")" \
+    || die "git log over $range failed: the range cannot be read, so it cannot be classified"
+  while IFS=$'\x1f' read -r -d $'\x1e' sha subj body; do
+    sha="${sha#$'\n'}"
     [ -n "$sha" ] || continue
     revert_scan "$sha" "$body"
     rel=""
@@ -366,8 +526,10 @@ commit_rows() {
     else
       kind="$kind$sha shipped -"$'\n'
     fi
-  done < <(git log --topo-order --no-merges -z --format='%H%x1f%s%x1f%b' "$range")
+  done <<< "$recs"
   kind=$'\n'"$kind"
+  recs="$(git log --no-merges --format='%H%x1f%s' "$range")" \
+    || die "git log over $range failed: the range cannot be read, so it cannot be classified"
   while IFS=$'\x1f' read -r sha subj; do
     [ -n "$sha" ] || continue
     out="${kind#*$'\n'"$sha "}"; out="${out%%$'\n'*}"
@@ -376,12 +538,15 @@ commit_rows() {
       shipped)
         printf '%s\x1f%s\x1f%s\x1f\x1f%s\n' "$class" "$sha" "$(pr_of_subject "$subj")" "$(own_subject "$subj")" ;;
       revert)
-        revert_scan "$sha" "$(git log -1 --format=%b "$sha")"
-        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$class" "$sha" "$(_pr_of_scanned "$subj")" "$rel" "$(own_subject "$subj")" ;;
+        body="$(_gl %b "$sha")" || exit 2
+        revert_scan "$sha" "$body"
+        prs="$(_pr_of_scanned "$subj")" || exit 2
+        own="$(own_subject "$subj")"
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$class" "$sha" "$prs" "$rel" "$own" ;;
       *)
         printf '%s\x1f%s\x1f\x1f%s\x1f\n' "$class" "$sha" "$rel" ;;
     esac
-  done < <(git log --no-merges --format='%H%x1f%s' "$range")
+  done <<< "$recs"
 }
 
 CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0; TOOL_VERSION_ONLY=0; CLASSIFY_ONLY=0
@@ -446,7 +611,8 @@ if [ "$CLASSIFY_ONLY" = 1 ]; then
     || die "--classify-commits needs both --base <ref> and --head <ref>: it classifies the range it is given, and resolves no default end"
   require_resolvable --base "$BASE"
   require_resolvable --head "$HEAD_REF"
-  commit_rows "$BASE..$HEAD_REF"
+  RANGE="$BASE..$HEAD_REF"
+  commit_rows "$RANGE"
   exit 0
 fi
 
@@ -838,20 +1004,23 @@ pr_of_merge() {
 # Pure git: no forge API is asked which PR a commit belongs to.
 _units_walk() { # <tip> [<exclude>...]
   local tip="$1"; shift
-  local log sha h parents subj pr side line title p
+  local log sha h parents subj pr side line title p prc out full
   local -a ps ex
-  log="$(git log --first-parent --format='%H%x1f%h%x1f%P%x1f%s' "$tip" --not ${BASE:+"$BASE"} "$@")"
+  log="$(git log --first-parent --format='%H%x1f%h%x1f%P%x1f%s' "$tip" --not ${BASE:+"$BASE"} "$@")" \
+    || die "git log --first-parent $tip failed: the bundled changes cannot be read"
   while IFS=$'\x1f' read -r sha h parents subj; do
     [ -n "$sha" ] || continue
     read -r -a ps <<< "$parents"
     if [ "${#ps[@]}" -lt 2 ]; then
-      printf '%s\x1f%s\x1f%s\n' "$(pr_of_commit "$sha" "$subj")" "$h" "$subj"
+      prc="$(pr_of_commit "$sha" "$subj")" || exit 2
+      printf '%s\x1f%s\x1f%s\n' "$prc" "$h" "$subj"
       continue
     fi
     ex=("$@" "${ps[0]}")
     side=""
     for p in "${ps[@]:1}"; do
-      side="$side$(_units_walk "$p" "${ex[@]}")"$'\n'
+      out="$(_units_walk "$p" "${ex[@]}")" || exit 2
+      side="$side$out"$'\n'
     done
     [ -n "${side//$'\n'/}" ] || continue
     pr="$(pr_of_merge "$subj")"
@@ -859,7 +1028,8 @@ _units_walk() { # <tip> [<exclude>...]
       title="$subj"
       case "$subj" in
         "Merge pull request #"*)
-          line="$(git log -1 --format=%b "$sha" | awk 'NF { print; exit }')"
+          full="$(_gl %b "$sha")" || exit 2
+          line="$(printf '%s\n' "$full" | awk 'NF { print; exit }')"
           if [ -n "$line" ]; then title="$line"; fi ;;
       esac
       printf '%s\x1f%s\x1f%s\n' "$pr" "$h" "$title"
@@ -876,7 +1046,7 @@ bundle_units() { _units_walk "$HEAD_REF"; }
 
 bundle_lines() {
   local found=0 units
-  units="$(bundle_units)"
+  units="$BUNDLE_UNITS"
   while IFS=$'\x1f' read -r pr _ subj; do
     [ -n "$subj" ] || continue
     found=1
@@ -972,7 +1142,7 @@ repo_from_origin_url() {
 review_note() { printf 'release-pr-body: review: %s\n' "$1" >&2; }
 review_sentence() {
   local units prs shas sha pr m
-  units="$(bundle_units)"
+  units="$BUNDLE_UNITS"
   prs=""; shas=""; m=0
   while IFS=$'\x1f' read -r pr sha _; do
     [ -n "$sha" ] || continue
@@ -1069,8 +1239,10 @@ review_sentence() {
 #   Reverted by this range, shipped before it: <change> (<refs>), reverted by <sha>; …
 #       a change a live revert in this range certainly takes back whose commit is OUTSIDE the
 #       range — it shipped in an earlier release, and whatever card it moved stays where it is. A
-#       reverted merge is named by the commits it brought in relative to the parent it KEPT
-#       (RV_TAKEN), never by the merge's own PR: after `-m 2` that PR's side is the part that stayed
+#       reverted merge whose FIRST parent was kept (`-m 1`) is named by the merge's own PR
+#       (pr_of_merge), with the refs of the side it brought in: that side is what was taken back.
+#       With another parent kept (`-m 2`) that PR's side is the part that stayed, so the merge is
+#       named by the commits it brought in relative to the kept parent (RV_TAKEN), one by one
 #   Not measured for a revert: <sha> (<why>); <change>, which <sha> may take back (<why>); …
 #       a commit commit_rows could not measure, and each commit a revert in this range may take
 #       back (`shipped before this range` when it is outside it); none of these ships, and each is
@@ -1079,10 +1251,21 @@ review_sentence() {
 # subject names that NO bundled change ships — a ref another bundled change still ships is in the
 # manifest and is not called reverted. A revert that is itself taken back (a reapply) is not named:
 # what it reverted ships again. These are body lines, not an H2: the body's H2 set is fixed (header).
-reverted_item() { # <sha> <reverting-sha>
-  local subj own label refs="" tok dl_shipped card_shipped
-  subj="$(git log -1 --format=%s "$1")"; own="$(own_subject "$subj")"; label="$(pr_of_subject "$subj")"
-  if [ -n "$label" ]; then label="#$label"; else label="$(git rev-parse --short "$1")"; fi
+# reverted_item <sha> <reverting-sha> [<commit>...]: one reverted change. <sha> is labelled by its PR
+# (a merge by pr_of_merge); its refs are read from its own subject, or, given, from those commits'.
+reverted_item() {
+  local sha="$1" rev="$2" subj own="" label refs="" tok dl_shipped card_shipped c par cs rshort
+  shift 2
+  subj="$(_gl %s "$sha")" || exit 2
+  if [ "$#" -eq 0 ]; then own="$(own_subject "$subj")"; fi
+  for c in "$@"; do
+    cs="$(_gl %s "$c")" || exit 2
+    own="$own"$'\n'"$(own_subject "$cs")"
+  done
+  par="$(_parents "$sha")" || exit 2
+  case "$par" in *" "*) label="$(pr_of_merge "$subj")" ;; *) label="$(pr_of_subject "$subj")" ;; esac
+  if [ -n "$label" ]; then label="#$label"; else label="$(_short "$sha")" || exit 2; fi
+  rshort="$(_short "$rev")" || exit 2
   dl_shipped=$'\n'"$(emit_manifest)"$'\n'; card_shipped=$'\n'"$(emit_card_ids)"$'\n'
   if [ -n "$REF_TOKEN_REGEX" ]; then
     while IFS= read -r tok; do
@@ -1096,57 +1279,110 @@ reverted_item() { # <sha> <reverting-sha>
       case "$card_shipped" in *$'\n'"$(printf '%s\n' "$tok" | card_ids_of)"$'\n'*) ;; *) refs="${refs:+$refs, }$tok" ;; esac
     done < <(printf '%s\n' "$own" | grep -oiE "$CARD_TOKEN_REGEX" | awk '!seen[$0]++' || true)
   fi
-  printf '%s%s, reverted by %s' "$label" "${refs:+ ($refs)}" "$(git rev-parse --short "$2")"
+  printf '%s%s, reverted by %s' "$label" "${refs:+ ($refs)}" "$rshort"
+}
+# _why_rewritten: why a doubted commit is a copy. In a full clone a line naming a commit outside the
+# history means that commit was rewritten; in a SHALLOW clone it may as well be an ancestor the clone
+# cut off, so it is not asserted there.
+_why_rewritten() {
+  if [ "$IS_SHALLOW" = false ]; then
+    printf 'its `This reverts commit` line names a commit that is not in its history (a rebase or a cherry-pick rewrote it), and this commit has that commit'"'"'s subject or the change it undoes'
+  else
+    printf 'its `This reverts commit` line names a commit this shallow clone cannot read (a rebase or a cherry-pick may have rewritten it, or it may be an ancestor the clone cut off), and this commit has that commit'"'"'s subject or the change it undoes'
+  fi
 }
 # unmeasured_item <sha> [<commit that may take it back> [before]]: one `Not measured for a revert`
-# item. With no second argument <sha> is a commit revert_scan could not measure (a shallow clone).
+# item. With no second argument <sha> is a commit revert_scan could not measure: a shallow clone, or
+# a revert of a rewritten commit no commit of the range is a copy of (revert_scan, REWRITTEN).
 unmeasured_item() {
-  local subj label
+  local subj label lost body one_short two_short one_full
+  one_short="$(_short "$1")" || exit 2
   if [ -z "${2:-}" ]; then
-    printf '%s (this is a shallow clone and a commit its `This reverts commit` line names cannot be read; deepen the clone)' "$(git rev-parse --short "$1")"
+    body="$(_gl %b "$1")" || exit 2
+    revert_scan "$1" "$body"
+    case "$RV_WHY" in
+      shallow) printf '%s (this is a shallow clone and a commit its `This reverts commit` line names cannot be read; deepen the clone)' "$one_short" ;;
+      *)
+        lost="$(printf '%s' "$RV_LOST" | awk 'NF { print substr($0, 1, 7) }' | paste -sd' ' -)"
+        printf '%s (its `This reverts commit` line names %s, which is not in its history (a rebase or a cherry-pick rewrote it), and no commit before it in this range has the subject it quotes or the change it undoes)' "$one_short" "$lost" ;;
+    esac
     return 0
   fi
-  subj="$(git log -1 --format=%s "$1")"; label="$(pr_of_subject "$subj")"
-  if [ -n "$label" ]; then label="#$label"; else label="$(git rev-parse --short "$1")"; fi
-  printf '%s%s, which %s may take back (' "$label" "${3:+, shipped before this range}" "$(git rev-parse --short "$2")"
+  subj="$(_gl %s "$1")" || exit 2
+  label="$(pr_of_subject "$subj")"
+  if [ -n "$label" ]; then label="#$label"; else label="$one_short"; fi
+  two_short="$(_short "$2")" || exit 2
+  printf '%s%s, which %s may take back (' "$label" "${3:+, shipped before this range}" "$two_short"
+  # The reason is per doubted commit: a copy of a rewritten commit is doubted as that, whatever
+  # else the same revert's body doubts.
+  body="$(_gl %b "$2")" || exit 2
+  revert_scan "$2" "$body"
+  one_full="$(git rev-parse "$1")" || die "git rev-parse $1 failed: a commit this range classifies cannot be read"
+  case $'\n'"$RV_COPIES"$'\n' in *$'\n'"$one_full"$'\n'*) RV_WHY=rewritten ;; esac
   case $'\n'"$COMMIT_ROWS" in
-    *$'\n'"unmeasured"$'\x1f'"$2"$'\x1f'*) printf 'it is not measured itself' ;;
+    *$'\n'"unmeasured"$'\x1f'"$2"$'\x1f'*)
+      if [ "$RV_WHY" = rewritten ]; then
+        _why_rewritten; printf '; it is not measured itself'
+      else
+        printf 'it is not measured itself'
+      fi ;;
     *)
-      revert_scan "$2" "$(git log -1 --format=%b "$2")"
       case "$RV_WHY" in
         shallow) printf 'a shallow clone cannot read a commit its `This reverts commit` line names; deepen the clone' ;;
         squash)  printf 'its body also reverts a commit only its PR branch had, which may be a reapply of this one' ;;
         merge)   printf 'it reverts a merge this commit came in by, and names no parent of that merge as the one kept' ;;
+        rewritten) _why_rewritten ;;
       esac ;;
   esac
   printf ')'
 }
 reverted_lines() {
-  local c sha _p rel _t x in="" before="" unm="" inrange taken doubted
+  local c sha _p rel _t x in="" before="" unm="" inrange taken doubted kept side skip body par xp item
   # Every commit in the range, MERGES INCLUDED: commit_rows lists non-merge commits only, and a
   # reverted merge inside the range was not shipped before it.
-  inrange=$'\n'"$(git rev-list "$RANGE")"$'\n'
+  inrange="$(git rev-list "$RANGE")" || die "git rev-list $RANGE failed: the range cannot be read"
+  inrange=$'\n'"$inrange"$'\n'
   while IFS=$'\x1f' read -r c sha _p rel _t; do
     case "$c" in
-      reverted) in="${in:+$in; }$(reverted_item "$sha" "$rel")" ;;
+      reverted) item="$(reverted_item "$sha" "$rel")" || exit 2; in="${in:+$in; }$item" ;;
       revert)
-        # What it takes back outside the range, by commit: a reverted merge is not itself a change
-        # with refs, the commits it brought in relative to the kept parent are (RV_TAKEN).
-        revert_scan "$sha" "$(git log -1 --format=%b "$sha")"
-        taken="$RV_TAKEN"; doubted="$RV_DOUBTED"
+        # What it takes back outside the range (RV_TAKEN). A merge whose FIRST parent was kept
+        # (`-m 1`) had its merged side taken back — that is the merge's PR, so it is named by it,
+        # with its side's refs; with another parent kept, what was taken back is not that PR, so
+        # the commits it brought in relative to the kept parent are named one by one.
+        body="$(_gl %b "$sha")" || exit 2
+        revert_scan "$sha" "$body"
+        taken="$RV_TAKEN"; doubted="$RV_DOUBTED"; kept=$'\n'"$RV_KEPT"; skip=$'\n'
         for x in $taken; do
           case "$inrange" in *$'\n'"$x"$'\n'*) continue ;; esac
-          ! git rev-parse -q --verify "$x^2" >/dev/null || continue
-          revert_scan "$x" "$(git log -1 --format=%b "$x")"
+          case "$skip" in *$'\n'"$x"$'\n'*) continue ;; esac
+          xp="$(_parents "$x")" || exit 2
+          case "$xp" in
+            *" "*)   # a reverted merge from before the range
+              case "$kept" in
+                *$'\n'"$x ${xp%% *}"$'\n'*)
+                  side="$(_rl --reverse "${xp%% *}..$x")" || exit 2
+                  skip="$skip$side"$'\n'
+                  # shellcheck disable=SC2086 # one full sha per word
+                  item="$(reverted_item "$x" "$sha" $side)" || exit 2
+                  before="${before:+$before; }$item" ;;
+              esac
+              continue ;;
+          esac
+          body="$(_gl %b "$x")" || exit 2
+          revert_scan "$x" "$body"
           [ -z "$RV_TARGETS" ] && [ -z "$RV_UNMEASURED" ] || continue
-          before="${before:+$before; }$(reverted_item "$x" "$sha")"
+          item="$(reverted_item "$x" "$sha")" || exit 2
+          before="${before:+$before; }$item"
         done
         for x in $doubted; do
           case "$inrange" in *$'\n'"$x"$'\n'*) continue ;; esac
-          ! git rev-parse -q --verify "$x^2" >/dev/null || continue
-          unm="${unm:+$unm; }$(unmeasured_item "$x" "$sha" before)"
+          xp="$(_parents "$x")" || exit 2
+          case "$xp" in *" "*) continue ;; esac
+          item="$(unmeasured_item "$x" "$sha" before)" || exit 2
+          unm="${unm:+$unm; }$item"
         done ;;
-      unmeasured) unm="${unm:+$unm; }$(unmeasured_item "$sha" "$rel")" ;;
+      unmeasured) item="$(unmeasured_item "$sha" "$rel")" || exit 2; unm="${unm:+$unm; }$item" ;;
     esac
   done <<< "$COMMIT_ROWS"
   if [ -n "$in" ]; then printf 'Reverted in this range, so not shipped by it: %s.\n' "$in"; fi
@@ -1416,6 +1652,14 @@ announce_block() {
 
 
 # --- the body --------------------------------------------------------------
+# The three substitutions that read git are hoisted out of the here-document: inside it a `die` would
+# end only the substitution and the body would print without those lines, which reads as "clean".
+# Here, at top level, a failed read ends the run at rc 2 before any of the body is written.
+BUNDLE_UNITS="$(bundle_units)"
+# The review sentence reports and never blocks (review_sentence): its status stays ignored, as it was
+# inside the here-document.
+REVIEW_SENTENCE="$(review_sentence)" || true
+REVERTED_LINES="$(reverted_lines)"
 cat <<EOF
 **\`${DEV_BRANCH} → ${MAIN_BRANCH}\` release PR — ${THIS_TAG}.** Bundles ${COUNT} commit(s) since ${BASE:-the start}.
 
@@ -1424,7 +1668,8 @@ cat <<EOF
      the ONLY non-deterministic section — everything below is generated from git. -->
 
 ## Bundled (generated — do not hand-edit)
-$(review_sentence; reverted_lines)
+${REVIEW_SENTENCE}${REVERTED_LINES:+
+${REVERTED_LINES}}
 
 $(bundle_lines)
 EOF

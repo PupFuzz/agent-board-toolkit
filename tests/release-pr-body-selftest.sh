@@ -1886,7 +1886,9 @@ echo "== a direct-push revert is not credited to the PR it reverts (card#11587) 
 #        `Reapply "feat: v (#28)" (#29)`, whose subject alone reads #29
 #   #30 — squashed from a branch commit, which is then pruned; F = that pruned branch commit
 #        reverted through PR #31: the commit its revert line names is not an ancestor of F and is
-#        unreadable in this full clone, so the line is ignored and the subject rule reads #31
+#        unreadable in this full clone. Until card#11662 the line was ignored; now #30, which has
+#        the subject F quotes, is a possible copy of that commit, so F is a revert of #30 that
+#        still ships its own #31, and #30 is not measured
 #   #50 · #51 — multi-commit PRs whose branch holds a `git revert`, squashed with GitHub's default
 #        body, which keeps the branch revert's `This reverts commit <branch-sha>.` line; the branch
 #        is kept for #50 (readable, not an ancestor) and deleted for #51 (unreadable): both are
@@ -1971,6 +1973,11 @@ eq "…the direct-push reverts and reapplies, and only those, are not measured" 
    "Review: 14 of 21 bundled changes have an independent review record; not measured: $(_rvt_h "$RVT_M"), $(_rvt_h "$RVT_U"), $(_rvt_h "$RVT_E2"), $(_rvt_h "$RVT_C1"), $(_rvt_h "$RVT_A3"), $(_rvt_h "$RVT_A2"), $(_rvt_h "$RVT_A1")." "$RV_LINE"
 eq "…and the verifier is asked about each bundled PR once" \
    "$(printf 'acme/widget#%s\n' 21 22 23 24 25 26 27 28 29 30 31 40 50 51)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+RVT_CC="$(cd "$RVT" && "$BIN" --classify-commits --base v0.1.0 --head HEAD | awk 'BEGIN { FS = "\037" } { print $1 "|" $2 "|" $3 "|" $4 }')"
+eq "…F, whose line names the pruned commit, reverts #30 — the commit carrying the subject it quotes — and ships #31; #30 is not measured (card#11662)" \
+   "revert|$RVT_F|31|$RVT_30+unmeasured|$RVT_30||$RVT_F" "$(printf '%s\n' "$RVT_CC" | grep -F "|$RVT_F|")+$(printf '%s\n' "$RVT_CC" | grep -F "|$RVT_30|" | grep -v '^revert')"
+eq "…while the squashes whose branch reverted a commit of its own (#50, #51, #40) are still shipped" \
+   "shipped|50+shipped|51+shipped|40" "$(for c in "$RVT_Q50" "$RVT_Q51" "$RVT_Q40"; do printf '%s\n' "$RVT_CC" | awk -F'|' -v s="$c" '$2 == s { print $1 "|" $3 }'; done | paste -sd+ -)"
 
 # THE ONE PATH THAT STAYS NOT MEASURED: a revert whose reverted commit is unreadable in a SHALLOW
 # clone, where it may be an ancestor the clone cut off. History: x (#60) · base · a squash revert of
@@ -2256,5 +2263,288 @@ eq "fixture: the clone is shallow, cannot read T, and can read W" \
 _swcc() { (cd "$T/sw" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
 eq "shallow: W, which the unmeasured squash readably reverts, is not measured either — never shipped" \
    "unmeasured|||+unmeasured||$SW_S|" "$(_swcc "$SW_S")+$(_swcc "$SW_W")"
+
+echo "== a revert whose \`This reverts commit\` line names a commit a rebase or cherry-pick rewrote (card#11662) =="
+# THE DEFECT: a line whose sha is not an ancestor of the commit carrying it was ignored. A branch that
+# commits `feat: x` and reverts it, rebased onto dev and fast-forwarded, lands copies of both: the
+# revert's line still names the PRE-rebase commit, which is no ancestor (and is unreadable once the
+# branch is deleted), so the revert was an ordinary commit and the reverted copy shipped its card. The
+# answer now: a commit of the range before the revert that carries the subject the revert quotes, or
+# the change the revert undoes, is NOT MEASURED — withheld, possibly taken back — never shipped.
+# Every rewrite here is a real `git rebase` or `git cherry-pick`.
+_rwcfg() { echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$1/.release-pr.json"; }
+_rwcc() { (cd "$1" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$2" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
+_rwq() { local d="$1"; shift; (cd "$d" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@" 2>/dev/null) | sort | paste -sd' ' -; }
+_rwgone() { g -C "$1" reflog expire --expire=now --all; g -C "$1" gc -q --prune=now; }
+_rwreadable() { g -C "$1" cat-file -e "$2^{commit}" 2>/dev/null && echo true || echo false; }
+_rwanc() { g -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null && echo true || echo false; }
+_rwh() { g -C "$1" rev-parse --short "$2"; }
+RW_WHY="its \`This reverts commit\` line names a commit that is not in its history (a rebase or a cherry-pick rewrote it), and this commit has that commit's subject or the change it undoes"
+
+# REBASED: dev gets K while the branch holds A `feat: x DL-5 (card#5)` and R = A reverted; the branch
+# is rebased onto dev and dev fast-forwards to it.
+RB="$T/rw-rebase"; g init -q "$RB"
+echo 0 > "$RB/f"; g -C "$RB" add f; g -C "$RB" commit -qm "chore: init"; g -C "$RB" tag v0.1.0
+g -C "$RB" checkout -qb br
+echo 1 > "$RB/x"; g -C "$RB" add x; g -C "$RB" commit -qm "feat: x DL-5 (card#5)"; RB_A0="$(g -C "$RB" rev-parse HEAD)"
+g -C "$RB" revert --no-edit HEAD >/dev/null
+g -C "$RB" checkout -q main; echo 1 > "$RB/k"; g -C "$RB" add k; g -C "$RB" commit -qm "fix: keep DL-6 (card#8) (#31)"
+g -C "$RB" checkout -q br; g -C "$RB" rebase -q main; g -C "$RB" checkout -q main; g -C "$RB" merge -q --ff-only br
+RB_R="$(g -C "$RB" rev-parse HEAD)"; RB_A="$(g -C "$RB" rev-parse HEAD^)"
+_rwcfg "$RB"
+eq "fixture (rebase, branch kept): the revert's line names the pre-rebase commit — readable, no ancestor" \
+   "true|true|false" "$(has "This reverts commit $RB_A0" "$(g -C "$RB" log -1 --format=%b)")|$(_rwreadable "$RB" "$RB_A0")|$(_rwanc "$RB" "$RB_A0" "$RB_R")"
+eq "rebase, branch kept: the rebased copy of x is not measured, possibly taken back by the revert" "unmeasured||$RB_R|" "$(_rwcc "$RB" "$RB_A")"
+g -C "$RB" branch -qD br; _rwgone "$RB"
+eq "fixture (rebase, branch deleted): the pre-rebase commit is unreadable" "false" "$(_rwreadable "$RB" "$RB_A0")"
+eq "rebase, branch deleted: the rebased copy of x is not measured, possibly taken back by the revert" "unmeasured||$RB_R|" "$(_rwcc "$RB" "$RB_A")"
+eq "…the revert is a revert of that copy, shipping no PR and no text" "revert||$RB_A|" "$(_rwcc "$RB" "$RB_R")"
+eq "…card#5 is withheld, K's card ships" "8" "$(_rwq "$RB" --card-manifest)"
+eq "…and DL-5 is withheld" "DL-6" "$(_rwq "$RB" --manifest)"
+eq "…the body names the copy as not measured, the revert that may take it back, and why" \
+   "true" "$(has "Not measured for a revert: $(_rwh "$RB" "$RB_A"), which $(_rwh "$RB" "$RB_R") may take back ($RW_WHY)" "$(cd "$RB" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)")"
+
+# THE SAME HISTORY IN A SHALLOW CLONE: the revert's line is unreadable there, so the revert is not
+# measured (it may name an ancestor the clone cut off) — and its copy is still searched for, so the
+# rebased copy of x is withheld exactly as in the full clone, never shipped beside it.
+rm -rf "$T/rw-rebase-shal"; g clone -q --no-local --depth 3 --no-single-branch "file://$RB" "$T/rw-rebase-shal" 2>/dev/null
+g -C "$T/rw-rebase-shal" fetch -q --depth 4 origin 2>/dev/null
+_rwcfg "$T/rw-rebase-shal"
+RBS_BASE="$(g -C "$T/rw-rebase-shal" rev-parse "HEAD~3")"
+_rwscc() { (cd "$T/rw-rebase-shal" && "$BIN" --classify-commits --base "$RBS_BASE" --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
+eq "fixture (rebase, shallow): the clone is shallow, holds the copy of x, and cannot read what the revert's line names" \
+   "true|true|false" "$(g -C "$T/rw-rebase-shal" rev-parse --is-shallow-repository)|$(_rwreadable "$T/rw-rebase-shal" "$RB_A")|$(_rwreadable "$T/rw-rebase-shal" "$RB_A0")"
+eq "rebase, shallow: the revert is not measured, and the copy of x is not measured beside it — never shipped" \
+   "unmeasured|||+unmeasured||$RB_R|" "$(_rwscc "$RB_R")+$(_rwscc "$RB_A")"
+eq "…card#5 is withheld" "8" "$(cd "$T/rw-rebase-shal" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base "$RBS_BASE" --head HEAD --card-manifest 2>/dev/null | sort | paste -sd' ' -)"
+
+# A CLASSIFICATION THAT CANNOT SEARCH FAILS, IT DOES NOT SHIP: with the range the copies are searched
+# in unset, the run must stop rather than read "no copy" and ship the copy. Driven on a copy of the
+# tool whose --classify-commits path classifies `$BASE..$HEAD_REF` without setting RANGE.
+mkdir -p "$T/rw-norange"
+sed -e '/^  RANGE="\$BASE\.\.\$HEAD_REF"$/d' -e 's/^  commit_rows "\$RANGE"$/  commit_rows "$BASE..$HEAD_REF"/' "$BIN" > "$T/rw-norange/release-pr-body"; chmod +x "$T/rw-norange/release-pr-body"
+eq "fixture: the copy differs from the tool by exactly those two lines" "2|1" "$(diff "$BIN" "$T/rw-norange/release-pr-body" | grep -c '^<')|$(grep -c '^  commit_rows "\$BASE\.\.\$HEAD_REF"$' "$T/rw-norange/release-pr-body")"
+RW_NR_RC=0; RW_NR_OUT="$(cd "$RB" && "$T/rw-norange/release-pr-body" --classify-commits --base v0.1.0 --head HEAD 2>&1)" || RW_NR_RC=$?
+eq "RANGE unset: --classify-commits exits 2, naming why, and classifies nothing as shipped" \
+   "2|true|false" "$RW_NR_RC|$(has "revert_scan needs RANGE" "$RW_NR_OUT")|$(has "shipped"$'\037'"$RB_A" "$RW_NR_OUT")"
+
+# CHERRY-PICKED: a topic branch holds C `feat: c DL-7 (card#6)` and RC = C reverted; both are
+# cherry-picked onto the release line, then the topic branch is deleted.
+CP="$T/rw-pick"; g init -q "$CP"
+echo 0 > "$CP/f"; g -C "$CP" add f; g -C "$CP" commit -qm "chore: init"; g -C "$CP" tag v0.1.0
+g -C "$CP" checkout -qb topic
+echo 1 > "$CP/c"; g -C "$CP" add c; g -C "$CP" commit -qm "feat: c DL-7 (card#6)"; CP_C0="$(g -C "$CP" rev-parse HEAD)"
+g -C "$CP" revert --no-edit HEAD >/dev/null; CP_R0="$(g -C "$CP" rev-parse HEAD)"
+g -C "$CP" checkout -q main; echo 1 > "$CP/k"; g -C "$CP" add k; g -C "$CP" commit -qm "fix: keep DL-6 (card#8) (#31)"
+g -C "$CP" cherry-pick "$CP_C0" >/dev/null; CP_C="$(g -C "$CP" rev-parse HEAD)"
+g -C "$CP" cherry-pick "$CP_R0" >/dev/null; CP_R="$(g -C "$CP" rev-parse HEAD)"
+_rwcfg "$CP"
+eq "fixture (cherry-pick, topic kept): the picked revert's line names the topic commit — readable, no ancestor" \
+   "true|true|false" "$(has "This reverts commit $CP_C0" "$(g -C "$CP" log -1 --format=%b)")|$(_rwreadable "$CP" "$CP_C0")|$(_rwanc "$CP" "$CP_C0" "$CP_R")"
+eq "cherry-pick, topic kept: the picked copy of c is not measured, possibly taken back by the picked revert" "unmeasured||$CP_R|" "$(_rwcc "$CP" "$CP_C")"
+g -C "$CP" branch -qD topic; _rwgone "$CP"
+eq "fixture (cherry-pick, topic deleted): the topic commit is unreadable" "false" "$(_rwreadable "$CP" "$CP_C0")"
+eq "cherry-pick, topic deleted: the picked copy of c is not measured, possibly taken back by the picked revert" "unmeasured||$CP_R|" "$(_rwcc "$CP" "$CP_C")"
+eq "…card#6 is withheld, K's card ships" "8" "$(_rwq "$CP" --card-manifest)"
+
+# REWORDED: the same rebase, with the original's subject reworded on the way (`git rebase -i`,
+# `reword`), so the subject the revert quotes is on no commit. The change it undoes still is.
+RR="$T/rw-reword"; g init -q "$RR"
+echo 0 > "$RR/f"; g -C "$RR" add f; g -C "$RR" commit -qm "chore: init"; g -C "$RR" tag v0.1.0
+g -C "$RR" checkout -qb br
+echo 1 > "$RR/x"; g -C "$RR" add x; g -C "$RR" commit -qm "feat: x DL-5 (card#5)"; RR_A0="$(g -C "$RR" rev-parse HEAD)"
+g -C "$RR" revert --no-edit HEAD >/dev/null
+g -C "$RR" checkout -q main; echo 1 > "$RR/k"; g -C "$RR" add k; g -C "$RR" commit -qm "fix: keep DL-6 (card#8) (#31)"
+g -C "$RR" checkout -q br
+GIT_SEQUENCE_EDITOR="sed -i '1s/^pick/reword/'" GIT_EDITOR="sed -i '1s/.*/feat: x, reworded DL-5 (card#5)/'" g -C "$RR" rebase -q -i main >/dev/null 2>&1
+g -C "$RR" checkout -q main; g -C "$RR" merge -q --ff-only br; g -C "$RR" branch -qD br; _rwgone "$RR"
+RR_R="$(g -C "$RR" rev-parse HEAD)"; RR_A="$(g -C "$RR" rev-parse HEAD^)"
+_rwcfg "$RR"
+eq "fixture (reworded): the copy's subject is reworded, the revert still quotes the old one, the original is unreadable" \
+   "feat: x, reworded DL-5 (card#5)|Revert \"feat: x DL-5 (card#5)\"|false" "$(g -C "$RR" log -1 --format=%s "$RR_A")|$(g -C "$RR" log -1 --format=%s "$RR_R")|$(_rwreadable "$RR" "$RR_A0")"
+eq "reworded: the copy is still not measured — the revert undoes exactly its change" "unmeasured||$RR_R|" "$(_rwcc "$RR" "$RR_A")"
+eq "…card#5 is withheld" "8" "$(_rwq "$RR" --card-manifest)"
+
+# BY SUBJECT ALONE: a PR branch holds A `feat: a DL-3 (card#9)` and a fixup; it is squash-merged
+# as `feat: a DL-3 (card#9) (#30)`, and a later direct push `git revert`s the branch's A, then the branch is
+# deleted. The squash's change is A's AND the fixup's, so it is not the one the revert undoes: only
+# the subject the revert quotes, its `(#30)` set aside, points at the squash.
+SO="$T/rw-subject"; g init -q "$SO"
+echo 0 > "$SO/f"; g -C "$SO" add f; g -C "$SO" commit -qm "chore: init"; g -C "$SO" tag v0.1.0
+g -C "$SO" checkout -qb br
+echo 1 > "$SO/a"; g -C "$SO" add a; g -C "$SO" commit -qm "feat: a DL-3 (card#9)"; SO_A0="$(g -C "$SO" rev-parse HEAD)"
+echo 1 > "$SO/a2"; g -C "$SO" add a2; g -C "$SO" commit -qm "fixup: a"
+g -C "$SO" checkout -q main; echo 1 > "$SO/k"; g -C "$SO" add k; g -C "$SO" commit -qm "fix: keep DL-6 (card#8) (#31)"
+g -C "$SO" merge -q --squash br >/dev/null; g -C "$SO" commit -qm "feat: a DL-3 (card#9) (#30)"; SO_S="$(g -C "$SO" rev-parse HEAD)"
+g -C "$SO" revert --no-edit "$SO_A0" >/dev/null; SO_R="$(g -C "$SO" rev-parse HEAD)"
+g -C "$SO" branch -qD br; _rwgone "$SO"
+_rwcfg "$SO"
+eq "fixture (by subject): the branch commit is unreadable, and its revert took \`a\` out of the tree" \
+   "false|false" "$(_rwreadable "$SO" "$SO_A0")|$(test -f "$SO/a" && echo true || echo false)"
+eq "by subject: the squash carrying the quoted subject is not measured, possibly taken back by the revert" "unmeasured||$SO_R|" "$(_rwcc "$SO" "$SO_S")"
+eq "…card#9 is withheld" "8" "$(_rwq "$SO" --card-manifest)"
+
+# A REBASED REVERT AND REAPPLY: the branch commits A, reverts it (R) and reverts that (P, a reapply),
+# then is rebased and fast-forwarded. P's copy may take back R's copy, which may take back A's: none
+# is certain, so A — live in the tree — is withheld rather than shipped on a guess.
+RP="$T/rw-reapply"; g init -q "$RP"
+echo 0 > "$RP/f"; g -C "$RP" add f; g -C "$RP" commit -qm "chore: init"; g -C "$RP" tag v0.1.0
+g -C "$RP" checkout -qb br
+echo 1 > "$RP/x"; g -C "$RP" add x; g -C "$RP" commit -qm "feat: x DL-5 (card#5)"
+g -C "$RP" revert --no-edit HEAD >/dev/null; g -C "$RP" revert --no-edit HEAD >/dev/null
+g -C "$RP" checkout -q main; echo 1 > "$RP/k"; g -C "$RP" add k; g -C "$RP" commit -qm "fix: keep DL-6 (card#8) (#31)"
+g -C "$RP" checkout -q br; g -C "$RP" rebase -q main; g -C "$RP" checkout -q main; g -C "$RP" merge -q --ff-only br
+g -C "$RP" branch -qD br; _rwgone "$RP"
+RP_P="$(g -C "$RP" rev-parse HEAD)"; RP_R="$(g -C "$RP" rev-parse HEAD^)"; RP_A="$(g -C "$RP" rev-parse HEAD~2)"
+_rwcfg "$RP"
+eq "fixture (reapply): x is in the tree" "true" "$(test -f "$RP/x" && echo true || echo false)"
+eq "reapply: the reapply reverts the revert's copy; the revert and x are not measured — x withheld though live" \
+   "revert||$RP_R|+unmeasured||$RP_P|+unmeasured||$RP_R|" "$(_rwcc "$RP" "$RP_P")+$(_rwcc "$RP" "$RP_R")+$(_rwcc "$RP" "$RP_A")"
+eq "…card#5 is withheld" "8" "$(_rwq "$RP" --card-manifest)"
+
+# BODY PATH, RANGE UNSET: the body is built under `COMMIT_ROWS="$(commit_rows …)"`, where errexit is off,
+# so a die inside the search reaches rc 2 only through the explicit `|| exit 2` at the call. The same
+# unset-range mutant as above, driven through the body instead of --classify-commits: it must stop at
+# rc 2 with no body on stdout, never print a body that ships the copy.
+mkdir -p "$T/rw-norange-body"
+sed 's/^COMMIT_ROWS="\$(commit_rows "\$RANGE")"$/COMMIT_ROWS="$(unset RANGE; commit_rows "${BASE:+$BASE..}$HEAD_REF")"/' "$BIN" > "$T/rw-norange-body/release-pr-body"; chmod +x "$T/rw-norange-body/release-pr-body"
+eq "fixture: the body-path copy differs from the tool by exactly that line" "1" "$(diff "$BIN" "$T/rw-norange-body/release-pr-body" | grep -c '^<')"
+RW_NB_RC=0; RW_NB_OUT="$(cd "$RB" && RELEASE_PR_REVIEW_VERIFIER=off "$T/rw-norange-body/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$T/rw-nb-err")" || RW_NB_RC=$?
+eq "RANGE unset: the BODY path exits 2, names why, and prints no body" \
+   "2|true|" "$RW_NB_RC|$(has "revert_scan needs RANGE" "$(cat "$T/rw-nb-err")")|$RW_NB_OUT"
+
+# A GIT READ THAT FAILS IS NOT "NOTHING FOUND" (card#11662): a partial clone (--filter=blob:none) whose
+# promisor is unreachable cannot read the blobs a patch-id needs, though every commit and subject still
+# reads. The copy of a REWORDED original matches by change alone, so a swallowed `git diff` / `git log -p`
+# failure read as "no copy" and shipped it at rc 0. Distinct file contents, so a blob really is missing.
+PC="$T/pc-origin"; g init -q "$PC"
+echo zero > "$PC/f"; g -C "$PC" add f; g -C "$PC" commit -qm "chore: init"; g -C "$PC" tag v0.1.0
+g -C "$PC" checkout -qb br
+echo xx > "$PC/x"; g -C "$PC" add x; g -C "$PC" commit -qm "feat: x DL-5 (card#5)"; g -C "$PC" revert --no-edit HEAD >/dev/null
+g -C "$PC" checkout -q main; echo kk > "$PC/k"; g -C "$PC" add k; g -C "$PC" commit -qm "fix: keep DL-6 (card#8) (#31)"
+g -C "$PC" checkout -q br
+GIT_SEQUENCE_EDITOR="sed -i '1s/^pick/reword/'" GIT_EDITOR="sed -i '1s/.*/feat: x, reworded DL-5 (card#5)/'" g -C "$PC" rebase -q -i main >/dev/null 2>&1
+g -C "$PC" checkout -q main; g -C "$PC" merge -q --ff-only br; g -C "$PC" branch -qD br
+g -C "$PC" config uploadpack.allowFilter true
+PC_R="$(g -C "$PC" rev-parse HEAD)"; PC_A="$(g -C "$PC" rev-parse HEAD^)"
+rm -rf "$T/pc"; g -c protocol.file.allow=always clone -q --no-local --filter=blob:none "file://$PC" "$T/pc" 2>/dev/null
+g -C "$T/pc" config protocol.file.allow always; _rwcfg "$T/pc"
+g -C "$T/pc" config remote.origin.url "file://$T/pc-nowhere"
+eq "fixture (partial clone): every commit reads, a blob is missing, and the promisor is unreachable" \
+   "true|true|false" "$(_rwreadable "$T/pc" "$PC_A")|$(test "$(g -C "$T/pc" rev-list --objects --missing=print --all 2>/dev/null | grep -c '^?')" -ge 1 && echo true || echo false)|$(g -C "$T/pc" fetch -q origin >/dev/null 2>&1 && echo true || echo false)"
+PC_RC=0; PC_OUT="$(cd "$T/pc" && "$BIN" --classify-commits --base v0.1.0 --head HEAD 2>"$T/pc-err")" || PC_RC=$?
+eq "partial clone, promisor down: --classify-commits exits 2 and classifies nothing as shipped" \
+   "2|false" "$PC_RC|$(has "shipped"$'\037'"$PC_A" "$PC_OUT")"
+PC_RC=0; PC_OUT="$(cd "$T/pc" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$T/pc-err")" || PC_RC=$?
+eq "partial clone, promisor down: the BODY path exits 2 and prints no body" "2|" "$PC_RC|$PC_OUT"
+PC_RC=0; PC_OUT="$(cd "$T/pc" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest 2>/dev/null)" || PC_RC=$?
+eq "partial clone, promisor down: --card-manifest exits 2 and prints no card" "2|" "$PC_RC|$PC_OUT"
+# CONTROL: the same clone with the promisor reachable again reads the blobs and withholds the copy.
+g -C "$T/pc" config remote.origin.url "file://$PC"
+eq "control (promisor reachable): the reworded copy is not measured, possibly taken back by the revert" \
+   "0|unmeasured||$PC_R|" "$(cd "$T/pc" && "$BIN" --classify-commits --base v0.1.0 --head HEAD >"$T/pc-ok" 2>/dev/null; echo $?)|$(awk -v s="$PC_A" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }' "$T/pc-ok")"
+
+# ONE BODY, TWO REASONS: a PR branch reverts dev commit W (an ancestor line) and carries a picked
+# revert of a topic commit whose copy C is on dev (a non-ancestor line), squashed under the picked
+# revert's title. C is doubted as a copy of a rewritten commit, W as the squash case: each reason is
+# the one that applies to it.
+TR="$T/rw-two"; g init -q "$TR"
+echo 0 > "$TR/f"; g -C "$TR" add f; g -C "$TR" commit -qm "chore: init"; g -C "$TR" tag v0.1.0
+g -C "$TR" checkout -qb topic
+echo 1 > "$TR/c"; g -C "$TR" add c; g -C "$TR" commit -qm "feat: c DL-7 (card#6)"; TR_C0="$(g -C "$TR" rev-parse HEAD)"
+g -C "$TR" revert --no-edit HEAD >/dev/null; TR_R0="$(g -C "$TR" rev-parse HEAD)"
+g -C "$TR" checkout -q main
+echo 1 > "$TR/w"; g -C "$TR" add w; g -C "$TR" commit -qm "feat: w (card#11) (#30)"; TR_W="$(g -C "$TR" rev-parse HEAD)"
+g -C "$TR" cherry-pick "$TR_C0" >/dev/null; TR_C="$(g -C "$TR" rev-parse HEAD)"
+g -C "$TR" checkout -qb br; g -C "$TR" revert --no-edit "$TR_W" >/dev/null; g -C "$TR" cherry-pick "$TR_R0" >/dev/null
+TR_MSG="$(g -C "$TR" log --reverse --format='* %s%n%n%b' main..br)"
+g -C "$TR" checkout -q main; g -C "$TR" merge -q --squash br >/dev/null
+g -C "$TR" commit -qm 'Revert "feat: c DL-7 (card#6)" (#40)' -m "$TR_MSG"; TR_S="$(g -C "$TR" rev-parse HEAD)"
+g -C "$TR" branch -qD br topic; _rwgone "$TR"
+_rwcfg "$TR"
+eq "fixture (two reasons): the squash body names W (an ancestor) and the unreadable topic commit" \
+   "true|true|false" "$(has "This reverts commit $TR_W" "$(g -C "$TR" log -1 --format=%b)")|$(has "This reverts commit $TR_C0" "$(g -C "$TR" log -1 --format=%b)")|$(_rwreadable "$TR" "$TR_C0")"
+eq "two reasons: C and W are both not measured, possibly taken back by the squash" \
+   "unmeasured||$TR_S|+unmeasured||$TR_S|" "$(_rwcc "$TR" "$TR_C")+$(_rwcc "$TR" "$TR_W")"
+TR_OUT="$(cd "$TR" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
+eq "…the body gives C the rewrite reason and W the squash reason" \
+   "true|true" "$(has "$(_rwh "$TR" "$TR_C"), which $(_rwh "$TR" "$TR_S") may take back ($RW_WHY)" "$TR_OUT")|$(has "#30, which $(_rwh "$TR" "$TR_S") may take back (its body also reverts a commit only its PR branch had" "$TR_OUT")"
+
+# NOTHING IN THE RANGE MATCHES: the copy of C was picked BEFORE the range, and only the revert after
+# it. The revert's target is unreadable and no commit of the range has its subject or change, so the
+# revert itself is NOT MEASURED — never an ordinary, shipping commit — and the body says why.
+LO="$T/rw-lost"; g init -q "$LO"
+echo 0 > "$LO/f"; g -C "$LO" add f; g -C "$LO" commit -qm "chore: init"
+g -C "$LO" checkout -qb topic
+echo 1 > "$LO/c"; g -C "$LO" add c; g -C "$LO" commit -qm "feat: c DL-7 (card#6)"; LO_C0="$(g -C "$LO" rev-parse HEAD)"
+g -C "$LO" revert --no-edit HEAD >/dev/null; LO_R0="$(g -C "$LO" rev-parse HEAD)"
+g -C "$LO" checkout -q main; echo 1 > "$LO/b"; g -C "$LO" add b; g -C "$LO" commit -qm "chore: base"
+g -C "$LO" cherry-pick "$LO_C0" >/dev/null; g -C "$LO" tag v0.1.0
+echo 1 > "$LO/k"; g -C "$LO" add k; g -C "$LO" commit -qm "fix: keep DL-6 (card#8) (#31)"
+g -C "$LO" cherry-pick "$LO_R0" >/dev/null; g -C "$LO" commit -q --amend -m "$(g -C "$LO" log -1 --format=%s) (#40)" -m "$(g -C "$LO" log -1 --format=%b)"
+LO_R="$(g -C "$LO" rev-parse HEAD)"
+g -C "$LO" branch -qD topic; _rwgone "$LO"
+_rwcfg "$LO"
+eq "fixture (nothing matches): the picked revert's target is unreadable" "false" "$(_rwreadable "$LO" "$LO_C0")"
+eq "nothing in the range matches: the revert is not measured, and credits no PR" "unmeasured|||" "$(_rwcc "$LO" "$LO_R")"
+LO_OUT="$(cd "$LO" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
+eq "…and the body names it as not measured, and why" \
+   "true" "$(has "Not measured for a revert: $(_rwh "$LO" "$LO_R") (its \`This reverts commit\` line names $(g -C "$LO" log -1 --format=%b "$LO_R" | sed -nE 's/^This reverts commit ([0-9a-f]{7}).*/\1/p'), which is not in its history (a rebase or a cherry-pick rewrote it), and no commit before it in this range has the subject it quotes or the change it undoes)" "$LO_OUT")"
+
+echo "== \`git revert -m 1\` of a merge from before the range is named by the merge's PR (card#11662) =="
+# #451 named the commits of the merged side one by one, by short sha. The side `-m 1` takes back is
+# the whole PR, so the line names the PR, with the refs of the side's commits. When another parent
+# was kept (`-m 2`, the cell above) what was taken back is not that PR, so its commits are listed.
+M1="$T/m1"; g init -q "$M1"
+echo 0 > "$M1/f"; g -C "$M1" add f; g -C "$M1" commit -qm "chore: init"
+g -C "$M1" checkout -qb s; echo 1 > "$M1/s"; g -C "$M1" add s; g -C "$M1" commit -qm "feat: s DL-8 (card#20) (#31)"
+echo 3 > "$M1/s2"; g -C "$M1" add s2; g -C "$M1" commit -qm "feat: s2 (card#22)"
+g -C "$M1" checkout -q main; echo 2 > "$M1/m"; g -C "$M1" add m; g -C "$M1" commit -qm "fix: m DL-9 (card#21) (#29)"
+g -C "$M1" merge -q --no-ff s -m "Merge pull request #32 from acme/s"; g -C "$M1" tag v0.1.0
+g -C "$M1" revert --no-edit -m 1 HEAD >/dev/null; M1_R="$(g -C "$M1" rev-parse --short HEAD)"
+_rwcfg "$M1"
+M1_OUT="$(cd "$M1" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
+eq "-m 1 from before the range: the body names the merge's PR #32 with its side's refs, not each side commit" \
+   "Reverted by this range, shipped before it: #32 (DL-8, card#20, card#22), reverted by $M1_R." "$(printf '%s\n' "$M1_OUT" | grep '^Reverted' || true)"
+eq "…and -m 2 (another parent kept) still lists the commit it took back, never the merge's PR" \
+   "true|false" "$(has_line "Reverted by this range, shipped before it: #29 (DL-9, card#21), reverted by $MB_R." "$MB_OUT")|$(has "#32" "$(printf '%s\n' "$MB_OUT" | grep '^Reverted' || true)")"
+
+echo "== a failed git read is fatal, never \"nothing found\": one fault per read on the revert paths (card#11662) =="
+# A `git` on PATH that fails exactly the invocations whose argument string contains $FAULT, and runs the
+# real git otherwise. Each row names ONE read in the classification or the body, drives a fixture that
+# reaches it, and holds the run at rc 2 with nothing on stdout. Each row is first run WITHOUT the fault
+# (the control), so a row cannot pass because the fixture never reached the read.
+FS="$T/fault-shim"; mkdir -p "$FS"
+cat > "$FS/git" <<'SHIM'
+#!/usr/bin/env bash
+if [ -n "${FAULT:-}" ]; then case " $* " in *"$FAULT"*) echo "fatal: injected fault" >&2; exit 128 ;; esac; fi
+exec "$REAL_GIT" "$@"
+SHIM
+chmod +x "$FS/git"; REAL_GIT="$(command -v git)"; export REAL_GIT
+_fault() { # <label> <fixture> <classify|body> <fault substring>
+  local lab="$1" fx="$2" mode="$3" flt="$4" a ok="" bad="" rc_ok=0 rc_bad=0
+  if [ "$mode" = classify ]; then a=(--classify-commits --base v0.1.0 --head HEAD); else a=(--version 0.2.0 --base v0.1.0 --head HEAD); fi
+  ok="$(cd "$fx" && RELEASE_PR_REVIEW_VERIFIER=off PATH="$FS:$PATH" FAULT="" "$BIN" "${a[@]}" 2>/dev/null)" || rc_ok=$?
+  bad="$(cd "$fx" && RELEASE_PR_REVIEW_VERIFIER=off PATH="$FS:$PATH" FAULT="$flt" "$BIN" "${a[@]}" 2>/dev/null)" || rc_bad=$?
+  eq "$lab" "0|true|2|" "$rc_ok|$([ -n "$ok" ] && echo true || echo false)|$rc_bad|$bad"
+}
+_fault "fault: the commit stream of commit_rows (git log --topo-order)"           "$RB" classify "--topo-order"
+_fault "fault: the row stream of commit_rows (git log --format=%H%x1f%s <range>)"  "$RB" classify "log --no-merges --format=%H%x1f%s v0.1.0..HEAD"
+_fault "fault: merge-base --is-ancestor (a target would stop being one)"           "$RB" classify "merge-base --is-ancestor"
+_fault "fault: rev-list --parents (a merge would read as a plain commit)"          "$RB" classify "rev-list --parents"
+_fault "fault: the subject read of the scanned commit"                             "$RB" classify "log -1 --format=%s"
+_fault "fault: the body read of a revert in the row loop"                          "$RB" classify "log -1 --format=%b"
+_fault "fault: git diff of the change a revert undoes"                             "$RR" classify "diff --no-color"
+_fault "fault: git patch-id"                                                       "$RR" classify "patch-id"
+_fault "fault: git log -p over the range (the copies' changes)"                    "$RR" classify "log --no-merges --no-color --no-ext-diff --no-renames -p"
+_fault "fault: rev-list of a reverted merge's side"                                "$MX" classify "rev-list --no-merges"
+_fault "fault: the body path's range listing (reverted_lines)"                     "$RB" body     "rev-list v0.1.0..HEAD"
+_fault "fault: the body path's short sha"                                          "$RB" body     "--short"
+_fault "fault: the body path's first-parent walk"                                  "$RB" body     "--first-parent"
+_fault "fault: the body path's reverted-merge side from before the range"          "$M1" body     "--no-merges --reverse"
+# A read that can only make a commit LESS shipped is fail-closed already: the shallow-repository probe
+# answers `unknown` on failure, which is read as shallow, so the revert is not measured.
+FC_OUT="$(cd "$RB" && PATH="$FS:$PATH" FAULT="--is-shallow-repository" "$BIN" --classify-commits --base v0.1.0 --head HEAD 2>/dev/null | awk 'BEGIN { FS = "\037" } $1 == "shipped" && $5 ~ /feat: x/ { print "shipped" }')"
+eq "fault: the shallow probe fails closed — the reverted copy is never shipped" "" "$FC_OUT"
 
 _summary "release-pr-body-selftest"

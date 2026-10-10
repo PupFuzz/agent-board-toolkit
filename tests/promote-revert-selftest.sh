@@ -225,4 +225,78 @@ run_in "$M" "$PRC"
 eq "-m 2: the side's PR and DL cards (#2, #4) move"              "0|true|true" "$rc|$(moved 2)|$(moved 4)"
 eq "…and the mainline's (#1, #3), which the revert took back, do not" "false|false" "$(moved 1)|$(moved 3)"
 
+echo "== a branch that committed and reverted a change, rebased and fast-forwarded: the change's card is NOT promoted (card#11662) =="
+# The rebased revert's `This reverts commit` line names the PRE-rebase commit, which is no ancestor
+# and, once the branch is deleted, unreadable. Both copies landed; the change is gone from the tree.
+# The line was ignored, so the reverted copy shipped and its card was promoted. Real `git rebase`.
+B="$TMP/rebased"; g init -q "$B"
+echo 0 > "$B/f"; g -C "$B" add f; g -C "$B" commit -qm "chore: init"; g -C "$B" tag v0.1.0
+g -C "$B" checkout -qb br
+echo 1 > "$B/x"; g -C "$B" add x; g -C "$B" commit -qm "feat: x DL-5"
+g -C "$B" revert --no-edit HEAD >/dev/null
+g -C "$B" checkout -q main; echo 1 > "$B/k"; g -C "$B" add k; g -C "$B" commit -qm "fix: keep DL-6 (#23)"
+g -C "$B" checkout -q br; g -C "$B" rebase -q main; g -C "$B" checkout -q main; g -C "$B" merge -q --ff-only br
+g -C "$B" branch -qD br; g -C "$B" reflog expire --expire=now --all; g -C "$B" gc -q --prune=now
+BA="$(g -C "$B" rev-parse HEAD^)"; BR="$(g -C "$B" rev-parse HEAD)"
+eq "fixture: x is gone from the tree, and the commit the revert's line names is unreadable" \
+   "false|false" "$(test -f "$B/x" && echo true || echo false)|$(g -C "$B" cat-file -e "$(g -C "$B" log -1 --format=%b | sed -nE 's/^This reverts commit ([0-9a-f]+).*/\1/p')^{commit}" 2>/dev/null && echo true || echo false)"
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"dl_number":"DL-5","repo":"acme/widget"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"dl_number":"DL-6","repo":"acme/widget"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+run_in "$B" "$PRC"
+eq "control: the run exits 0 and K's card (#2) moves"            "0|true" "$rc|$(moved 2)"
+eq "x's card (#1) is NOT promoted — its rebased revert took it back" "false" "$(moved 1)"
+eq "stderr names x's copy NOT MEASURED, possibly reverted by the rebased revert" \
+   "true" "$(has "⚠ $(g -C "$B" rev-parse --short "$BA"): NOT MEASURED — $(g -C "$B" rev-parse --short "$BR") may revert it" "$err")"
+
+echo "== a picked revert whose original's copy is outside the range: NOT MEASURED, and not called a shallow clone (card#11662) =="
+L="$TMP/lost"; g init -q "$L"
+echo 0 > "$L/f"; g -C "$L" add f; g -C "$L" commit -qm "chore: init"
+g -C "$L" checkout -qb topic
+echo 1 > "$L/c"; g -C "$L" add c; g -C "$L" commit -qm "feat: c DL-7"; LC0="$(g -C "$L" rev-parse HEAD)"
+g -C "$L" revert --no-edit HEAD >/dev/null; LR0="$(g -C "$L" rev-parse HEAD)"
+g -C "$L" checkout -q main; echo 1 > "$L/b"; g -C "$L" add b; g -C "$L" commit -qm "chore: base"
+g -C "$L" cherry-pick "$LC0" >/dev/null; g -C "$L" tag v0.1.0
+echo 1 > "$L/k"; g -C "$L" add k; g -C "$L" commit -qm "fix: keep DL-6 (#23)"
+g -C "$L" cherry-pick "$LR0" >/dev/null; LR="$(g -C "$L" rev-parse HEAD)"
+g -C "$L" branch -qD topic; g -C "$L" reflog expire --expire=now --all; g -C "$L" gc -q --prune=now
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":2,"workflow_stage_id":51,"payload":{"dl_number":"DL-6","repo":"acme/widget"}}
+],"meta":{"last_page":1,"total":1}}
+JSON
+run_in "$L" "$PRC"
+eq "control: the run exits 0 and K's card (#2) moves"            "0|true" "$rc|$(moved 2)"
+eq "the picked revert is named NOT MEASURED and counted"          "true|true" "$(has "⚠ $(g -C "$L" rev-parse --short "$LR"): NOT MEASURED" "$err")|$(has "1 commits-unmeasured, " "$out")"
+eq "…and its line does not call a full clone shallow"            "false" "$(has "this is a shallow clone" "$err")"
+
+echo "== a range the clone cannot read: the mover refuses at rc 2 and moves nothing (card#11662) =="
+# A partial clone (--filter=blob:none) whose promisor is unreachable cannot read the blobs a patch-id
+# needs. The classification used to swallow that and promote the reverted copy's card; it now stops,
+# and the mover, which asks it, refuses before any board read.
+PO="$TMP/partial-origin"; g init -q "$PO"
+echo zero > "$PO/f"; g -C "$PO" add f; g -C "$PO" commit -qm "chore: init"; g -C "$PO" tag v0.1.0
+g -C "$PO" checkout -qb br
+echo xx > "$PO/x"; g -C "$PO" add x; g -C "$PO" commit -qm "feat: x DL-5"; g -C "$PO" revert --no-edit HEAD >/dev/null
+g -C "$PO" checkout -q main; echo kk > "$PO/k"; g -C "$PO" add k; g -C "$PO" commit -qm "fix: keep DL-6 (#23)"
+g -C "$PO" checkout -q br; g -C "$PO" rebase -q main; g -C "$PO" checkout -q main; g -C "$PO" merge -q --ff-only br; g -C "$PO" branch -qD br
+g -C "$PO" config uploadpack.allowFilter true
+g -c protocol.file.allow=always clone -q --no-local --filter=blob:none "file://$PO" "$TMP/partial" 2>/dev/null
+g -C "$TMP/partial" config protocol.file.allow always
+g -C "$TMP/partial" config remote.origin.url "file://$TMP/partial-nowhere"
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"dl_number":"DL-5","repo":"acme/widget"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"dl_number":"DL-6","repo":"acme/widget"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+eq "fixture: a blob is missing from the partial clone and the promisor is unreachable" \
+   "true|false" "$(test "$(g -C "$TMP/partial" rev-list --objects --missing=print --all 2>/dev/null | grep -c '^?')" -ge 1 && echo true || echo false)|$(g -C "$TMP/partial" fetch -q origin >/dev/null 2>&1 && echo true || echo false)"
+run_in "$TMP/partial" "$PRC"
+eq "the mover exits 2, moves no card, and names the classification it could not get" \
+   "2||true" "$rc|$patched|$(has "--classify-commits exited" "$err")"
+
 _summary "promote-revert-selftest"
