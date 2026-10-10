@@ -2402,6 +2402,48 @@ eq "reapply: the reapply reverts the revert's copy; the revert and x are not mea
    "revert||$RP_R|+unmeasured||$RP_P|+unmeasured||$RP_R|" "$(_rwcc "$RP" "$RP_P")+$(_rwcc "$RP" "$RP_R")+$(_rwcc "$RP" "$RP_A")"
 eq "…card#5 is withheld" "8" "$(_rwq "$RP" --card-manifest)"
 
+# BODY PATH, RANGE UNSET: the body is built under `COMMIT_ROWS="$(commit_rows …)"`, where errexit is off,
+# so a die inside the search reaches rc 2 only through the explicit `|| exit 2` at the call. The same
+# unset-range mutant as above, driven through the body instead of --classify-commits: it must stop at
+# rc 2 with no body on stdout, never print a body that ships the copy.
+mkdir -p "$T/rw-norange-body"
+sed 's/^COMMIT_ROWS="\$(commit_rows "\$RANGE")"$/COMMIT_ROWS="$(unset RANGE; commit_rows "${BASE:+$BASE..}$HEAD_REF")"/' "$BIN" > "$T/rw-norange-body/release-pr-body"; chmod +x "$T/rw-norange-body/release-pr-body"
+eq "fixture: the body-path copy differs from the tool by exactly that line" "1" "$(diff "$BIN" "$T/rw-norange-body/release-pr-body" | grep -c '^<')"
+RW_NB_RC=0; RW_NB_OUT="$(cd "$RB" && RELEASE_PR_REVIEW_VERIFIER=off "$T/rw-norange-body/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$T/rw-nb-err")" || RW_NB_RC=$?
+eq "RANGE unset: the BODY path exits 2, names why, and prints no body" \
+   "2|true|" "$RW_NB_RC|$(has "revert_scan needs RANGE" "$(cat "$T/rw-nb-err")")|$RW_NB_OUT"
+
+# A GIT READ THAT FAILS IS NOT "NOTHING FOUND" (card#11662): a partial clone (--filter=blob:none) whose
+# promisor is unreachable cannot read the blobs a patch-id needs, though every commit and subject still
+# reads. The copy of a REWORDED original matches by change alone, so a swallowed `git diff` / `git log -p`
+# failure read as "no copy" and shipped it at rc 0. Distinct file contents, so a blob really is missing.
+PC="$T/pc-origin"; g init -q "$PC"
+echo zero > "$PC/f"; g -C "$PC" add f; g -C "$PC" commit -qm "chore: init"; g -C "$PC" tag v0.1.0
+g -C "$PC" checkout -qb br
+echo xx > "$PC/x"; g -C "$PC" add x; g -C "$PC" commit -qm "feat: x DL-5 (card#5)"; g -C "$PC" revert --no-edit HEAD >/dev/null
+g -C "$PC" checkout -q main; echo kk > "$PC/k"; g -C "$PC" add k; g -C "$PC" commit -qm "fix: keep DL-6 (card#8) (#31)"
+g -C "$PC" checkout -q br
+GIT_SEQUENCE_EDITOR="sed -i '1s/^pick/reword/'" GIT_EDITOR="sed -i '1s/.*/feat: x, reworded DL-5 (card#5)/'" g -C "$PC" rebase -q -i main >/dev/null 2>&1
+g -C "$PC" checkout -q main; g -C "$PC" merge -q --ff-only br; g -C "$PC" branch -qD br
+g -C "$PC" config uploadpack.allowFilter true
+PC_R="$(g -C "$PC" rev-parse HEAD)"; PC_A="$(g -C "$PC" rev-parse HEAD^)"
+rm -rf "$T/pc"; g -c protocol.file.allow=always clone -q --no-local --filter=blob:none "file://$PC" "$T/pc" 2>/dev/null
+g -C "$T/pc" config protocol.file.allow always; _rwcfg "$T/pc"
+g -C "$T/pc" config remote.origin.url "file://$T/pc-nowhere"
+eq "fixture (partial clone): every commit reads, a blob is missing, and the promisor is unreachable" \
+   "true|true|false" "$(_rwreadable "$T/pc" "$PC_A")|$(test "$(g -C "$T/pc" rev-list --objects --missing=print --all 2>/dev/null | grep -c '^?')" -ge 1 && echo true || echo false)|$(g -C "$T/pc" fetch -q origin >/dev/null 2>&1 && echo true || echo false)"
+PC_RC=0; PC_OUT="$(cd "$T/pc" && "$BIN" --classify-commits --base v0.1.0 --head HEAD 2>"$T/pc-err")" || PC_RC=$?
+eq "partial clone, promisor down: --classify-commits exits 2 and classifies nothing as shipped" \
+   "2|false" "$PC_RC|$(has "shipped"$'\037'"$PC_A" "$PC_OUT")"
+PC_RC=0; PC_OUT="$(cd "$T/pc" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$T/pc-err")" || PC_RC=$?
+eq "partial clone, promisor down: the BODY path exits 2 and prints no body" "2|" "$PC_RC|$PC_OUT"
+PC_RC=0; PC_OUT="$(cd "$T/pc" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest 2>/dev/null)" || PC_RC=$?
+eq "partial clone, promisor down: --card-manifest exits 2 and prints no card" "2|" "$PC_RC|$PC_OUT"
+# CONTROL: the same clone with the promisor reachable again reads the blobs and withholds the copy.
+g -C "$T/pc" config remote.origin.url "file://$PC"
+eq "control (promisor reachable): the reworded copy is not measured, possibly taken back by the revert" \
+   "0|unmeasured||$PC_R|" "$(cd "$T/pc" && "$BIN" --classify-commits --base v0.1.0 --head HEAD >"$T/pc-ok" 2>/dev/null; echo $?)|$(awk -v s="$PC_A" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }' "$T/pc-ok")"
+
 # ONE BODY, TWO REASONS: a PR branch reverts dev commit W (an ancestor line) and carries a picked
 # revert of a topic commit whose copy C is on dev (a non-ancestor line), squashed under the picked
 # revert's title. C is doubted as a copy of a rewritten commit, W as the squash case: each reason is
@@ -2466,5 +2508,43 @@ eq "-m 1 from before the range: the body names the merge's PR #32 with its side'
    "Reverted by this range, shipped before it: #32 (DL-8, card#20, card#22), reverted by $M1_R." "$(printf '%s\n' "$M1_OUT" | grep '^Reverted' || true)"
 eq "…and -m 2 (another parent kept) still lists the commit it took back, never the merge's PR" \
    "true|false" "$(has_line "Reverted by this range, shipped before it: #29 (DL-9, card#21), reverted by $MB_R." "$MB_OUT")|$(has "#32" "$(printf '%s\n' "$MB_OUT" | grep '^Reverted' || true)")"
+
+echo "== a failed git read is fatal, never \"nothing found\": one fault per read on the revert paths (card#11662) =="
+# A `git` on PATH that fails exactly the invocations whose argument string contains $FAULT, and runs the
+# real git otherwise. Each row names ONE read in the classification or the body, drives a fixture that
+# reaches it, and holds the run at rc 2 with nothing on stdout. Each row is first run WITHOUT the fault
+# (the control), so a row cannot pass because the fixture never reached the read.
+FS="$T/fault-shim"; mkdir -p "$FS"
+cat > "$FS/git" <<'SHIM'
+#!/usr/bin/env bash
+if [ -n "${FAULT:-}" ]; then case " $* " in *"$FAULT"*) echo "fatal: injected fault" >&2; exit 128 ;; esac; fi
+exec "$REAL_GIT" "$@"
+SHIM
+chmod +x "$FS/git"; REAL_GIT="$(command -v git)"; export REAL_GIT
+_fault() { # <label> <fixture> <classify|body> <fault substring>
+  local lab="$1" fx="$2" mode="$3" flt="$4" a ok="" bad="" rc_ok=0 rc_bad=0
+  if [ "$mode" = classify ]; then a=(--classify-commits --base v0.1.0 --head HEAD); else a=(--version 0.2.0 --base v0.1.0 --head HEAD); fi
+  ok="$(cd "$fx" && RELEASE_PR_REVIEW_VERIFIER=off PATH="$FS:$PATH" FAULT="" "$BIN" "${a[@]}" 2>/dev/null)" || rc_ok=$?
+  bad="$(cd "$fx" && RELEASE_PR_REVIEW_VERIFIER=off PATH="$FS:$PATH" FAULT="$flt" "$BIN" "${a[@]}" 2>/dev/null)" || rc_bad=$?
+  eq "$lab" "0|true|2|" "$rc_ok|$([ -n "$ok" ] && echo true || echo false)|$rc_bad|$bad"
+}
+_fault "fault: the commit stream of commit_rows (git log --topo-order)"           "$RB" classify "--topo-order"
+_fault "fault: the row stream of commit_rows (git log --format=%H%x1f%s <range>)"  "$RB" classify "log --no-merges --format=%H%x1f%s v0.1.0..HEAD"
+_fault "fault: merge-base --is-ancestor (a target would stop being one)"           "$RB" classify "merge-base --is-ancestor"
+_fault "fault: rev-list --parents (a merge would read as a plain commit)"          "$RB" classify "rev-list --parents"
+_fault "fault: the subject read of the scanned commit"                             "$RB" classify "log -1 --format=%s"
+_fault "fault: the body read of a revert in the row loop"                          "$RB" classify "log -1 --format=%b"
+_fault "fault: git diff of the change a revert undoes"                             "$RR" classify "diff --no-color"
+_fault "fault: git patch-id"                                                       "$RR" classify "patch-id"
+_fault "fault: git log -p over the range (the copies' changes)"                    "$RR" classify "log --no-merges --no-color --no-ext-diff --no-renames -p"
+_fault "fault: rev-list of a reverted merge's side"                                "$MX" classify "rev-list --no-merges"
+_fault "fault: the body path's range listing (reverted_lines)"                     "$RB" body     "rev-list v0.1.0..HEAD"
+_fault "fault: the body path's short sha"                                          "$RB" body     "--short"
+_fault "fault: the body path's first-parent walk"                                  "$RB" body     "--first-parent"
+_fault "fault: the body path's reverted-merge side from before the range"          "$M1" body     "--no-merges --reverse"
+# A read that can only make a commit LESS shipped is fail-closed already: the shallow-repository probe
+# answers `unknown` on failure, which is read as shallow, so the revert is not measured.
+FC_OUT="$(cd "$RB" && PATH="$FS:$PATH" FAULT="--is-shallow-repository" "$BIN" --classify-commits --base v0.1.0 --head HEAD 2>/dev/null | awk 'BEGIN { FS = "\037" } $1 == "shipped" && $5 ~ /feat: x/ { print "shipped" }')"
+eq "fault: the shallow probe fails closed — the reverted copy is never shipped" "" "$FC_OUT"
 
 _summary "release-pr-body-selftest"

@@ -273,4 +273,30 @@ eq "control: the run exits 0 and K's card (#2) moves"            "0|true" "$rc|$
 eq "the picked revert is named NOT MEASURED and counted"          "true|true" "$(has "⚠ $(g -C "$L" rev-parse --short "$LR"): NOT MEASURED" "$err")|$(has "1 commits-unmeasured, " "$out")"
 eq "…and its line does not call a full clone shallow"            "false" "$(has "this is a shallow clone" "$err")"
 
+echo "== a range the clone cannot read: the mover refuses at rc 2 and moves nothing (card#11662) =="
+# A partial clone (--filter=blob:none) whose promisor is unreachable cannot read the blobs a patch-id
+# needs. The classification used to swallow that and promote the reverted copy's card; it now stops,
+# and the mover, which asks it, refuses before any board read.
+PO="$TMP/partial-origin"; g init -q "$PO"
+echo zero > "$PO/f"; g -C "$PO" add f; g -C "$PO" commit -qm "chore: init"; g -C "$PO" tag v0.1.0
+g -C "$PO" checkout -qb br
+echo xx > "$PO/x"; g -C "$PO" add x; g -C "$PO" commit -qm "feat: x DL-5"; g -C "$PO" revert --no-edit HEAD >/dev/null
+g -C "$PO" checkout -q main; echo kk > "$PO/k"; g -C "$PO" add k; g -C "$PO" commit -qm "fix: keep DL-6 (#23)"
+g -C "$PO" checkout -q br; g -C "$PO" rebase -q main; g -C "$PO" checkout -q main; g -C "$PO" merge -q --ff-only br; g -C "$PO" branch -qD br
+g -C "$PO" config uploadpack.allowFilter true
+g -c protocol.file.allow=always clone -q --no-local --filter=blob:none "file://$PO" "$TMP/partial" 2>/dev/null
+g -C "$TMP/partial" config protocol.file.allow always
+g -C "$TMP/partial" config remote.origin.url "file://$TMP/partial-nowhere"
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"dl_number":"DL-5","repo":"acme/widget"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"dl_number":"DL-6","repo":"acme/widget"}}
+],"meta":{"last_page":1,"total":2}}
+JSON
+eq "fixture: a blob is missing from the partial clone and the promisor is unreachable" \
+   "true|false" "$(test "$(g -C "$TMP/partial" rev-list --objects --missing=print --all 2>/dev/null | grep -c '^?')" -ge 1 && echo true || echo false)|$(g -C "$TMP/partial" fetch -q origin >/dev/null 2>&1 && echo true || echo false)"
+run_in "$TMP/partial" "$PRC"
+eq "the mover exits 2, moves no card, and names the classification it could not get" \
+   "2||true" "$rc|$patched|$(has "--classify-commits exited" "$err")"
+
 _summary "promote-revert-selftest"
