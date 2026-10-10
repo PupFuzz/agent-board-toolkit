@@ -513,7 +513,7 @@ BSC_DISPOSED=(
     #    describe a predicate over these nouns without using them.
     "tests/by-ref-source-claim-selftest.sh::WHY THIS FILE EXISTS::3b392b49ed5d"
     "tests/by-ref-source-claim-selftest.sh::ARM 1 — a URL or link::43370a6a1fe8"
-    "tests/by-ref-source-claim-selftest.sh::TWO CARVE-OUTS::01279241b6d0"
+    "tests/by-ref-source-claim-selftest.sh::TWO CARVE-OUTS::de45fd762b10"
     "tests/by-ref-source-claim-selftest.sh::control: a claim SPLIT ACROSS LINES is reported::cfa933e61486"
 )
 
