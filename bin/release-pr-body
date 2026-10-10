@@ -15,10 +15,14 @@
 #   release-pr-body --card-manifest   # print just the shipped CARD IDs (bare integers, one per line)
 #   release-pr-body --tag [--version X.Y.Z]  # print just the git TAG NAME this repo's tag_format maps a version to
 #   release-pr-body --tool-version    # print the agent-board-toolkit version THIS FILE is, and exit
+#   release-pr-body --classify-commits --base REF --head REF
+#                                     # print which commits in REF..REF ship, one classified line per
+#                                     # non-merge commit (contract: commit_rows below); needs no config
 #
 # STDOUT IS THE BODY, AND ONLY THE BODY (DL-224). It is written for the person installing the
 # release: the scope line, `## Highlights`, `## Bundled` (opened by its one `Review:` sentence —
-# the review-sentence block below owns it), `## Release artifacts` (only when `artifacts` is
+# the review-sentence block below owns it — and, under it, the reverted lines when a revert is in
+# the range; the reverted-lines block owns those), `## Release artifacts` (only when `artifacts` is
 # configured) and the machine lines (the `<!-- release-manifest:... -->` footers).
 # No other H2 is ever emitted there. Builder diagnostics go to STDERR — kept, not dropped — one
 # line per finding, each carrying a fixed prefix so a reader can lift them by grep:
@@ -61,7 +65,8 @@
 # a list is given with the command that re-prints it. Every `*-cmd` is shell-quoted, runs from the
 # repo root, names this tool by its PATH name and pins each resolved range end by SHA, so it
 # answers about the same range later (a first release has no base to pin). The block is never
-# emitted by a query mode (`--manifest`, `--card-manifest`, `--tag`, `--tool-version`) or a refusal.
+# emitted by a query mode (`--manifest`, `--card-manifest`, `--tag`, `--tool-version`,
+# `--classify-commits`) or a refusal.
 # "Not included" (the scope a release deferred) is not a field of this block: git cannot derive
 # deferred scope, so it stays with the release-pr skill, which reports it outside the body.
 #
@@ -135,7 +140,179 @@ die() { echo "release-pr-body: $*" >&2; exit 2; }
 # and derives the copy set from the tree, so a fifth one is compared on the day it lands.
 require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
-CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0; TOOL_VERSION_ONLY=0
+# require_resolvable <flag> <ref>: die unless <ref> names a commit in this repo. WHY, and why
+# `^{commit}`: the block above the range resolution below, which is its main caller.
+require_resolvable() { # <flag> <ref>
+  git rev-parse --verify -q "$2^{commit}" >/dev/null \
+    || die "$1 '$2' does not resolve to a commit in this repo — an explicit $1 is the caller's override and skips its leg's fetch, so nothing else ever looks the ref up, and a range built from it walks NOTHING — indistinguishable from a genuinely empty release; check the spelling, or fetch the ref before passing it"
+}
+
+# ═══ THE PR OF A COMMIT, AND WHETHER IT SHIPS — the ONE implementation (card#11587, card#11602) ═══
+# Every reader of "which pull request is this commit" and "does this commit ship what its subject
+# names" in the toolkit's release tools is this block: the `## Bundled` rows and the `Review:`
+# sentence here, the `shipped-refs` / `shipped-cards` manifests here, and `bin/promote-released-cards`,
+# which asks this file through the `--classify-commits` query mode instead of parsing a subject of
+# its own (the sibling-delegation shape `--tag` already has, for the same reason: one rule, one
+# implementation). A second subject parser anywhere is the defect this block exists to prevent.
+#
+# THE PR NUMBER IS THE TRAILING `(#N)` — ` (#N)` at the very end of the subject, trailing
+# whitespace allowed — which is the marker GitHub appends to a squash merge. A `(#N)` anywhere
+# else is a mention, not the commit's own number: `fix: a (#12) and b` carries none. Until
+# card#11602 this tool took the LAST `(#N)` anywhere and the promoter took only a trailing one, so
+# the two disagreed on that subject; the trailing rule is the narrower one, kept because the
+# promoter WRITES on it.
+pr_token() { printf '%s' "$1" | sed -nE 's/^.*\(#([0-9]+)\)[[:space:]]*$/\1/p'; }
+
+# own_subject <subject>: the part of a subject that speaks for the commit itself. A subject starting
+# `Revert "` or `Reapply "` (git 2.43 and later writes `Reapply` for a revert of a revert) quotes
+# the original it reverts, so only the text AFTER its last `"` is its own; with no closing `"` the
+# whole rest is the quoted original and nothing is its own (card#11587). Not handled: a
+# hand-written prefix git never writes (`revert: x (#21)`, `Revert x (#21)`) reads as an ordinary
+# subject. Every other subject is all its own.
+own_subject() {
+  local s="$1"
+  case "$s" in
+    'Revert "'*|'Reapply "'*)
+      s="${s#*\"}"
+      case "$s" in *\"*) s="${s##*\"}" ;; *) s="" ;; esac ;;
+  esac
+  printf '%s' "$s"
+}
+
+# pr_of_subject <subject>: the pull request a subject names, read from the subject alone, or nothing.
+pr_of_subject() { pr_token "$(own_subject "$1")"; }
+
+# revert_scan <sha> <body>: what a commit REVERTS, read from git's `This reverts commit <sha>` body
+# lines. Sets RV_TARGETS (the full shas it reverts, one per line) and RV_UNMEASURED (1 or empty).
+# A body-line sha counts as WHAT THIS COMMIT REVERTS only if it is an ANCESTOR of the commit. A
+# squash of a multi-commit PR carries, in GitHub's default body, the `This reverts commit` line of
+# every revert on the PR's branch, naming a branch commit that is not an ancestor of the squash and
+# is unreadable once the branch is deleted, in a full clone too. Such a line says nothing about this
+# commit and is ignored, whether its sha is readable or not. A sha that cannot be read in a SHALLOW
+# clone may be an ancestor the clone cut off, so it cannot be ruled out: the commit is NOT MEASURED
+# (RV_UNMEASURED) rather than guessed at. In a full clone an unreadable sha cannot be an ancestor,
+# so it is ignored. A commit is a REVERT exactly when RV_TARGETS is non-empty: by its body line,
+# never by its subject.
+IS_SHALLOW=""
+revert_scan() {
+  local sha="$1" refs r rs
+  RV_TARGETS=""; RV_UNMEASURED=""
+  refs="$(printf '%s\n' "$2" | sed -nE 's/^This reverts commit ([0-9a-f]{7,40})([^0-9a-f].*)?$/\1/p')"
+  [ -n "$refs" ] || return 0
+  [ -n "$IS_SHALLOW" ] || IS_SHALLOW="$(git rev-parse --is-shallow-repository 2>/dev/null || echo unknown)"
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    if rs="$(git rev-parse -q --verify "$r^{commit}" 2>/dev/null)"; then
+      git merge-base --is-ancestor "$rs" "$sha" 2>/dev/null || continue
+      RV_TARGETS="$RV_TARGETS$rs"$'\n'
+    elif [ "$IS_SHALLOW" != false ]; then
+      RV_UNMEASURED=1
+    fi
+  done <<< "$refs"
+}
+
+# _pr_of_scanned <subject>: pr_of_commit's answer for the commit revert_scan last scanned.
+# A revert's subject is built from the reverted commit's subject, so a trailing `(#N)` it shares
+# with that subject is inherited, not its own: it never takes the PR number of the commit it
+# reverts (card#11587). Its PR is its trailing `(#N)` unless that equals the trailing `(#N)` of a
+# commit it reverts. So a direct-push `Revert "x (#21)"`, and a direct-push `Reapply "x (#21)" (#25)`
+# of revert-PR #25, have none, while revert-PR #25's squash `Revert "x (#21)" (#25)` is #25. A
+# commit not measured credits NO PR. ONE PATH PER COMMIT: a commit that reverts nothing (every body
+# line ignored, or none — a hand-written or edited message) is read by pr_of_subject.
+_pr_of_scanned() {
+  local own t
+  own="$(pr_token "$1")"
+  [ -n "$own" ] && [ -z "$RV_UNMEASURED" ] || return 0
+  if [ -z "$RV_TARGETS" ]; then pr_of_subject "$1"; return 0; fi
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    [ "$(pr_token "$(git log -1 --format=%s "$t")")" != "$own" ] || return 0
+  done <<< "$RV_TARGETS"
+  printf '%s' "$own"
+}
+
+# pr_of_commit <sha> <subject>: the pull request a NON-MERGE commit is, or nothing.
+pr_of_commit() {
+  revert_scan "$1" "$(git log -1 --format=%b "$1")"
+  _pr_of_scanned "$2"
+}
+
+# commit_rows <range>: THE CLASSIFICATION — one line per non-merge commit in <range>, in
+# `git log --no-merges` order, fields separated by US (0x1f, so an empty field survives `read`):
+#     <class> US <full sha> US <shipped pr> US <related> US <shipped text>
+# A consumer reads a pull request ONLY from <shipped pr> and a card or DL token ONLY from
+# <shipped text>; both are empty whenever the commit ships nothing, so no consumer has to know the
+# classes to count right. The classes, which say WHY:
+#   shipped          an ordinary commit. <shipped pr> is pr_of_subject's answer and <shipped text>
+#                    its own_subject; <related> is empty.
+#   revert           a live revert (by its body line). It ships its own PR number, if it has one,
+#                    and, as <shipped text>, its own_subject — exactly what a shipped commit ships.
+#                    A git-written `Revert "…"` / `Reapply "…"` subject has nothing of its own
+#                    outside the quoted original but a `(#N)`, so such a revert ships no card or DL;
+#                    a squash whose BRANCH ran `git revert` (GitHub's COMMIT_MESSAGES squash body
+#                    keeps that line) ships the refs its own title names. <related> is the
+#                    commit(s) it reverts, space-separated — inside the range or not.
+#   reverted         an ordinary commit a live revert in the range takes back — directly, or as a
+#                    commit on the merged side of a merge commit the revert takes back: it ships
+#                    nothing. <related> is that revert.
+#   revert-reverted  a revert another live revert in the range takes back (a reapply): it ships
+#                    nothing, and what it reverted is live again. <related> is that revert.
+#   unmeasured       a shallow clone cannot read a commit its body line names, so whether and what
+#                    it reverts is unknown (revert_scan): it ships NOTHING and is named by every
+#                    reader, never counted as shipped and never left out in silence.
+# LIVENESS IS DECIDED NEWEST FIRST, over `--topo-order`, where every revert precedes what it
+# reverts: a commit is taken back only by a revert that is itself live, so revert → reapply →
+# revert … chains resolve to the last word. A revert whose original lies OUTSIDE the range takes
+# nothing in the range back, and is named by the body as reverting work shipped before it.
+# ⚠ WHAT IT CANNOT SEE: a revert with no `This reverts commit` line (an edited message) is an
+# ordinary commit here, so its original still ships; its quoted original contributes nothing, by
+# own_subject. A reapply of a change whose revert shipped in an EARLIER range re-ships that change,
+# but its card and DL sit inside the quoted original, so they are not shipped by it.
+commit_rows() {
+  local range="$1" sha subj body class rel t dead="" kind="" out
+  while IFS=$'\x1f' read -r -d '' sha subj body; do
+    [ -n "$sha" ] || continue
+    revert_scan "$sha" "$body"
+    rel=""
+    case "$dead" in *$'\n'"$sha "*) rel="${dead#*$'\n'"$sha "}"; rel="${rel%%$'\n'*}" ;; esac
+    if [ -n "$rel" ]; then
+      if [ -n "$RV_TARGETS" ]; then class=revert-reverted; else class=reverted; fi
+      kind="$kind$sha $class $rel"$'\n'
+      continue
+    fi
+    if [ -n "$RV_UNMEASURED" ]; then
+      kind="$kind$sha unmeasured -"$'\n'
+    elif [ -n "$RV_TARGETS" ]; then
+      while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        # A reverted MERGE (`git revert -m 1 <merge>`) takes back every commit on its merged side.
+        for t in "$t" $(if git rev-parse -q --verify "$t^2" >/dev/null; then git rev-list --no-merges "$t^1..$t"; fi); do
+          case "$dead" in *$'\n'"$t "*) ;; *) dead="$dead"$'\n'"$t $sha" ;; esac
+        done
+      done <<< "$RV_TARGETS"
+      kind="$kind$sha revert $(printf '%s' "$RV_TARGETS" | paste -sd' ' -)"$'\n'
+    else
+      kind="$kind$sha shipped -"$'\n'
+    fi
+  done < <(git log --topo-order --no-merges -z --format='%H%x1f%s%x1f%b' "$range")
+  kind=$'\n'"$kind"
+  while IFS=$'\x1f' read -r sha subj; do
+    [ -n "$sha" ] || continue
+    out="${kind#*$'\n'"$sha "}"; out="${out%%$'\n'*}"
+    class="${out%% *}"; rel="${out#* }"; [ "$rel" != - ] || rel=""
+    case "$class" in
+      shipped)
+        printf '%s\x1f%s\x1f%s\x1f\x1f%s\n' "$class" "$sha" "$(pr_of_subject "$subj")" "$(own_subject "$subj")" ;;
+      revert)
+        revert_scan "$sha" "$(git log -1 --format=%b "$sha")"
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$class" "$sha" "$(_pr_of_scanned "$subj")" "$rel" "$(own_subject "$subj")" ;;
+      *)
+        printf '%s\x1f%s\x1f\x1f%s\x1f\n' "$class" "$sha" "$rel" ;;
+    esac
+  done < <(git log --no-merges --format='%H%x1f%s' "$range")
+}
+
+CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0; TOOL_VERSION_ONLY=0; CLASSIFY_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) require_value "$1" "${2:-}"; VERSION="$2"; shift 2;;
@@ -146,6 +323,7 @@ while [ $# -gt 0 ]; do
     --manifest) MANIFEST_ONLY=1; shift;;
     --card-manifest) CARD_MANIFEST_ONLY=1; shift;;
     --tool-version) TOOL_VERSION_ONLY=1; shift;;
+    --classify-commits) CLASSIFY_ONLY=1; shift;;
     # Contiguous leading comment block, not a fixed range — see the sibling mover. The old
     # `sed -n '2,20p'` happened to print all of the header it was written against, and would
     # have started truncating silently at the first header line added. No line COUNT is
@@ -171,6 +349,7 @@ query_mode "$TAG_ONLY"           --tag
 query_mode "$MANIFEST_ONLY"      --manifest
 query_mode "$CARD_MANIFEST_ONLY" --card-manifest
 query_mode "$TOOL_VERSION_ONLY"  --tool-version
+query_mode "$CLASSIFY_ONLY"      --classify-commits
 if [ "$QUERY_COUNT" -gt 1 ]; then
   die "$QUERY_MODES are mutually exclusive query modes (each prints a different answer — run the tool once per question)"
 fi
@@ -185,6 +364,19 @@ fi
 # none of them, and a host lacking one must still be able to ask which release this copy is.
 command -v jq  >/dev/null || die "jq is required"
 command -v git >/dev/null || die "git is required"
+
+# `--classify-commits` answers from git alone, so it returns BEFORE the config read and the
+# version resolution: `bin/promote-released-cards` asks it with the range it has already resolved,
+# and must not need a version, a config key or the network to be told which commits ship. Both ends
+# are REQUIRED and are never fetched or defaulted — the caller owns the range.
+if [ "$CLASSIFY_ONLY" = 1 ]; then
+  [ -n "$BASE" ] && [ -n "$HEAD_REF" ] \
+    || die "--classify-commits needs both --base <ref> and --head <ref>: it classifies the range it is given, and resolves no default end"
+  require_resolvable --base "$BASE"
+  require_resolvable --head "$HEAD_REF"
+  commit_rows "$BASE..$HEAD_REF"
+  exit 0
+fi
 
 [ -f "$CONFIG" ] || die "no $CONFIG in this repo (per-project config — see the kanban-board copy for the shape)"
 cfg() { jq -re "$1" "$CONFIG" 2>/dev/null; }
@@ -402,10 +594,8 @@ fi
 # two are compared directly since card#8529 — tests/mirror-pair-parity-selftest.sh extracts both
 # and runs one corpus of refs through each — so a divergence reds rather than waiting for a class
 # of input only one of them meets.
-require_resolvable() { # <flag> <ref>
-  git rev-parse --verify -q "$2^{commit}" >/dev/null \
-    || die "$1 '$2' does not resolve to a commit in this repo — an explicit $1 is the caller's override and skips its leg's fetch, so nothing else ever looks the ref up, and a range built from it walks NOTHING — indistinguishable from a genuinely empty release; check the spelling, or fetch the ref before passing it"
-}
+# require_resolvable is DEFINED above, beside the commit primitive, because the
+# `--classify-commits` query mode needs it before the version is resolved; this block is its WHY.
 
 # The base leg fetches with tags (release tags point at main-only merge commits a
 # dev-side fetch's tag auto-follow never brings over); the excluded tag name is
@@ -483,15 +673,31 @@ else
 fi
 RANGE="${BASE:+$BASE..}$HEAD_REF"
 
-# The `shipped-refs` / `shipped-cards` manifests read every non-merge commit subject in the range
-# for its ref token, never hand-curated. (The `## Bundled` rows are derived per PR instead — see
-# bundle_units below.)
+# The range's commits as commit_rows classifies them, read ONCE: the manifests, the reverted lines
+# and the coverage report all read this one answer, so they cannot disagree about what ships.
+COMMIT_ROWS="$(commit_rows "$RANGE")"
+
+# shipped_text: the <shipped text> of every commit in the range, one per line — the only text a
+# card or DL token is read from. A commit a revert takes back, and a commit not measured, contribute
+# nothing, and a revert contributes only the text outside its quoted original (commit_rows), so a
+# card or DL named only inside a revert's quoted original is not shipped (card#11602). (The `## Bundled` rows are derived per PR instead — see bundle_units below.)
+shipped_text() {
+  local _c _s _p _r t
+  while IFS=$'\x1f' read -r _c _s _p _r t; do
+    [ -n "$t" ] && printf '%s\n' "$t"
+  done <<< "$COMMIT_ROWS"
+  return 0
+}
+
+# The `shipped-refs` / `shipped-cards` manifests read shipped_text for each ref token, never
+# hand-curated.
+# dl_tokens_of: the `ref_token_regex` tokens on stdin, upper-cased and deduped, one per line.
+# `|| true`: grep exits 1 on no match — a release with no ref tokens is valid, not a failure
+# (would otherwise abort under `set -o pipefail`).
+dl_tokens_of() { { grep -oiE "$REF_TOKEN_REGEX" | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++'; } || true; }
 emit_manifest() {
   [ -n "$REF_TOKEN_REGEX" ] || return 0
-  # `|| true`: grep exits 1 on no match — a release with no ref tokens is valid,
-  # not a failure (would otherwise abort under `set -o pipefail`).
-  { git log "$RANGE" --no-merges --format='%s' 2>/dev/null \
-    | grep -oiE "$REF_TOKEN_REGEX" | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++'; } || true
+  shipped_text | dl_tokens_of
 }
 
 # The card-id half of the manifest. Emits BARE INTEGERS, not tokens: the id space is
@@ -508,11 +714,11 @@ emit_manifest() {
 # card. Erring toward DROPPING an id is the right side of that asymmetry here — a token
 # whose id is not trailing yields nothing and the coverage report says so, whereas a
 # minted id silently reports an unrelated card as covered.
+# card_ids_of: the card ids of the `card_token_regex` tokens on stdin, one bare id per line.
+card_ids_of() { sed -E 's/^.*[^0-9]//' | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++'; }
 emit_card_ids() {
   [ -n "$CARD_TOKEN_REGEX" ] || return 0
-  { git log "$RANGE" --no-merges --format='%s' 2>/dev/null \
-    | grep -oiE "$CARD_TOKEN_REGEX" | sed -E 's/^.*[^0-9]//' \
-    | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++'; } || true
+  { shipped_text | grep -oiE "$CARD_TOKEN_REGEX" | card_ids_of; } || true
 }
 
 if [ "$MANIFEST_ONLY" = 1 ]; then
@@ -523,64 +729,6 @@ if [ "$CARD_MANIFEST_ONLY" = 1 ]; then
   emit_card_ids
   exit 0
 fi
-
-# pr_token <subject>: the LAST `(#N)` in a subject, as written, or nothing.
-pr_token() { printf '%s' "$1" | grep -oE '\(#[0-9]+\)' | tail -1 | tr -d '(#)' || true; }
-
-# pr_of_subject <subject>: the pull request a commit subject names, read from the subject alone, or
-# nothing. A merge commit's `(#N)` fallback (pr_of_merge), and a non-merge commit with no
-# `This reverts commit <sha>` line that applies to it (pr_of_commit), are read here.
-# A subject starting `Revert "` or `Reapply "` (git 2.43 and later writes `Reapply` for a revert
-# of a revert) is a revert whose message was hand-written or edited: it is read only AFTER its last
-# `"`, because the quoted original carries the PR it reverts, never the revert's own (card#11587).
-# With no closing `"` the whole rest is the quoted original. Not handled: a hand-written prefix git
-# never writes (`revert: x (#21)`, `Revert x (#21)`) reads as an ordinary squash title, #21.
-pr_of_subject() {
-  local s="$1"
-  case "$s" in
-    'Revert "'*|'Reapply "'*)
-      s="${s#*\"}"
-      case "$s" in *\"*) s="${s##*\"}" ;; *) s="" ;; esac ;;
-  esac
-  pr_token "$s"
-}
-
-# pr_of_commit <sha> <subject>: the pull request a NON-MERGE commit is, or nothing.
-# A commit whose message carries git's `This reverts commit <sha>` line is a revert, and its subject
-# is built from the reverted commit's subject, so a trailing `(#N)` it shares with that subject is
-# inherited, not its own: it never takes the PR number of the commit it reverts (card#11587). Its
-# PR is its last `(#N)` unless that equals the last `(#N)` of the commit it reverts. So a
-# direct-push `Revert "x (#21)"`, and a direct-push `Reapply "x (#21)" (#25)` of revert-PR #25,
-# have none, while revert-PR #25's squash `Revert "x (#21)" (#25)` is #25.
-# A body-line sha counts as WHAT THIS COMMIT REVERTS only if it is an ANCESTOR of the commit. A
-# squash of a multi-commit PR carries, in GitHub's default body, the `This reverts commit` line of
-# every revert on the PR's branch, naming a branch commit that is not an ancestor of the squash and
-# is unreadable once the branch is deleted, in a full clone too. Such a line says nothing about this
-# commit and is ignored, whether its sha is readable or not. A sha that cannot be read in a SHALLOW
-# clone may be an ancestor the clone cut off, so it cannot be ruled out: that alone credits NO PR,
-# and the commit is not measured rather than guessed at. In a full clone an unreadable sha cannot be
-# an ancestor, so it is ignored.
-# ONE PATH PER COMMIT: when every body line is ignored, or there is none (a hand-written or edited
-# message), the commit is read by pr_of_subject exactly as if it had no such line.
-pr_of_commit() {
-  local sha="$1" subj="$2" own refs r rs shallow counted=""
-  own="$(pr_token "$subj")"
-  [ -n "$own" ] || return 0
-  refs="$(git log -1 --format=%b "$sha" | sed -nE 's/^This reverts commit ([0-9a-f]{7,40})([^0-9a-f].*)?$/\1/p')"
-  shallow="$(git rev-parse --is-shallow-repository 2>/dev/null || true)"
-  while IFS= read -r r; do
-    [ -n "$r" ] || continue
-    if rs="$(git rev-parse -q --verify "$r^{commit}" 2>/dev/null)"; then
-      git merge-base --is-ancestor "$rs" "$sha" 2>/dev/null || continue
-      [ "$(pr_token "$(git log -1 --format=%s "$rs")")" != "$own" ] || return 0
-      counted=1
-    else
-      [ "$shallow" = true ] || continue
-      return 0
-    fi
-  done <<< "$refs"
-  if [ -n "$counted" ]; then printf '%s' "$own"; else pr_of_subject "$subj"; fi
-}
 
 # pr_of_merge <subject>: the pull request a MERGE commit names — GitHub's `Merge pull request #N
 # from …` subject, else a `(#N)` as pr_of_subject reads it — or nothing.
@@ -840,6 +988,68 @@ review_sentence() {
   printf '%s.\n' "$s"
 }
 
+# --- the reverted lines: under the `Review:` sentence, inside `## Bundled` (card#11602) ---------
+# A change a revert takes back ships nothing, so its card and DL are left out of both manifests and
+# no promoter moves them (commit_rows). Leaving them out says nothing to the person merging the
+# release, so the body NAMES them, one line per kind, each only when it has something to say:
+#   Reverted in this range, so not shipped by it: <change> (<refs>), reverted by <sha>; …
+#       a change in this range that a live revert in this range takes back
+#   Reverted by this range, shipped before it: <change> (<refs>), reverted by <sha>; …
+#       a change a live revert in this range takes back whose commit is OUTSIDE the range — it
+#       shipped in an earlier release, and whatever card it moved stays where it is
+#   Not measured for a revert: <sha>, … — …
+#       a commit commit_rows could not measure (a shallow clone); it ships nothing, and is named
+#       so that a missing ref reads as unmeasured rather than as clean
+# <change> is the change's PR number, else its short sha. <refs> are the DL and card tokens its
+# subject names that NO bundled change ships — a ref another bundled change still ships is in the
+# manifest and is not called reverted. A revert that is itself taken back (a reapply) is not named:
+# what it reverted ships again. These are body lines, not an H2: the body's H2 set is fixed (header).
+reverted_item() { # <sha> <reverting-sha>
+  local subj own label refs="" tok dl_shipped card_shipped
+  subj="$(git log -1 --format=%s "$1")"; own="$(own_subject "$subj")"
+  if git rev-parse -q --verify "$1^2" >/dev/null; then label="$(pr_of_merge "$subj")"; else label="$(pr_of_subject "$subj")"; fi
+  if [ -n "$label" ]; then label="#$label"; else label="$(git rev-parse --short "$1")"; fi
+  dl_shipped=$'\n'"$(emit_manifest)"$'\n'; card_shipped=$'\n'"$(emit_card_ids)"$'\n'
+  if [ -n "$REF_TOKEN_REGEX" ]; then
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      case "$dl_shipped" in *$'\n'"$tok"$'\n'*) ;; *) refs="${refs:+$refs, }$tok" ;; esac
+    done < <(printf '%s\n' "$own" | dl_tokens_of)
+  fi
+  if [ -n "$CARD_TOKEN_REGEX" ]; then
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      case "$card_shipped" in *$'\n'"$(printf '%s\n' "$tok" | card_ids_of)"$'\n'*) ;; *) refs="${refs:+$refs, }$tok" ;; esac
+    done < <(printf '%s\n' "$own" | grep -oiE "$CARD_TOKEN_REGEX" | awk '!seen[$0]++' || true)
+  fi
+  printf '%s%s, reverted by %s' "$label" "${refs:+ ($refs)}" "$(git rev-parse --short "$2")"
+}
+reverted_lines() {
+  local c sha _p rel _t x in="" before="" unm="" inrange
+  # Every commit in the range, MERGES INCLUDED: commit_rows lists non-merge commits only, and a
+  # reverted merge inside the range was not shipped before it.
+  inrange=$'\n'"$(git rev-list "$RANGE")"$'\n'
+  while IFS=$'\x1f' read -r c sha _p rel _t; do
+    case "$c" in
+      reverted) in="${in:+$in; }$(reverted_item "$sha" "$rel")" ;;
+      revert)
+        for x in $rel; do
+          case "$inrange" in *$'\n'"$x"$'\n'*) continue ;; esac
+          revert_scan "$x" "$(git log -1 --format=%b "$x")"
+          [ -z "$RV_TARGETS" ] && [ -z "$RV_UNMEASURED" ] || continue
+          before="${before:+$before; }$(reverted_item "$x" "$sha")"
+        done ;;
+      unmeasured) unm="${unm:+$unm, }$(git rev-parse --short "$sha")" ;;
+    esac
+  done <<< "$COMMIT_ROWS"
+  if [ -n "$in" ]; then printf 'Reverted in this range, so not shipped by it: %s.\n' "$in"; fi
+  if [ -n "$before" ]; then printf 'Reverted by this range, shipped before it: %s.\n' "$before"; fi
+  if [ -n "$unm" ]; then
+    printf 'Not measured for a revert: %s — this is a shallow clone, and the commit a `This reverts commit` line names cannot be read here, so nothing such a commit names is in a manifest; deepen the clone to measure it.\n' "$unm"
+  fi
+  return 0
+}
+
 # Shift-left card coverage: surface, AT RELEASE PREP, any shipped ref that has no board
 # tracking card — so the gap is caught while it is cheap to fix instead of only on the
 # post-merge promote run (a red check needing manual board surgery). Reuses
@@ -1047,7 +1257,7 @@ correlation_gap_report() {
       *)                re="$CARD_TOKEN_REGEX"; yield="$card_yield"; manifest="shipped-cards"; field="the card's own \`id\`";;
     esac
     if [ -n "$re" ] && [ -z "$yield" ]; then
-      gaps+=("⚠ **\`$key\` is declared (\`$re\`) and matched no commit subject in \`$RANGE\` ($COUNT commit(s)).** The \`$manifest\` manifest is EMPTY, so nothing here is correlated against $field — check the regex against the subjects this range actually carries before reading a coverage report as clean.")
+      gaps+=("⚠ **\`$key\` is declared (\`$re\`) and matched no subject of a commit that ships in \`$RANGE\` ($COUNT commit(s)); a revert, and a change a revert takes back, ship nothing.** The \`$manifest\` manifest is EMPTY, so nothing here is correlated against $field — check the regex against the subjects this range actually carries before reading a coverage report as clean.")
     elif [ -z "$re" ] && [ "$zero_total" = 1 ]; then
       gaps+=("⚠ **\`$key\` is not declared in \`$CONFIG\`.** The \`$manifest\` manifest is absent, so nothing here is correlated against $field. Declare it if your commit subjects carry that spelling — the two keys are two id spaces, so do not re-spell the other one as this one.")
     fi
@@ -1107,7 +1317,7 @@ cat <<EOF
      the ONLY non-deterministic section — everything below is generated from git. -->
 
 ## Bundled (generated — do not hand-edit)
-$(review_sentence)
+$(review_sentence; reverted_lines)
 
 $(bundle_lines)
 EOF

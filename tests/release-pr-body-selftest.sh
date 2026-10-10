@@ -1994,4 +1994,138 @@ eq "a revert whose reverted commit is unreadable in a shallow clone is not measu
    "0|Review: 0 of 1 bundled changes have an independent review record; not measured: $(g -C "$RV/shal" rev-parse --short HEAD)." "$SH_RC|$SH_LINE"
 eq "…and the verifier is not asked about it" "" "$(cat "$RV/log")"
 
+echo "== a card or DL a revert names is not shipped; a reverted change is named in the body (card#11602) =="
+# THE DEFECT: `feat: x DL-5 (closes card#7) (#21)` is squash-merged, then `git revert`ed by a direct
+# push whose subject is `Revert "feat: x DL-5 (closes card#7) (#21)"`. The manifests read every
+# subject in the range for its tokens, the revert's included, so card#7 and DL-5 were SHIPPED and
+# the promoter moved card#7 to its released stage with its work gone. A revert is known by git's
+# `This reverts commit <sha>` body line, never by its subject; it ships no card or DL of its own,
+# and a change it reverts inside the range ships nothing. On separate files, oldest → newest:
+#   Z  `feat: z DL-2 (card#3) (#11)` — tagged v0.1.0, so OUTSIDE the range
+#   O  `feat: x DL-5 (closes card#7) (#21)` · K `fix: keep DL-6 (card#8) (#23)`
+#   R  O reverted by a direct push
+#   P  `fix: a (#12) and b card#9` — its `(#12)` is not trailing, so it is no PR number, in this
+#      tool as in the promoter (one rule, not two)
+#   Y  `fix: y (card#4) (#22)` · Y1 = Y reverted through PR #25 · Y2 = Y1 reverted by a direct
+#      push, spelled as git 2.43 and later spell it whatever git wrote it here:
+#      `Reapply "fix: y (card#4) (#22)" (#25)` — Y is back, so card#4 ships; #25 does not
+#   RZ Z reverted by a direct push — its original shipped before this range
+RX="$T/rx"; g init -q "$RX"
+_rxc() { echo "$RANDOM" >> "$RX/$1"; g -C "$RX" add "$1"; g -C "$RX" commit -qm "$2"; g -C "$RX" rev-parse HEAD; }
+_rxr() { g -C "$RX" revert --no-edit "$1" >/dev/null; g -C "$RX" rev-parse HEAD; }
+echo 0 > "$RX/f"; g -C "$RX" add f; g -C "$RX" commit -qm "chore: init"
+RX_Z="$(_rxc z "feat: z DL-2 (card#3) (#11)")"; g -C "$RX" tag v0.1.0
+RX_O="$(_rxc o "feat: x DL-5 (closes card#7) (#21)")"; RX_K="$(_rxc k "fix: keep DL-6 (card#8) (#23)")"
+RX_R="$(_rxr "$RX_O")"
+RX_P="$(_rxc p "fix: a (#12) and b card#9")"
+RX_Y="$(_rxc y "fix: y (card#4) (#22)")"
+RX_Y1="$(_rxr "$RX_Y")"
+g -C "$RX" commit -q --amend -m "Revert \"fix: y (card#4) (#22)\" (#25)" -m "This reverts commit $RX_Y."; RX_Y1="$(g -C "$RX" rev-parse HEAD)"
+g -C "$RX" revert --no-edit "$RX_Y1" >/dev/null
+g -C "$RX" commit -q --amend -m "Reapply \"fix: y (card#4) (#22)\" (#25)" -m "This reverts commit $RX_Y1."; RX_Y2="$(g -C "$RX" rev-parse HEAD)"
+RX_RZ="$(_rxr "$RX_Z")"
+echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$RX/.release-pr.json"
+_rxh() { g -C "$RX" rev-parse --short "$1"; }
+_rx() { (cd "$RX" && env -u RELEASE_PR_REVIEW_VERIFIER RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+eq "fixture: R carries git's \`This reverts commit\` line naming O" "true" "$(has "This reverts commit $RX_O" "$(g -C "$RX" log -1 --format=%b "$RX_R")")"
+RX_RC=0; RX_OUT="$(_rx 2>"$T/rx-err")" || RX_RC=$?
+RX_ROWS="$(printf '%s\n' "$RX_OUT" | awk '/^## Bundled/ { p = 1; next } /^## / { p = 0 } p && /^- /')"
+eq "a range holding reverts → rc 0" "0" "$RX_RC"
+eq "--card-manifest: a reverted change's card, and a card only a revert names, are not shipped" \
+   "4 8 9" "$(_rx --card-manifest 2>/dev/null | sort -n | paste -sd' ' -)"
+eq "--manifest: the same, for DL refs" "DL-6" "$(_rx --manifest 2>/dev/null | paste -sd' ' -)"
+eq "…the body's shipped-cards footer agrees" "true" "$(has '<!-- release-manifest:shipped-cards=' "$RX_OUT")"
+eq "…and carries none of 3, 7" "4,8,9" "$(printf '%s\n' "$RX_OUT" | sed -nE 's/^<!-- release-manifest:shipped-cards=([0-9,]*) -->$/\1/p' | tr ',' '\n' | sort -n | paste -sd, -)"
+eq "the body names the change reverted inside the range, with the refs it no longer ships" \
+   "true" "$(has_line "Reverted in this range, so not shipped by it: #21 (DL-5, card#7), reverted by $(_rxh "$RX_R")." "$RX_OUT")"
+eq "…and the change this range reverts that shipped before it" \
+   "true" "$(has_line "Reverted by this range, shipped before it: #11 (DL-2, card#3), reverted by $(_rxh "$RX_RZ")." "$RX_OUT")"
+eq "…a reapplied change is not named reverted, and neither is the revert that was itself reverted" \
+   "false|false" "$(has '#22' "$(printf '%s\n' "$RX_OUT" | grep '^Reverted' || true)")|$(has '#25' "$(printf '%s\n' "$RX_OUT" | grep '^Reverted' || true)")"
+eq "…both lines sit inside the generated \`## Bundled\` section, never under an H2 of their own" \
+   "## Bundled (generated — do not hand-edit)" "$(printf '%s\n' "$RX_OUT" | awk '/^## / { h = $0 } /^Reverted/ { print h; exit }')"
+eq "\`fix: a (#12) and b\` is no PR number: its row carries none" "true" "$(has_line "- (\`card#9\`) fix: a (#12) and b card#9" "$RX_ROWS")"
+eq "a direct-push \`Reapply \"… (#22)\" (#25)\` of revert-PR #25 carries no PR number" \
+   "true" "$(has_line "- (\`card#4\`) Reapply \"fix: y (card#4) (#22)\" (#25)" "$RX_ROWS")"
+
+# THE SHARED PRIMITIVE'S OWN ANSWER, which bin/promote-released-cards reads instead of parsing a
+# subject of its own: `<class> US <sha> US <shipped pr> US <related sha(s)> US <shipped text>`.
+RX_CC="$(cd "$RX" && "$BIN" --classify-commits --base v0.1.0 --head HEAD 2>&1)" && RX_CC_RC=0 || RX_CC_RC=$?
+_rxcc() { printf '%s\n' "$RX_CC" | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
+eq "--classify-commits → rc 0" "0" "$RX_CC_RC"
+eq "…O is reverted by R and ships nothing" "reverted||$RX_R|" "$(_rxcc "$RX_O")"
+eq "…R is a revert of O: no PR, no shipped text" "revert||$RX_O|" "$(_rxcc "$RX_R")"
+eq "…K ships #23 and its subject" "shipped|23||fix: keep DL-6 (card#8) (#23)" "$(_rxcc "$RX_K")"
+eq "…P ships no PR number" "shipped|||fix: a (#12) and b card#9" "$(_rxcc "$RX_P")"
+eq "…Y is back, and ships #22" "shipped|22||fix: y (card#4) (#22)" "$(_rxcc "$RX_Y")"
+eq "…Y1, revert-PR #25, was itself reverted and ships nothing" "revert-reverted||$RX_Y2|" "$(_rxcc "$RX_Y1")"
+eq "…Y2, the direct-push reapply, has no PR number of its own, and ships only the token-less text after its quote" "revert||$RX_Y1| (#25)" "$(_rxcc "$RX_Y2")"
+eq "…RZ reverts Z, which is outside the range" "revert||$RX_Z|" "$(_rxcc "$RX_RZ")"
+eq "…one row per non-merge commit in the range, and no other" \
+   "$(g -C "$RX" rev-list --no-merges v0.1.0..HEAD | sort)" "$(printf '%s\n' "$RX_CC" | awk 'BEGIN { FS = "\037" } { print $2 }' | sort)"
+RX_CC_BAD_RC=0; (cd "$RX" && "$BIN" --classify-commits --head HEAD) >/dev/null 2>&1 || RX_CC_BAD_RC=$?
+eq "--classify-commits without --base refuses rc 2 rather than fetching or guessing one" "2" "$RX_CC_BAD_RC"
+
+# A REVERTED MERGE COMMIT takes back every commit on its merged side: `git revert -m 1` of a PR merged
+# with a merge commit names the merge in its body line, and the merge is no row of commit_rows' own
+# (it reads non-merge commits), so the side commit is what must stop shipping.
+MX="$T/mx"; g init -q "$MX"
+echo 0 > "$MX/f"; g -C "$MX" add f; g -C "$MX" commit -qm "chore: init"; g -C "$MX" tag v0.1.0
+g -C "$MX" checkout -qb m; echo 1 > "$MX/m"; g -C "$MX" add m; g -C "$MX" commit -qm "feat: m DL-8 (card#10) (#30)"
+g -C "$MX" checkout -q main; echo 2 > "$MX/o"; g -C "$MX" add o; g -C "$MX" commit -qm "fix: other (#29)"
+g -C "$MX" merge -q --no-ff m -m "Merge pull request #31 from acme/m"; MX_M="$(g -C "$MX" rev-parse HEAD)"
+g -C "$MX" revert --no-edit -m 1 "$MX_M" >/dev/null; MX_R="$(g -C "$MX" rev-parse HEAD)"
+echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$MX/.release-pr.json"
+_mx() { (cd "$MX" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+eq "fixture: the merge's revert names the merge in its body line" "true" "$(has "This reverts commit $MX_M" "$(g -C "$MX" log -1 --format=%b "$MX_R")")"
+eq "a reverted merge: the card on its merged side is not shipped" "" "$(_mx --card-manifest 2>/dev/null)"
+eq "…nor its DL" "" "$(_mx --manifest 2>/dev/null)"
+eq "…and the body names the side commit as reverted in the range" \
+   "true" "$(has_line "Reverted in this range, so not shipped by it: #30 (DL-8, card#10), reverted by $(g -C "$MX" rev-parse --short "$MX_R")." "$(_mx 2>/dev/null)")"
+eq "…and the reverted merge, which is IN the range, is not named as shipped before it" \
+   "false" "$(has "Reverted by this range, shipped before it" "$(_mx 2>/dev/null)")"
+
+# A SQUASH WHOSE BRANCH REVERTED A DEV COMMIT is a revert by its body line — GitHub's squash body
+# (COMMIT_MESSAGES) keeps the branch revert's `This reverts commit W.`, and W is an ancestor — but
+# its own subject is the PR's title, and the refs there ship. W, taken back by it, ships nothing.
+QX="$T/qx"; g init -q "$QX"
+echo 0 > "$QX/f"; g -C "$QX" add f; g -C "$QX" commit -qm "chore: init"; g -C "$QX" tag v0.1.0
+echo 1 > "$QX/w"; g -C "$QX" add w; g -C "$QX" commit -qm "feat: temp workaround DL-3 (#30)"; QX_W="$(g -C "$QX" rev-parse HEAD)"
+g -C "$QX" rm -q w; echo 2 > "$QX/n"; g -C "$QX" add n
+g -C "$QX" commit -qm "feat: new thing DL-77 (closes card#50) (#40)" -m "* wip
+
+* Revert \"feat: temp workaround DL-3 (#30)\"
+
+This reverts commit $QX_W."; QX_S="$(g -C "$QX" rev-parse HEAD)"
+echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$QX/.release-pr.json"
+_qx() { (cd "$QX" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+eq "a squash carrying a branch revert's body line still ships its own DL" "DL-77" "$(_qx --manifest 2>/dev/null | paste -sd' ' -)"
+eq "…and its own card" "50" "$(_qx --card-manifest 2>/dev/null | paste -sd' ' -)"
+eq "…and is credited its own PR" "true" "$(has_line "- **#40** (\`DL-77\`) feat: new thing DL-77 (closes card#50)" "$(_qx 2>/dev/null)")"
+eq "…while the commit it reverted is named reverted in the range" \
+   "true" "$(has_line "Reverted in this range, so not shipped by it: #30 (DL-3), reverted by $(g -C "$QX" rev-parse --short "$QX_S")." "$(_qx 2>/dev/null)")"
+
+# A SHALLOW CLONE CANNOT READ WHAT A REVERT REVERTS, so that commit is not measured: it ships
+# nothing, and the body says so by name rather than leaving its refs out in silence. History:
+# init · T `feat: t DL-9 (card#6) (#60)` · B (tagged v0.1.0) · RT = T reverted by a direct push ·
+# Q `feat: q (card#5) (#62)`; a depth-3 clone holds Q, RT and B, not T.
+SX="$T/sx-src"; g init -q "$SX"
+echo 0 > "$SX/f"; g -C "$SX" add f; g -C "$SX" commit -qm "chore: init"
+echo 1 > "$SX/t"; g -C "$SX" add t; g -C "$SX" commit -qm "feat: t DL-9 (card#6) (#60)"; SX_T="$(g -C "$SX" rev-parse HEAD)"
+echo 2 > "$SX/b"; g -C "$SX" add b; g -C "$SX" commit -qm "chore: base"; g -C "$SX" tag v0.1.0
+g -C "$SX" revert --no-edit "$SX_T" >/dev/null; SX_RT="$(g -C "$SX" rev-parse HEAD)"
+echo 3 > "$SX/q"; g -C "$SX" add q; g -C "$SX" commit -qm "feat: q (card#5) (#62)"
+rm -rf "$T/sx"; g clone -q --depth 3 "file://$SX" "$T/sx" 2>/dev/null
+echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$T/sx/.release-pr.json"
+eq "fixture: the clone is shallow and cannot read T" \
+   "true|false" "$(g -C "$T/sx" rev-parse --is-shallow-repository)|$(g -C "$T/sx" cat-file -e "$SX_T^{commit}" 2>/dev/null && echo true || echo false)"
+_sx() { (cd "$T/sx" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+eq "shallow: the unmeasured revert's card is not shipped" "5" "$(_sx --card-manifest 2>/dev/null | paste -sd' ' -)"
+eq "shallow: nor its DL" "" "$(_sx --manifest 2>/dev/null)"
+SX_OUT="$(_sx 2>/dev/null)" || true
+eq "shallow: the body names the revert as not measured, by short sha" \
+   "true" "$(has "Not measured for a revert: $(g -C "$T/sx" rev-parse --short "$SX_RT")" "$SX_OUT")"
+eq "shallow: --classify-commits says unmeasured, never shipped" \
+   "unmeasured" "$(cd "$T/sx" && "$BIN" --classify-commits --base v0.1.0 --head HEAD | awk -v s="$SX_RT" 'BEGIN { FS = "\037" } $2 == s { print $1 }')"
+
 _summary "release-pr-body-selftest"

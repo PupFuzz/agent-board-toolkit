@@ -34,10 +34,11 @@ A vendored copy does **not** update with the host pull — re-vendor it delibera
 ```bash
 cd <repo> && git checkout -b chore/bump-agent-board-toolkit
 cp ~/agent-board-toolkit/bin/promote-released-cards bin/promote-released-cards   # re-copy each vendored tool
+cp ~/agent-board-toolkit/bin/release-pr-body bin/release-pr-body                 # + ALWAYS beside promote-released-cards: a range-derived promote asks it which commits ship (card#11602)
 cp ~/agent-board-toolkit/bin/_kb-board-lib.sh bin/                              # + the shared lib IF you vendored a lib-sourcing bin — WHICH bins those are is derived, not listed: see the box below
 cat ~/agent-board-toolkit/VERSION > .agent-board-toolkit-version                       # record the new version
 ~/agent-board-toolkit/bin/agent-board-toolkit-drift-check ~/agent-board-toolkit .            # -> "drift-check: OK"
-git add bin/promote-released-cards .agent-board-toolkit-version
+git add bin/promote-released-cards bin/release-pr-body .agent-board-toolkit-version
 git commit -m "chore: bump vendored agent-board-toolkit to $(cat ~/agent-board-toolkit/VERSION)"
 # open a PR per the repo's normal flow; CI re-runs the drift-check as a guard.
 ```

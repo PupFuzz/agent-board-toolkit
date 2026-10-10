@@ -406,6 +406,11 @@ For CI that can't `uses:` a GitHub action (or a project that prefers one literal
 ```bash
 mkdir -p <repo>/bin
 cp ~/agent-board-toolkit/bin/promote-released-cards <repo>/bin/promote-released-cards
+cp ~/agent-board-toolkit/bin/release-pr-body <repo>/bin/release-pr-body
+# release-pr-body is REQUIRED beside the mover whenever it derives the shipped refs from the git
+# range (no --dls/--cards): it asks `release-pr-body --classify-commits` which commits ship, and
+# refuses at rc 2 without it (card#11602). Re-vendor the two TOGETHER — an older release-pr-body
+# refuses the flag, and the mover then refuses too.
 # …and bin/card-completeness beside it IF you run the mover with --require-complete (§4's
 # completeness box). Without the flag the mover never looks for it; with the flag and no oracle
 # beside it, every matched card is refused as UNMEASURED rather than promoted.
