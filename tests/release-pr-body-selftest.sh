@@ -2128,4 +2128,133 @@ eq "shallow: the body names the revert as not measured, by short sha" \
 eq "shallow: --classify-commits says unmeasured, never shipped" \
    "unmeasured" "$(cd "$T/sx" && "$BIN" --classify-commits --base v0.1.0 --head HEAD | awk -v s="$SX_RT" 'BEGIN { FS = "\037" } $2 == s { print $1 }')"
 
+echo "== a squash body that reverts a dev commit AND a branch commit: the dev commit is in doubt, the squash ships (card#11652) =="
+# THE DEFECT: a PR branch reverts dev commit W, then reapplies it. GitHub's default squash body
+# (COMMIT_MESSAGES) lists each branch commit as `* <subject>` and its message, so it carries BOTH
+# `This reverts commit W.` (an ancestor) and the reapply's `This reverts commit <B>.`, B being the
+# branch-only revert. The body names no branch commit's own sha, so it cannot say the second line
+# cancels the first; the generator read the squash as a revert of W, dropped W's card and DL, and
+# named W `Reverted in this range` although W is live. The answer now: W is not measured — withheld,
+# never called reverted — in a clone that can read the branch commits and in one that cannot alike;
+# the squash is certainly live and a revert, so it ships its own PR and title.
+# The branch commits are made by real `git revert`, and the squash body is built from them.
+NX="$T/nx"; g init -q "$NX"
+echo 0 > "$NX/f"; g -C "$NX" add f; g -C "$NX" commit -qm "chore: init"; g -C "$NX" tag v0.1.0
+echo 1 > "$NX/w"; g -C "$NX" add w; g -C "$NX" commit -qm "feat: w DL-4 (card#11) (#30)"; NX_W="$(g -C "$NX" rev-parse HEAD)"
+echo 1 > "$NX/k"; g -C "$NX" add k; g -C "$NX" commit -qm "fix: keep DL-6 (card#8) (#31)"
+g -C "$NX" checkout -qb br
+g -C "$NX" revert --no-edit "$NX_W" >/dev/null; NX_B="$(g -C "$NX" rev-parse HEAD)"
+g -C "$NX" revert --no-edit "$NX_B" >/dev/null
+echo 2 > "$NX/n"; g -C "$NX" add n; g -C "$NX" commit -qm "feat: z wip"
+NX_MSG="$(g -C "$NX" log --reverse --format='* %s%n%n%b' main..br)"
+g -C "$NX" checkout -q main; g -C "$NX" merge -q --squash br >/dev/null
+g -C "$NX" commit -qm "feat: z DL-77 (closes card#12) (#40)" -m "$NX_MSG"; NX_S="$(g -C "$NX" rev-parse HEAD)"
+echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$NX/.release-pr.json"
+_nx() { (cd "$NX" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+_nxcc() { (cd "$NX" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
+eq "fixture: the squash body carries W's revert line and the reapply's line naming the branch revert" \
+   "true|true" "$(has "This reverts commit $NX_W" "$(g -C "$NX" log -1 --format=%b "$NX_S")")|$(has "This reverts commit $NX_B" "$(g -C "$NX" log -1 --format=%b "$NX_S")")"
+eq "branch kept: W is not measured, possibly taken back by the squash — never \`reverted\`" "unmeasured||$NX_S|" "$(_nxcc "$NX_W")"
+g -C "$NX" branch -qD br; g -C "$NX" reflog expire --expire=now --all; g -C "$NX" gc -q --prune=now
+eq "fixture: with the branch deleted and pruned, the branch revert is unreadable" \
+   "false" "$(g -C "$NX" cat-file -e "$NX_B^{commit}" 2>/dev/null && echo true || echo false)"
+eq "branch deleted: W is not measured, possibly taken back by the squash" "unmeasured||$NX_S|" "$(_nxcc "$NX_W")"
+eq "…and the squash is a revert of W that ships its own PR and title" \
+   "revert|40|$NX_W|feat: z DL-77 (closes card#12) (#40)" "$(_nxcc "$NX_S")"
+eq "…the cards: K's and the squash's ship, W's (live, but unproven) is withheld" "8 12" "$(_nx --card-manifest 2>/dev/null | sort -n | paste -sd' ' -)"
+eq "…and the DLs" "DL-6 DL-77" "$(_nx --manifest 2>/dev/null | sort | paste -sd' ' -)"
+NX_OUT="$(_nx 2>/dev/null)" || true
+eq "…the body never calls W reverted" "false" "$(has "Reverted in this range" "$NX_OUT")"
+eq "…it names W, the squash that may take it back, and why, as not measured" \
+   "true" "$(has_line "Not measured for a revert: #30, which $(g -C "$NX" rev-parse --short "$NX_S") may take back (its body also reverts a commit only its PR branch had, which may be a reapply of this one) — nothing these name is in a manifest; check each by hand." "$NX_OUT")"
+
+# SHAPE (b): the branch really reverts W, and ALSO reverts a commit of its own. The squash body has
+# the same two kinds of line, so W is in doubt here too (the body cannot tell this from a reapply) —
+# W is withheld, never shipped — while the squash ships its own PR and title.
+QB="$T/qb"; g init -q "$QB"
+echo 0 > "$QB/f"; g -C "$QB" add f; g -C "$QB" commit -qm "chore: init"; g -C "$QB" tag v0.1.0
+echo 1 > "$QB/w"; g -C "$QB" add w; g -C "$QB" commit -qm "feat: w DL-4 (card#11) (#30)"; QB_W="$(g -C "$QB" rev-parse HEAD)"
+g -C "$QB" checkout -qb br
+echo 2 > "$QB/b"; g -C "$QB" add b; g -C "$QB" commit -qm "feat: b wip"; g -C "$QB" revert --no-edit HEAD >/dev/null
+g -C "$QB" revert --no-edit "$QB_W" >/dev/null
+echo 3 > "$QB/n"; g -C "$QB" add n; g -C "$QB" commit -qm "feat: q"
+QB_MSG="$(g -C "$QB" log --reverse --format='* %s%n%n%b' main..br)"
+g -C "$QB" checkout -q main; g -C "$QB" merge -q --squash br >/dev/null
+g -C "$QB" commit -qm "feat: q DL-78 (closes card#13) (#41)" -m "$QB_MSG"; QB_S="$(g -C "$QB" rev-parse HEAD)"
+g -C "$QB" branch -qD br
+echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$QB/.release-pr.json"
+_qbcc() { (cd "$QB" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
+eq "fixture: the squash body reverts W and a branch-only commit, and W is gone from the tree" \
+   "true|2|false" "$(has "This reverts commit $QB_W" "$(g -C "$QB" log -1 --format=%b)")|$(g -C "$QB" log -1 --format=%b | grep -c '^This reverts commit ')|$(test -f "$QB/w" && echo true || echo false)"
+eq "shape (b): the squash ships its own PR and title, and W is withheld as not measured" \
+   "revert|41|$QB_W|feat: q DL-78 (closes card#13) (#41)+unmeasured||$QB_S|" "$(_qbcc "$QB_S")+$(_qbcc "$QB_W")"
+eq "…so the squash's card ships and W's does not" "13" "$(cd "$QB" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest 2>/dev/null | paste -sd' ' -)"
+
+echo "== \`git revert -m 2\` of a merge takes back the MAINLINE side, which the kept parent names (card#11652) =="
+# THE DEFECT: the merge arm always took back `^1..merge`, the merged side. `git revert -m 2 M` keeps
+# parent 2 and takes back what M brought in relative to it — the mainline commit — and git says so
+# in the body: `This reverts commit M, reversing` / `changes made to <parent 2>.`. The side shipped
+# as reverted and the mainline change, actually undone, shipped.
+M2="$T/m2"; g init -q "$M2"
+echo 0 > "$M2/f"; g -C "$M2" add f; g -C "$M2" commit -qm "chore: init"; g -C "$M2" tag v0.1.0
+g -C "$M2" checkout -qb s; echo 1 > "$M2/s"; g -C "$M2" add s; g -C "$M2" commit -qm "feat: s DL-8 (card#20) (#31)"; M2_S="$(g -C "$M2" rev-parse HEAD)"
+g -C "$M2" checkout -q main; echo 2 > "$M2/m"; g -C "$M2" add m; g -C "$M2" commit -qm "fix: m DL-9 (card#21) (#29)"; M2_L="$(g -C "$M2" rev-parse HEAD)"
+g -C "$M2" merge -q --no-ff s -m "Merge pull request #32 from acme/s"; M2_M="$(g -C "$M2" rev-parse HEAD)"
+g -C "$M2" revert --no-edit -m 2 "$M2_M" >/dev/null; M2_R="$(g -C "$M2" rev-parse HEAD)"
+echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$M2/.release-pr.json"
+_m2() { (cd "$M2" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+_m2cc() { (cd "$M2" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
+eq "fixture: the merge kept parent 2, and git's body line names it" \
+   "true|true" "$(has "changes made to $(g -C "$M2" rev-parse "$M2_M^2")" "$(g -C "$M2" log -1 --format=%b "$M2_R")")|$(test -f "$M2/s" && test ! -f "$M2/m" && echo true || echo false)"
+eq "-m 2: the mainline commit is reverted by it" "reverted||$M2_R|" "$(_m2cc "$M2_L")"
+eq "…and the side commit ships" "shipped|31||feat: s DL-8 (card#20) (#31)" "$(_m2cc "$M2_S")"
+eq "…so the side's card ships and the mainline's does not" "20" "$(_m2 --card-manifest 2>/dev/null | paste -sd' ' -)"
+eq "…and the side's DL" "DL-8" "$(_m2 --manifest 2>/dev/null | paste -sd' ' -)"
+eq "…and the body names the mainline change as reverted in the range" \
+   "true" "$(has_line "Reverted in this range, so not shipped by it: #29 (DL-9, card#21), reverted by $(g -C "$M2" rev-parse --short "$M2_R")." "$(_m2 2>/dev/null)")"
+# THE SAME REVERT WITH ITS `changes made to` LINE EDITED AWAY: which side it took back is unknown, so
+# every commit the merge brought in is not measured; the revert itself is still a live revert.
+g -C "$M2" commit -q --amend -m "$(g -C "$M2" log -1 --format=%B | sed '/^changes made to /d')"; M2_R2="$(g -C "$M2" rev-parse HEAD)"
+eq "fixture: the edited revert still names the merge, and no kept parent" \
+   "true|false" "$(has "This reverts commit $M2_M" "$(g -C "$M2" log -1 --format=%b)")|$(has "changes made to" "$(g -C "$M2" log -1 --format=%b)")"
+eq "no kept parent: the revert is still a revert of the merge" "revert||$M2_M|" "$(_m2cc "$M2_R2")"
+eq "…and neither side ships" "unmeasured||$M2_R2||unmeasured||$M2_R2|" "$(_m2cc "$M2_L")|$(_m2cc "$M2_S")"
+eq "…no card ships" "" "$(_m2 --card-manifest 2>/dev/null)"
+eq "…and the body names both, and why" \
+   "true|true" "$(has "#29, which $(g -C "$M2" rev-parse --short "$M2_R2") may take back (it reverts a merge this commit came in by, and names no parent of that merge as the one kept)" "$(_m2 2>/dev/null)")|$(has "#31, which $(g -C "$M2" rev-parse --short "$M2_R2") may take back" "$(_m2 2>/dev/null)")"
+
+# A `-m 2` REVERT OF A MERGE FROM BEFORE THE RANGE: what it undid is the mainline #29, and the body's
+# "shipped before it" line must name #29 — not the merge's own #32, whose side was KEPT.
+MB="$T/mb"; g init -q "$MB"
+echo 0 > "$MB/f"; g -C "$MB" add f; g -C "$MB" commit -qm "chore: init"
+g -C "$MB" checkout -qb s; echo 1 > "$MB/s"; g -C "$MB" add s; g -C "$MB" commit -qm "feat: s DL-8 (card#20) (#31)"
+g -C "$MB" checkout -q main; echo 2 > "$MB/m"; g -C "$MB" add m; g -C "$MB" commit -qm "fix: m DL-9 (card#21) (#29)"
+g -C "$MB" merge -q --no-ff s -m "Merge pull request #32 from acme/s"; g -C "$MB" tag v0.1.0
+g -C "$MB" revert --no-edit -m 2 HEAD >/dev/null; MB_R="$(g -C "$MB" rev-parse --short HEAD)"
+echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$MB/.release-pr.json"
+MB_OUT="$(cd "$MB" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
+eq "-m 2 from before the range: the body names the mainline #29 as reverted, not the kept side's #32" \
+   "true|false" "$(has_line "Reverted by this range, shipped before it: #29 (DL-9, card#21), reverted by $MB_R." "$MB_OUT")|$(has "#32" "$(printf '%s\n' "$MB_OUT" | grep '^Reverted' || true)")"
+
+echo "== a revert not measured in a shallow clone leaves the commit it CAN read unshipped, not shipped (card#11652) =="
+# The sibling of the squash case: a squash whose branch reverted both T (cut off by the shallow
+# clone) and W (in the range). T's line cannot be read, so the squash is not measured; W, which the
+# squash readably reverts, used to stay `shipped` beside it — its card promoted with its work gone.
+SW="$T/sw-src"; g init -q "$SW"
+echo 0 > "$SW/f"; g -C "$SW" add f; g -C "$SW" commit -qm "chore: init"
+echo 1 > "$SW/t"; g -C "$SW" add t; g -C "$SW" commit -qm "feat: t DL-9 (card#6) (#60)"; SW_T="$(g -C "$SW" rev-parse HEAD)"
+echo 2 > "$SW/b"; g -C "$SW" add b; g -C "$SW" commit -qm "chore: base"; g -C "$SW" tag v0.1.0
+echo 3 > "$SW/w"; g -C "$SW" add w; g -C "$SW" commit -qm "feat: w (card#7) (#61)"; SW_W="$(g -C "$SW" rev-parse HEAD)"
+g -C "$SW" checkout -qb br
+g -C "$SW" revert --no-edit "$SW_T" >/dev/null; g -C "$SW" revert --no-edit "$SW_W" >/dev/null
+SW_MSG="$(g -C "$SW" log --reverse --format='* %s%n%n%b' main..br)"
+g -C "$SW" checkout -q main; g -C "$SW" merge -q --squash br >/dev/null
+g -C "$SW" commit -qm "chore: drop t and w (#62)" -m "$SW_MSG"; SW_S="$(g -C "$SW" rev-parse HEAD)"
+rm -rf "$T/sw"; g clone -q --depth 3 "file://$SW" "$T/sw" 2>/dev/null
+eq "fixture: the clone is shallow, cannot read T, and can read W" \
+   "true|false|true" "$(g -C "$T/sw" rev-parse --is-shallow-repository)|$(g -C "$T/sw" cat-file -e "$SW_T^{commit}" 2>/dev/null && echo true || echo false)|$(g -C "$T/sw" cat-file -e "$SW_W^{commit}" 2>/dev/null && echo true || echo false)"
+_swcc() { (cd "$T/sw" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
+eq "shallow: W, which the unmeasured squash readably reverts, is not measured either — never shipped" \
+   "unmeasured|||+unmeasured||$SW_S|" "$(_swcc "$SW_S")+$(_swcc "$SW_W")"
+
 _summary "release-pr-body-selftest"
