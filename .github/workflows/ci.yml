@@ -199,6 +199,7 @@ jobs:
           - promote-program-withhold-selftest
           - promote-ref-canon-selftest
           - promote-refusal-detail-selftest
+          - promote-revert-selftest
           - promote-source-qualify-selftest
           - promote-stage-guard-selftest
           - python-syntax-gate-selftest

@@ -1050,6 +1050,10 @@ echo "== 6. MUTATION BATTERY — each half of the guard, removed, reds the arms 
 mutant() {
   MUT="$TMP/mutant-$1"
   sed "$2" "$PRC" > "$MUT"; chmod +x "$MUT"
+  # A range-derived run asks the sibling `release-pr-body` beside the bin which commits ship, and
+  # refuses without it (card#11602) — so the mutant gets the real one beside it, or every arm below
+  # would observe that refusal instead of the property the mutant removed.
+  cp "$(dirname "$PRC")/release-pr-body" "$TMP/release-pr-body"
   # A mutant that failed to apply, or that no longer parses, would make every arm below pass
   # for the wrong reason — so each is compared to the original and syntax-checked.
   eq "mutant $1: the edit actually changed the bin" "false" "$(cmp -s "$MUT" "$PRC" && echo true || echo false)"
