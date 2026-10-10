@@ -183,32 +183,76 @@ own_subject() {
 pr_of_subject() { pr_token "$(own_subject "$1")"; }
 
 # revert_scan <sha> <body>: what a commit REVERTS, read from git's `This reverts commit <sha>` body
-# lines. Sets RV_TARGETS (the full shas it reverts, one per line) and RV_UNMEASURED (1 or empty).
+# lines. Sets RV_TARGETS (the full shas it reverts, one per line), RV_TAKEN (every commit it takes
+# back, one per line: RV_TARGETS plus, for a reverted merge, the commits that merge brought in),
+# RV_UNMEASURED (1 or empty) and RV_WHY (why it is not measured: shallow, squash or merge).
 # A body-line sha counts as WHAT THIS COMMIT REVERTS only if it is an ANCESTOR of the commit. A
 # squash of a multi-commit PR carries, in GitHub's default body, the `This reverts commit` line of
 # every revert on the PR's branch, naming a branch commit that is not an ancestor of the squash and
 # is unreadable once the branch is deleted, in a full clone too. Such a line says nothing about this
-# commit and is ignored, whether its sha is readable or not. A sha that cannot be read in a SHALLOW
+# commit by itself, whether its sha is readable or not. A sha that cannot be read in a SHALLOW
 # clone may be an ancestor the clone cut off, so it cannot be ruled out: the commit is NOT MEASURED
-# (RV_UNMEASURED) rather than guessed at. In a full clone an unreadable sha cannot be an ancestor,
-# so it is ignored. A commit is a REVERT exactly when RV_TARGETS is non-empty: by its body line,
-# never by its subject.
+# (RV_UNMEASURED, why=shallow) rather than guessed at. In a full clone an unreadable sha cannot be
+# an ancestor. A commit is a REVERT exactly when RV_TARGETS is non-empty: by its body line, never by
+# its subject.
+# NOT MEASURED, why=squash (card#11652): a body holding an ancestor line AND a non-ancestor line.
+# The non-ancestor line may be a reapply on the PR branch that cancels the ancestor line (branch:
+# revert W, then reapply it — the squash body carries both lines, and W is live). It cancels it
+# exactly when the commit it names is the branch commit that wrote the ancestor line, and GitHub's
+# squash body lists each branch commit as `* <subject>` and its message, with NO sha of its own, so
+# the body alone cannot say which commit wrote which line. Reading the branch commit would make the
+# answer depend on whether this clone happened to fetch a deleted branch, so it is not read: the
+# commit is not measured, in every clone alike, and so is every commit it may take back (RV_TAKEN).
+# Where the lines sit in the body is not read either: an edited body can reorder them.
+# A REVERTED MERGE (card#11652): git writes `This reverts commit <merge>, reversing` and, on the next
+# line, `changes made to <P>.`, P being the parent `-m` KEPT. What the revert took back is every
+# commit the merge brought in relative to P — `git rev-list P..<merge>` — so `-m 1` takes back the
+# merged side and `-m 2` the mainline commits the side lacked. A merge line with no such next line,
+# or one naming no parent of the merge, is NOT MEASURED (why=merge), and every commit the merge
+# brought in relative to ANY parent is in RV_TAKEN: which of them it took back is unknown.
 IS_SHALLOW=""
 revert_scan() {
-  local sha="$1" refs r rs
-  RV_TARGETS=""; RV_UNMEASURED=""
-  refs="$(printf '%s\n' "$2" | sed -nE 's/^This reverts commit ([0-9a-f]{7,40})([^0-9a-f].*)?$/\1/p')"
-  [ -n "$refs" ] || return 0
+  local sha="$1" lines r k rs ks p other="" anc=""
+  RV_TARGETS=""; RV_TAKEN=""; RV_UNMEASURED=""; RV_WHY=""
+  # One line per `This reverts commit` line: `<sha> <kept parent or ->`. A sha is the line's whole
+  # hex run, 7 to 40 long, ending the line or followed by a non-hex character.
+  lines="$(printf '%s\n' "$2" | awk '
+    function hexrun(s,   h) { h = s; sub(/[^0-9a-f].*$/, "", h); return (length(h) >= 7 && length(h) <= 40) ? h : "" }
+    t != "" { k = ""; if ($0 ~ /^changes made to /) k = hexrun(substr($0, 17)); print t " " (k == "" ? "-" : k); t = "" }
+    /^This reverts commit / { t = hexrun(substr($0, 21)) }
+    END { if (t != "") print t " -" }')"
+  [ -n "$lines" ] || return 0
   [ -n "$IS_SHALLOW" ] || IS_SHALLOW="$(git rev-parse --is-shallow-repository 2>/dev/null || echo unknown)"
-  while IFS= read -r r; do
+  while read -r r k; do
     [ -n "$r" ] || continue
     if rs="$(git rev-parse -q --verify "$r^{commit}" 2>/dev/null)"; then
-      git merge-base --is-ancestor "$rs" "$sha" 2>/dev/null || continue
-      RV_TARGETS="$RV_TARGETS$rs"$'\n'
+      if git merge-base --is-ancestor "$rs" "$sha" 2>/dev/null; then
+        RV_TARGETS="$RV_TARGETS$rs"$'\n'; anc="$anc$rs $k"$'\n'
+      else
+        other=1
+      fi
     elif [ "$IS_SHALLOW" != false ]; then
-      RV_UNMEASURED=1
+      RV_UNMEASURED=1; RV_WHY="${RV_WHY:-shallow}"
+    else
+      other=1
     fi
-  done <<< "$refs"
+  done <<< "$lines"
+  [ -n "$anc" ] || return 0
+  if [ -n "$other" ]; then RV_UNMEASURED=1; RV_WHY="${RV_WHY:-squash}"; fi
+  while read -r rs k; do
+    [ -n "$rs" ] || continue
+    RV_TAKEN="$RV_TAKEN$rs"$'\n'
+    git rev-parse -q --verify "$rs^2" >/dev/null || continue
+    ks=""
+    if [ "$k" != - ]; then ks="$(git rev-parse -q --verify "$k^{commit}" 2>/dev/null)" || ks=""; fi
+    case $'\n'"$(git rev-parse "$rs^@")"$'\n' in *$'\n'"${ks:-none}"$'\n'*) ;; *) ks="" ;; esac
+    if [ -n "$ks" ]; then
+      RV_TAKEN="$RV_TAKEN$(git rev-list --no-merges "$ks..$rs")"$'\n'
+    else
+      RV_UNMEASURED=1; RV_WHY="${RV_WHY:-merge}"
+      for p in $(git rev-parse "$rs^@"); do RV_TAKEN="$RV_TAKEN$(git rev-list --no-merges "$p..$rs")"$'\n'; done
+    fi
+  done <<< "$anc"
 }
 
 # _pr_of_scanned <subject>: pr_of_commit's answer for the commit revert_scan last scanned.
@@ -257,9 +301,13 @@ pr_of_commit() {
 #                    nothing. <related> is that revert.
 #   revert-reverted  a revert another live revert in the range takes back (a reapply): it ships
 #                    nothing, and what it reverted is live again. <related> is that revert.
-#   unmeasured       a shallow clone cannot read a commit its body line names, so whether and what
-#                    it reverts is unknown (revert_scan): it ships NOTHING and is named by every
-#                    reader, never counted as shipped and never left out in silence.
+#   unmeasured       whether a revert takes this commit back, or what it takes back, is unknown: it
+#                    ships NOTHING and is named by every reader, never counted as shipped and never
+#                    left out in silence. <related> is EMPTY for a commit revert_scan could not
+#                    measure (a shallow clone; a squash body reverting both an ancestor and a branch
+#                    commit; a reverted merge with no kept parent — revert_scan says why). It is the
+#                    not-measured commit, for a commit that one may take back (RV_TAKEN) — so a
+#                    possibly-reverted change is not promoted either, and is not called reverted.
 # LIVENESS IS DECIDED NEWEST FIRST, over `--topo-order`, where every revert precedes what it
 # reverts: a commit is taken back only by a revert that is itself live, so revert → reapply →
 # revert … chains resolve to the last word. A revert whose original lies OUTSIDE the range takes
@@ -267,9 +315,14 @@ pr_of_commit() {
 # ⚠ WHAT IT CANNOT SEE: a revert with no `This reverts commit` line (an edited message) is an
 # ordinary commit here, so its original still ships; its quoted original contributes nothing, by
 # own_subject. A reapply of a change whose revert shipped in an EARLIER range re-ships that change,
-# but its card and DL sit inside the quoted original, so they are not shipped by it.
+# but its card and DL sit inside the quoted original, so they are not shipped by it. A squash whose
+# PR branch reverted a dev commit and then reapplied it (or reverted it and also reverted one of its
+# own branch commits) cannot be told apart from the body alone, which names no branch commit's own
+# sha (revert_scan): the squash and the dev commit are both unmeasured, and the dev commit's card is
+# promoted by hand once a person has read the PR. A reverted merge whose `changes made to` line was
+# edited away is unmeasured, with every commit the merge brought in (revert_scan).
 commit_rows() {
-  local range="$1" sha subj body class rel t dead="" kind="" out
+  local range="$1" sha subj body class rel t dead="" doubt="" kind="" out
   while IFS=$'\x1f' read -r -d '' sha subj body; do
     [ -n "$sha" ] || continue
     revert_scan "$sha" "$body"
@@ -280,16 +333,21 @@ commit_rows() {
       kind="$kind$sha $class $rel"$'\n'
       continue
     fi
-    if [ -n "$RV_UNMEASURED" ]; then
-      kind="$kind$sha unmeasured -"$'\n'
+    rel=""
+    case "$doubt" in *$'\n'"$sha "*) rel="${doubt#*$'\n'"$sha "}"; rel="${rel%%$'\n'*}" ;; esac
+    if [ -n "$rel$RV_UNMEASURED" ]; then
+      # Not measured, or possibly taken back by a commit that was not: whatever it takes back is
+      # possibly taken back too, so it is in doubt, never shipped and never called reverted.
+      kind="$kind$sha unmeasured ${rel:--}"$'\n'
+      while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        case "$doubt" in *$'\n'"$t "*) ;; *) doubt="$doubt"$'\n'"$t $sha" ;; esac
+      done <<< "$RV_TAKEN"
     elif [ -n "$RV_TARGETS" ]; then
       while IFS= read -r t; do
         [ -n "$t" ] || continue
-        # A reverted MERGE (`git revert -m 1 <merge>`) takes back every commit on its merged side.
-        for t in "$t" $(if git rev-parse -q --verify "$t^2" >/dev/null; then git rev-list --no-merges "$t^1..$t"; fi); do
-          case "$dead" in *$'\n'"$t "*) ;; *) dead="$dead"$'\n'"$t $sha" ;; esac
-        done
-      done <<< "$RV_TARGETS"
+        case "$dead" in *$'\n'"$t "*) ;; *) dead="$dead"$'\n'"$t $sha" ;; esac
+      done <<< "$RV_TAKEN"
       kind="$kind$sha revert $(printf '%s' "$RV_TARGETS" | paste -sd' ' -)"$'\n'
     else
       kind="$kind$sha shipped -"$'\n'
@@ -997,9 +1055,9 @@ review_sentence() {
 #   Reverted by this range, shipped before it: <change> (<refs>), reverted by <sha>; …
 #       a change a live revert in this range takes back whose commit is OUTSIDE the range — it
 #       shipped in an earlier release, and whatever card it moved stays where it is
-#   Not measured for a revert: <sha>, … — …
-#       a commit commit_rows could not measure (a shallow clone); it ships nothing, and is named
-#       so that a missing ref reads as unmeasured rather than as clean
+#   Not measured for a revert: <sha> (<why>); <change>, which <sha> may take back; …
+#       a commit commit_rows could not measure, and each commit such a commit may take back; it
+#       ships nothing, and is named so that a missing ref reads as unmeasured rather than as clean
 # <change> is the change's PR number, else its short sha. <refs> are the DL and card tokens its
 # subject names that NO bundled change ships — a ref another bundled change still ships is in the
 # manifest and is not called reverted. A revert that is itself taken back (a reapply) is not named:
@@ -1024,6 +1082,23 @@ reverted_item() { # <sha> <reverting-sha>
   fi
   printf '%s%s, reverted by %s' "$label" "${refs:+ ($refs)}" "$(git rev-parse --short "$2")"
 }
+unmeasured_item() { # <sha> <not-measured commit that may take it back, or empty>
+  local subj label
+  if [ -n "$2" ]; then
+    subj="$(git log -1 --format=%s "$1")"; label="$(pr_of_subject "$subj")"
+    if [ -n "$label" ]; then label="#$label"; else label="$(git rev-parse --short "$1")"; fi
+    printf '%s, which %s may take back' "$label" "$(git rev-parse --short "$2")"
+    return 0
+  fi
+  revert_scan "$1" "$(git log -1 --format=%b "$1")"
+  printf '%s (' "$(git rev-parse --short "$1")"
+  case "$RV_WHY" in
+    shallow) printf 'this is a shallow clone and a commit its `This reverts commit` line names cannot be read; deepen the clone' ;;
+    squash)  printf 'its body reverts an earlier commit and also a commit only its PR branch had, which may be a reapply of it' ;;
+    merge)   printf 'it reverts a merge and its body names no parent of that merge as the one kept' ;;
+  esac
+  printf ')'
+}
 reverted_lines() {
   local c sha _p rel _t x in="" before="" unm="" inrange
   # Every commit in the range, MERGES INCLUDED: commit_rows lists non-merge commits only, and a
@@ -1039,13 +1114,13 @@ reverted_lines() {
           [ -z "$RV_TARGETS" ] && [ -z "$RV_UNMEASURED" ] || continue
           before="${before:+$before; }$(reverted_item "$x" "$sha")"
         done ;;
-      unmeasured) unm="${unm:+$unm, }$(git rev-parse --short "$sha")" ;;
+      unmeasured) unm="${unm:+$unm; }$(unmeasured_item "$sha" "$rel")" ;;
     esac
   done <<< "$COMMIT_ROWS"
   if [ -n "$in" ]; then printf 'Reverted in this range, so not shipped by it: %s.\n' "$in"; fi
   if [ -n "$before" ]; then printf 'Reverted by this range, shipped before it: %s.\n' "$before"; fi
   if [ -n "$unm" ]; then
-    printf 'Not measured for a revert: %s — this is a shallow clone, and the commit a `This reverts commit` line names cannot be read here, so nothing such a commit names is in a manifest; deepen the clone to measure it.\n' "$unm"
+    printf 'Not measured for a revert: %s — nothing these name is in a manifest; check each by hand.\n' "$unm"
   fi
   return 0
 }

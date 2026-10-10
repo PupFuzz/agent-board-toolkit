@@ -176,4 +176,52 @@ eq "shallow: stderr names the revert NOT MEASURED, by short sha" \
    "true" "$(has "⚠ $(g -C "$TMP/shal" rev-parse --short "$SRT"): NOT MEASURED" "$err")"
 eq "shallow: the summary line counts the unmeasured commit" "true" "$(has "1 commits-unmeasured, " "$out")"
 
+echo "== a squash whose branch reverted a dev commit and reapplied it: NOT MEASURED, not called reverted (card#11652) =="
+# The squash body carries `This reverts commit W.` and the reapply's line naming the branch-only
+# revert, and names no branch commit's own sha, so whether W is live cannot be read from it. W was
+# named `⊘ … reverted`; it is now NOT MEASURED, and so is the squash — neither is promoted.
+N="$TMP/reapply"; g init -q "$N"
+echo 0 > "$N/f"; g -C "$N" add f; g -C "$N" commit -qm "chore: init"; g -C "$N" tag v0.1.0
+echo 1 > "$N/w"; g -C "$N" add w; g -C "$N" commit -qm "feat: w DL-4 (#30)"; NW="$(g -C "$N" rev-parse HEAD)"
+echo 1 > "$N/k"; g -C "$N" add k; g -C "$N" commit -qm "fix: keep DL-6 (#31)"
+g -C "$N" checkout -qb br
+g -C "$N" revert --no-edit "$NW" >/dev/null; g -C "$N" revert --no-edit HEAD >/dev/null
+echo 2 > "$N/n"; g -C "$N" add n; g -C "$N" commit -qm "feat: z wip"
+NMSG="$(g -C "$N" log --reverse --format='* %s%n%n%b' main..br)"
+g -C "$N" checkout -q main; g -C "$N" merge -q --squash br >/dev/null
+g -C "$N" commit -qm "feat: z DL-77 (#40)" -m "$NMSG"; NS="$(g -C "$N" rev-parse HEAD)"
+g -C "$N" branch -qD br
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"pr_number":"30","pr_url":"https://github.com/acme/widget/pull/30"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"pr_number":"31","pr_url":"https://github.com/acme/widget/pull/31"}},
+  {"id":3,"workflow_stage_id":51,"payload":{"pr_number":"40","pr_url":"https://github.com/acme/widget/pull/40"}}
+],"meta":{"last_page":1,"total":3}}
+JSON
+run_in "$N" "$PRC"
+eq "control: the run exits 0 and K's card (#2) moves"           "0|true" "$rc|$(moved 2)"
+eq "W's card (#1) and the squash's (#3) are NOT promoted"         "false|false" "$(moved 1)|$(moved 3)"
+eq "stderr names W NOT MEASURED, possibly reverted by the squash — never \`reverted\`" \
+   "true|false" "$(has "⚠ $(g -C "$N" rev-parse --short "$NW"): NOT MEASURED — $(g -C "$N" rev-parse --short "$NS"), which was not measured, may revert it" "$err")|$(has "⊘ $(g -C "$N" rev-parse --short "$NW")" "$err")"
+eq "the summary line counts both" "true" "$(has "2 commits-unmeasured, " "$out")"
+
+echo "== \`git revert -m 2\` of a merge: the mainline change is not promoted, the side's is (card#11652) =="
+M="$TMP/m2"; g init -q "$M"
+echo 0 > "$M/f"; g -C "$M" add f; g -C "$M" commit -qm "chore: init"; g -C "$M" tag v0.1.0
+g -C "$M" checkout -qb s; echo 1 > "$M/s"; g -C "$M" add s; g -C "$M" commit -qm "feat: s DL-8 (#31)"
+g -C "$M" checkout -q main; echo 2 > "$M/m"; g -C "$M" add m; g -C "$M" commit -qm "fix: m DL-9 (#29)"
+g -C "$M" merge -q --no-ff s -m "Merge pull request #32 from acme/s"
+g -C "$M" revert --no-edit -m 2 HEAD >/dev/null
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":1,"workflow_stage_id":51,"payload":{"pr_number":"29","pr_url":"https://github.com/acme/widget/pull/29"}},
+  {"id":2,"workflow_stage_id":51,"payload":{"pr_number":"31","pr_url":"https://github.com/acme/widget/pull/31"}},
+  {"id":3,"workflow_stage_id":51,"payload":{"dl_number":"DL-9","repo":"acme/widget"}},
+  {"id":4,"workflow_stage_id":51,"payload":{"dl_number":"DL-8","repo":"acme/widget"}}
+],"meta":{"last_page":1,"total":4}}
+JSON
+run_in "$M" "$PRC"
+eq "-m 2: the side's PR and DL cards (#2, #4) move"              "0|true|true" "$rc|$(moved 2)|$(moved 4)"
+eq "…and the mainline's (#1, #3), which the revert took back, do not" "false|false" "$(moved 1)|$(moved 3)"
+
 _summary "promote-revert-selftest"
