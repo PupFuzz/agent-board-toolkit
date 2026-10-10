@@ -260,24 +260,25 @@ CHANGELOG_CUT='^## \[[0-9]'
 UPGRADE_CUT='^### v[0-9]'
 _carve "$CHANGELOG" "$CHANGELOG_CUT" "$TMP/changelog-live.md" "$TMP/changelog-frozen.md"
 _carve "$UPGRADE"   "$UPGRADE_CUT"   "$TMP/upgrade-live.md"   "$TMP/upgrade-frozen.md"
-# ⛔ `CLAUDE.md` IS CARVED AT ITS TABLE HEADER, NOT WHOLE-FILE (round 1, MINOR 6). It used to be
-# the one carve-out with NO witness — no premise, no assertion, and a stated reason ("its release
-# table is a copy of CHANGELOG highlights") that was true of the TABLE and not of the FILE, so any
-# live prose added elsewhere in it disappeared silently. Measured: the whole-file carve suppressed
-# exactly ONE reported line, the `v0.35.1` table row. It is now split like the other two and gets
-# the same four premise assertions, so its frozen half is witnessed and its live head is IN.
-CLAUDE_MD="$ROOT/CLAUDE.md"
+# ⛔ `docs/recent-changes.md` IS CARVED AT ITS TABLE HEADER, NOT WHOLE-FILE (round 1, MINOR 6).
+# The table lived in `CLAUDE.md` until card#11670, and there it was the one carve-out with NO
+# witness — no premise, no assertion, and a stated reason ("its release table is a copy of
+# CHANGELOG highlights") that was true of the TABLE and not of the FILE, so any live prose added
+# elsewhere in it disappeared silently. Measured: the whole-file carve suppressed exactly ONE
+# reported line, the `v0.35.1` table row. It is split like the other two and gets the same four
+# premise assertions, so its frozen half is witnessed and its live head is IN.
+RELEASES_MD="$ROOT/docs/recent-changes.md"
 # By SHAPE — the table's own header row — so no version and no line number is a fact kept here.
-CLAUDE_CUT='^\| Version \| Date \|'
-_carve "$CLAUDE_MD" "$CLAUDE_CUT" "$TMP/claude-live.md" "$TMP/claude-frozen.md"
+RELEASES_CUT='^\| Version \| Date \|'
+_carve "$RELEASES_MD" "$RELEASES_CUT" "$TMP/releases-live.md" "$TMP/releases-frozen.md"
 BSC_HISTORY=()
 
-# ⚑ THE FIELD SEPARATOR IS NOT `|`. `CLAUDE.md`'s cut pattern IS a pipe-delimited table row, and
+# ⚑ THE FIELD SEPARATOR IS NOT `|`. `docs/recent-changes.md`'s cut pattern IS a pipe-delimited table row, and
 # splitting on `|` shredded it into the wrong fields — caught by these very premises, which is the
 # direction they exist for.
 for pair in "docs/CHANGELOG.md~$CHANGELOG~$CHANGELOG_CUT~changelog" \
             "docs/UPGRADE.md~$UPGRADE~$UPGRADE_CUT~upgrade" \
-            "CLAUDE.md~$CLAUDE_MD~$CLAUDE_CUT~claude"; do
+            "docs/recent-changes.md~$RELEASES_MD~$RELEASES_CUT~releases"; do
     IFS='~' read -r cname cfile cpat ckey <<<"$pair"
     cutline="$(_headings "$cfile" "$cpat" | head -n 1 | cut -d: -f2-)"
     eq "$cname carries the heading it is split at" "true" \
@@ -310,7 +311,7 @@ _bsc_corpus() { # <root> — every passage under <root>, carves applied
             case "$rel" in
                 docs/UPGRADE.md)   src="$TMP/upgrade-live.md" ;;
                 docs/CHANGELOG.md) src="$TMP/changelog-live.md" ;;
-                CLAUDE.md)         src="$TMP/claude-live.md" ;;
+                docs/recent-changes.md) src="$TMP/releases-live.md" ;;
             esac
         fi
         _bsc_passages "$src" "$rel"
@@ -415,8 +416,9 @@ echo "== leg 3 — no precedence claim in the tree omits the payload.repo condit
 #       and `docs/UPGRADE.md` are append-only records of what was true AT a version; a statement
 #       there cannot rot, and editing one rewrites a released record. The LIVE head above the cut
 #       stays IN — `[Unreleased]` is where the release in flight is written, and a claim landing
-#       there is as live as any other. `CLAUDE.md` is carved whole: its release table is a copy of
-#       CHANGELOG highlights that the release process regenerates.
+#       there is as live as any other. `docs/recent-changes.md` is split the same way, at its
+#       table header: its rows are a copy of CHANGELOG highlights that the release process
+#       regenerates.
 #   (b) DISPOSED PASSAGES, each by `<path>::<substring>` with its reason, and each ASSERTED to
 #       still suppress something. The trigger cannot tell a precedence claim from prose that
 #       happens to name a URL, a card and an attribution in one breath; the residue is real and is
@@ -511,7 +513,7 @@ BSC_DISPOSED=(
     #    describe a predicate over these nouns without using them.
     "tests/by-ref-source-claim-selftest.sh::WHY THIS FILE EXISTS::3b392b49ed5d"
     "tests/by-ref-source-claim-selftest.sh::ARM 1 — a URL or link::43370a6a1fe8"
-    "tests/by-ref-source-claim-selftest.sh::TWO CARVE-OUTS::01279241b6d0"
+    "tests/by-ref-source-claim-selftest.sh::TWO CARVE-OUTS::4c54cd20879c"
     "tests/by-ref-source-claim-selftest.sh::control: a claim SPLIT ACROSS LINES is reported::cfa933e61486"
 )
 
