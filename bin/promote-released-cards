@@ -358,9 +358,9 @@
 #      and is at 0 for the same reason. ⛔ A GATE THAT MUST CATCH EITHER READS THE
 #      `program-withheld` / `partial-held` SEGMENT OF THE SUMMARY LINE, NOT THE RC.
 #      A range-derived run with a commit nobody can say is live (`release-pr-body
-#      --classify-commits` answers `unmeasured` — a shallow clone, card#11602, or a revert its
-#      body cannot resolve, card#11652) promotes nothing from that commit,
-#      names it `⚠ … NOT MEASURED` on stderr, and is also at 0: the commit's refs are simply
+#      --classify-commits` answers `unmeasured` — a shallow clone, card#11602, or a commit a
+#      revert may take back that the history cannot resolve, card#11652) promotes nothing from
+#      that commit, names it `⚠ … NOT MEASURED` on stderr, and is also at 0: the commit's refs are simply
 #      absent. ⛔ A GATE THAT MUST CATCH IT READS THE `<n> commits-unmeasured` SEGMENT OF THE
 #      SUMMARY LINE (present only when n > 0; also on the `nothing to do` line), NOT THE RC.
 #   1  a KNOWN failure. TWO ROUTES REACH IT AND THEY ARE NOT CONDITIONAL ON THE SAME THING —
@@ -1176,9 +1176,9 @@ else
       unmeasured)
         UNMEASURED_N=$((UNMEASURED_N + 1))
         if [ -n "$rc_rel" ]; then
-          echo "  ⚠ $(git rev-parse --short "$rc_sha"): NOT MEASURED — $(git rev-parse --short "$rc_rel"), which was not measured, may revert it; nothing it names is promoted from it. Promote its card by hand if it is live" >&2
+          echo "  ⚠ $(git rev-parse --short "$rc_sha"): NOT MEASURED — $(git rev-parse --short "$rc_rel") may revert it, and whether it does cannot be read from the history (the release body's \`Not measured for a revert\` line says why); nothing it names is promoted from it. Promote its card by hand if it is live" >&2
         else
-          echo "  ⚠ $(git rev-parse --short "$rc_sha"): NOT MEASURED — whether it reverts anything, or what, is unknown (the release body's \`Not measured for a revert\` line says why: a shallow clone — deepen it with fetch-depth: 0 and re-run — or a squash or merge revert its body cannot resolve); nothing it names is promoted from it" >&2
+          echo "  ⚠ $(git rev-parse --short "$rc_sha"): NOT MEASURED — this is a shallow clone, and the commit its \`This reverts commit\` line names cannot be read, so whether it reverts anything is unknown; nothing it names is promoted from it. Deepen the clone (fetch-depth: 0) and re-run" >&2
         fi ;;
     esac
   done <<< "$ROWS"

@@ -176,10 +176,11 @@ eq "shallow: stderr names the revert NOT MEASURED, by short sha" \
    "true" "$(has "⚠ $(g -C "$TMP/shal" rev-parse --short "$SRT"): NOT MEASURED" "$err")"
 eq "shallow: the summary line counts the unmeasured commit" "true" "$(has "1 commits-unmeasured, " "$out")"
 
-echo "== a squash whose branch reverted a dev commit and reapplied it: NOT MEASURED, not called reverted (card#11652) =="
+echo "== a squash whose branch reverted a dev commit and reapplied it: W NOT MEASURED, the squash promoted (card#11652) =="
 # The squash body carries `This reverts commit W.` and the reapply's line naming the branch-only
 # revert, and names no branch commit's own sha, so whether W is live cannot be read from it. W was
-# named `⊘ … reverted`; it is now NOT MEASURED, and so is the squash — neither is promoted.
+# named `⊘ … reverted`; it is now NOT MEASURED and not promoted. The squash is certainly live, so its
+# own card moves.
 N="$TMP/reapply"; g init -q "$N"
 echo 0 > "$N/f"; g -C "$N" add f; g -C "$N" commit -qm "chore: init"; g -C "$N" tag v0.1.0
 echo 1 > "$N/w"; g -C "$N" add w; g -C "$N" commit -qm "feat: w DL-4 (#30)"; NW="$(g -C "$N" rev-parse HEAD)"
@@ -200,10 +201,10 @@ cat > "$BOARD_FILE" <<'JSON'
 JSON
 run_in "$N" "$PRC"
 eq "control: the run exits 0 and K's card (#2) moves"           "0|true" "$rc|$(moved 2)"
-eq "W's card (#1) and the squash's (#3) are NOT promoted"         "false|false" "$(moved 1)|$(moved 3)"
+eq "W's card (#1) is NOT promoted, and the squash's (#3) is"       "false|true" "$(moved 1)|$(moved 3)"
 eq "stderr names W NOT MEASURED, possibly reverted by the squash — never \`reverted\`" \
-   "true|false" "$(has "⚠ $(g -C "$N" rev-parse --short "$NW"): NOT MEASURED — $(g -C "$N" rev-parse --short "$NS"), which was not measured, may revert it" "$err")|$(has "⊘ $(g -C "$N" rev-parse --short "$NW")" "$err")"
-eq "the summary line counts both" "true" "$(has "2 commits-unmeasured, " "$out")"
+   "true|false" "$(has "⚠ $(g -C "$N" rev-parse --short "$NW"): NOT MEASURED — $(g -C "$N" rev-parse --short "$NS") may revert it" "$err")|$(has "⊘ $(g -C "$N" rev-parse --short "$NW")" "$err")"
+eq "the summary line counts W alone" "true" "$(has "1 commits-unmeasured, " "$out")"
 
 echo "== \`git revert -m 2\` of a merge: the mainline change is not promoted, the side's is (card#11652) =="
 M="$TMP/m2"; g init -q "$M"
