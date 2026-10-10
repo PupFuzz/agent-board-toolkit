@@ -451,7 +451,10 @@ argument in the program *against* consolidation:
   take it back" is a git-only rule whose two copies had already diverged (promote read trailing
   `(#N)` only and no revert at all; the generator read the last `(#N)` and git's revert line), and
   the mover is the copy that writes. The cost is one co-vendored file on the range-derived path,
-  stated in `docs/INSTALL.md` §6b; the framework's `templates/release/` mirror carries both files.
+  stated in `docs/INSTALL.md` §6b. The framework's `templates/release/` mirror does NOT yet meet
+  it: its `release-pr-body` is the stale copy (card#10143) with no `--classify-commits`, and its
+  adoption checklist commits only the mover into `bin/` — so the two must be re-synced in lockstep
+  (PupFuzz/agent-roundtable#613), or every range-derived promote there exits rc 2.
 - **The retry is a restructure, not a knob.** Measured against a 503→503→200 server: `kb_api`'s
   shape (`-sS`, deliberately **no `-f`**, to preserve error bodies) plus `--retry` concatenates
   every attempt's body, the status read sees `200`, and `kb_api` returns success on a garbage
