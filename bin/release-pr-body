@@ -185,24 +185,30 @@ pr_of_subject() { pr_token "$(own_subject "$1")"; }
 # revert_scan <sha> <body>: what a commit REVERTS, read from git's `This reverts commit <sha>` body
 # lines. Sets RV_TARGETS (the full shas it reverts, one per line), RV_TAKEN (every commit it CERTAINLY
 # takes back, one per line: a target, plus, for a reverted merge, the commits that merge brought in),
-# RV_DOUBTED (every commit it MAY take back, in the same shape — see the cases below), RV_KEPT (one
+# RV_DOUBTED (every commit it MAY take back, in the same shape — see the cases below), RV_COPIES (the
+# part of RV_DOUBTED that is a copy of a rewritten commit — see REWRITTEN), RV_KEPT (one
 # `<merge> <kept parent>` line per reverted merge whose kept parent is known), RV_LOST (the shas, as
 # written, of the lines that named a rewritten commit and matched none — see REWRITTEN),
 # RV_UNMEASURED (1 or empty) and RV_WHY (shallow, squash, merge or rewritten: why it is not measured,
-# or why RV_DOUBTED is not empty; the first reason found, in that order).
+# or why RV_DOUBTED is not empty; the first reason found, in that order — RV_COPIES, not RV_WHY,
+# says which doubted commits are doubted as copies).
 # A body-line sha counts as a TARGET outright only if it is an ANCESTOR of the commit. A sha that
 # cannot be read in a SHALLOW clone may be an ancestor the clone cut off, so whether the commit is a
 # revert at all, and of what, cannot be ruled out: the commit is NOT MEASURED (RV_UNMEASURED,
-# why=shallow) rather than guessed at. A commit is a REVERT exactly when RV_TARGETS is non-empty: by
+# why=shallow) rather than guessed at — and the line is ALSO searched for copies as below, since it
+# may as well name a rewritten commit, whose copy must not ship beside an unmeasured revert. A commit is a REVERT exactly when RV_TARGETS is non-empty: by
 # its body line, never by its subject.
 # REWRITTEN (card#11662): a line naming a commit that is NOT an ancestor — readable or not, in a full
-# clone — is never ignored. A rebase or a cherry-pick copies a revert with its body unchanged, so its
+# clone, or unreadable in a shallow one — is never ignored: it is searched for copies, though one
+# that matches none on a commit with a non-revert subject then takes nothing back (below). A rebase or a cherry-pick copies a revert with its body unchanged, so its
 # line names the commit as it was BEFORE the rewrite, while the copy of that commit is what the range
 # holds. Its COPIES are looked for among the commits of the range being classified ($RANGE) that are
 # ancestors of this one: a commit whose subject — a trailing `(#N)` set aside on both sides — is the
 # one this commit's `Revert "…"` subject quotes (for `Reapply "X"`, which reverts `Revert "X"`, that
 # is `Revert "X"`), or whose change is exactly the one this commit undoes (`git patch-id`). The named
-# commit is not read even when it is readable, so the answer is the same in every clone. Each copy is
+# commit is not read even when it is readable, so the copies found — and so what is withheld — are
+# the same in every clone of the range, full or shallow, branch kept or deleted; only the reverting
+# commit's own class differs in a shallow clone (`unmeasured`, not `revert`). Each copy is
 # a target and is DOUBTED (why=rewritten), never TAKEN: a subject or a change is evidence, not
 # identity, and a wrong TAKEN of a copy that is itself a revert would ship again what it took back. When
 # nothing matches and the commit's own subject is git's `Revert "…"` / `Reapply "…"` — a git revert
@@ -234,7 +240,7 @@ pr_of_subject() { pr_token "$(own_subject "$1")"; }
 IS_SHALLOW=""
 revert_scan() {
   local sha="$1" lines r k rs ks p other="" anc="" one doubtful copies=""
-  RV_TARGETS=""; RV_TAKEN=""; RV_DOUBTED=""; RV_KEPT=""; RV_LOST=""; RV_UNMEASURED=""; RV_WHY=""
+  RV_TARGETS=""; RV_TAKEN=""; RV_DOUBTED=""; RV_COPIES=""; RV_KEPT=""; RV_LOST=""; RV_UNMEASURED=""; RV_WHY=""
   # One line per `This reverts commit` line: `<sha> <kept parent or ->`. A sha is the line's whole
   # hex run, 7 to 40 long, ending the line or followed by a non-hex character.
   lines="$(printf '%s\n' "$2" | awk '
@@ -253,12 +259,14 @@ revert_scan() {
       fi
     elif [ "$IS_SHALLOW" != false ]; then
       RV_UNMEASURED=1; RV_WHY="${RV_WHY:-shallow}"
-      continue
     fi
     other="$other$r"$'\n'
   done <<< "$lines"
   if [ -n "$other" ]; then
-    copies="$(_rv_copies "$sha")"
+    # Explicit: errexit is off inside the `$(commit_rows …)` this runs under, so a failed search
+    # must not read as "no copies".
+    copies="$(_rv_copies "$sha")" || exit 2
+    RV_COPIES="$copies"
     if [ -z "$copies" ] && [ -n "$(_rv_quoted "$(git log -1 --format=%s "$sha")")" ]; then RV_LOST="$other"; fi
   fi
   if [ -n "$anc" ] && [ -n "$other" ]; then RV_WHY="${RV_WHY:-squash}"; fi
@@ -311,6 +319,7 @@ _rv_pid() { git patch-id --stable; }
 # clone that can read it and in one that cannot.
 _rv_copies() {
   local sha="$1" key undo h s pid
+  [ -n "${RANGE:-}" ] || die "internal: revert_scan needs RANGE, the range being classified, to look for a rewritten commit's copies"
   [ -n "$(git rev-parse -q --verify "$sha^" 2>/dev/null)" ] || return 0
   key="$(_rv_quoted "$(git log -1 --format=%s "$sha")")"
   undo="$({ printf 'commit %s\n' "$sha"; git diff --no-color --no-ext-diff --no-renames "$sha" "$sha^"; } | _rv_pid | cut -d' ' -f1)"
@@ -318,12 +327,12 @@ _rv_copies() {
     if [ -n "$key" ]; then
       while IFS=$'\x1f' read -r h s; do
         if [ -n "$h" ] && [ "$(printf '%s' "$s" | _rv_bare)" = "$key" ]; then printf '%s\n' "$h"; fi
-      done < <(git log --no-merges --format='%H%x1f%s' "${RANGE:?revert_scan needs RANGE}")
+      done < <(git log --no-merges --format='%H%x1f%s' "$RANGE")
     fi
     if [ -n "$undo" ]; then
       while read -r pid h; do
         if [ "$pid" = "$undo" ]; then printf '%s\n' "$h"; fi
-      done < <(git log --no-merges --no-color --no-ext-diff --no-renames -p --format='commit %H' "${RANGE:?revert_scan needs RANGE}" | _rv_pid)
+      done < <(git log --no-merges --no-color --no-ext-diff --no-renames -p --format='commit %H' "$RANGE" | _rv_pid)
     fi
   } | while read -r h; do
     if [ "$h" != "$sha" ] && git merge-base --is-ancestor "$h" "$sha" 2>/dev/null; then printf '%s\n' "$h"; fi
@@ -404,11 +413,12 @@ pr_of_commit() {
 # parents — the merged side, and also every mainline commit made while that branch was open — are
 # unmeasured, and withheld the same way (revert_scan).
 # A revert whose `This reverts commit` line names a commit a rebase or cherry-pick REWROTE (no
-# ancestor, readable or not) is matched to that commit's copy in the range by the subject it quotes
+# ancestor, readable or not, or unreadable in a shallow clone) is matched to that commit's copy in the range by the subject it quotes
 # or the change it undoes, never by identity (revert_scan, REWRITTEN), so the copy is unmeasured and
 # WITHHELD, not reverted — and so is a copy a rewritten REAPPLY made live again: a branch that
 # committed, reverted and reapplied a change, then was rebased, withholds that live change. Promote
-# its card by hand. A copy whose subject was reworded AND whose change differs from the one the
+# its card by hand. What is withheld is the same in every clone; in a shallow clone the revert is
+# also unmeasured itself. A copy whose subject was reworded AND whose change differs from the one the
 # revert undoes (a conflict resolved differently on the way) matches nothing: the revert is then
 # unmeasured itself and credits no PR, but the copy SHIPS. A squash, or any commit whose subject is
 # not git's `Revert "…"` / `Reapply "…"`, whose non-ancestor line matches nothing takes nothing back
@@ -1210,10 +1220,18 @@ unmeasured_item() {
   subj="$(git log -1 --format=%s "$1")"; label="$(pr_of_subject "$subj")"
   if [ -n "$label" ]; then label="#$label"; else label="$(git rev-parse --short "$1")"; fi
   printf '%s%s, which %s may take back (' "$label" "${3:+, shipped before this range}" "$(git rev-parse --short "$2")"
+  # The reason is per doubted commit: a copy of a rewritten commit is doubted as that, whatever
+  # else the same revert's body doubts.
+  revert_scan "$2" "$(git log -1 --format=%b "$2")"
+  case $'\n'"$RV_COPIES"$'\n' in *$'\n'"$(git rev-parse "$1")"$'\n'*) RV_WHY=rewritten ;; esac
   case $'\n'"$COMMIT_ROWS" in
-    *$'\n'"unmeasured"$'\x1f'"$2"$'\x1f'*) printf 'it is not measured itself' ;;
+    *$'\n'"unmeasured"$'\x1f'"$2"$'\x1f'*)
+      if [ "$RV_WHY" = rewritten ]; then
+        printf 'its `This reverts commit` line names a commit that is not in its history (a rebase or a cherry-pick rewrote it), and this commit has that commit'"'"'s subject or the change it undoes; it is not measured itself'
+      else
+        printf 'it is not measured itself'
+      fi ;;
     *)
-      revert_scan "$2" "$(git log -1 --format=%b "$2")"
       case "$RV_WHY" in
         shallow) printf 'a shallow clone cannot read a commit its `This reverts commit` line names; deepen the clone' ;;
         squash)  printf 'its body also reverts a commit only its PR branch had, which may be a reapply of this one' ;;
