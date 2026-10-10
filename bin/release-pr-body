@@ -246,8 +246,12 @@ pr_of_commit() {
 #   shipped          an ordinary commit. <shipped pr> is pr_of_subject's answer and <shipped text>
 #                    its own_subject; <related> is empty.
 #   revert           a live revert (by its body line). It ships its own PR number, if it has one,
-#                    and NO card or DL: its subject quotes the original it takes back. <related> is
-#                    the commit(s) it reverts, space-separated — inside the range or not.
+#                    and, as <shipped text>, its own_subject — exactly what a shipped commit ships.
+#                    A git-written `Revert "…"` / `Reapply "…"` subject has nothing of its own
+#                    outside the quoted original but a `(#N)`, so such a revert ships no card or DL;
+#                    a squash whose BRANCH ran `git revert` (GitHub's COMMIT_MESSAGES squash body
+#                    keeps that line) ships the refs its own title names. <related> is the
+#                    commit(s) it reverts, space-separated — inside the range or not.
 #   reverted         an ordinary commit a live revert in the range takes back — directly, or as a
 #                    commit on the merged side of a merge commit the revert takes back: it ships
 #                    nothing. <related> is that revert.
@@ -263,7 +267,7 @@ pr_of_commit() {
 # ⚠ WHAT IT CANNOT SEE: a revert with no `This reverts commit` line (an edited message) is an
 # ordinary commit here, so its original still ships; its quoted original contributes nothing, by
 # own_subject. A reapply of a change whose revert shipped in an EARLIER range re-ships that change,
-# and is still a revert here, so the change's card and DL are not shipped by it.
+# but its card and DL sit inside the quoted original, so they are not shipped by it.
 commit_rows() {
   local range="$1" sha subj body class rel t dead="" kind="" out
   while IFS=$'\x1f' read -r -d '' sha subj body; do
@@ -301,7 +305,7 @@ commit_rows() {
         printf '%s\x1f%s\x1f%s\x1f\x1f%s\n' "$class" "$sha" "$(pr_of_subject "$subj")" "$(own_subject "$subj")" ;;
       revert)
         revert_scan "$sha" "$(git log -1 --format=%b "$sha")"
-        printf '%s\x1f%s\x1f%s\x1f%s\x1f\n' "$class" "$sha" "$(_pr_of_scanned "$subj")" "$rel" ;;
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$class" "$sha" "$(_pr_of_scanned "$subj")" "$rel" "$(own_subject "$subj")" ;;
       *)
         printf '%s\x1f%s\x1f\x1f%s\x1f\n' "$class" "$sha" "$rel" ;;
     esac
@@ -674,9 +678,9 @@ RANGE="${BASE:+$BASE..}$HEAD_REF"
 COMMIT_ROWS="$(commit_rows "$RANGE")"
 
 # shipped_text: the <shipped text> of every commit in the range, one per line — the only text a
-# card or DL token is read from. A revert, a commit a revert takes back, and a commit not measured
-# contribute nothing (commit_rows), so a card or DL named only by a revert is not shipped
-# (card#11602). (The `## Bundled` rows are derived per PR instead — see bundle_units below.)
+# card or DL token is read from. A commit a revert takes back, and a commit not measured, contribute
+# nothing, and a revert contributes only the text outside its quoted original (commit_rows), so a
+# card or DL named only inside a revert's quoted original is not shipped (card#11602). (The `## Bundled` rows are derived per PR instead — see bundle_units below.)
 shipped_text() {
   local _c _s _p _r t
   while IFS=$'\x1f' read -r _c _s _p _r t; do
@@ -1022,7 +1026,9 @@ reverted_item() { # <sha> <reverting-sha>
 }
 reverted_lines() {
   local c sha _p rel _t x in="" before="" unm="" inrange
-  inrange=$'\n'"$(while IFS=$'\x1f' read -r _ x _; do printf '%s\n' "$x"; done <<< "$COMMIT_ROWS")"$'\n'
+  # Every commit in the range, MERGES INCLUDED: commit_rows lists non-merge commits only, and a
+  # reverted merge inside the range was not shipped before it.
+  inrange=$'\n'"$(git rev-list "$RANGE")"$'\n'
   while IFS=$'\x1f' read -r c sha _p rel _t; do
     case "$c" in
       reverted) in="${in:+$in; }$(reverted_item "$sha" "$rel")" ;;

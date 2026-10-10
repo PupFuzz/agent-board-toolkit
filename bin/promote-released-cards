@@ -118,8 +118,8 @@
 #     matched against the `(repo, number)` a card's `payload.pr_url` names (THE PR LEG below);
 #   both read through `release-pr-body --classify-commits`, the sibling in this bin/ that owns
 #   which pull request a commit is and whether it ships (card#11602): a revert — known by git's
-#   `This reverts commit` line — ships no DL of its own and never its original's `(#N)`, and a
-#   change a revert in the range takes back ships nothing. That sibling must be vendored beside
+#   `This reverts commit` line — ships no DL from the original it quotes and never its original's
+#   `(#N)`, and a change a revert in the range takes back ships nothing. That sibling must be vendored beside
 #   this file for a range-derived run; without it the run refuses (rc 2). An explicit
 #   --dls/--cards run does not read the range and does not need it;
 #   - card IDs from `--cards` only, matched against the card's own `id`.
@@ -357,6 +357,11 @@
 #      exits as if the parent's move had landed. The terminal:partial hold sits right after it
 #      and is at 0 for the same reason. ⛔ A GATE THAT MUST CATCH EITHER READS THE
 #      `program-withheld` / `partial-held` SEGMENT OF THE SUMMARY LINE, NOT THE RC.
+#      A range-derived run in a SHALLOW clone that cannot classify a commit (`release-pr-body
+#      --classify-commits` answers `unmeasured`, card#11602) promotes nothing from that commit,
+#      names it `⚠ … NOT MEASURED` on stderr, and is also at 0: the commit's refs are simply
+#      absent. ⛔ A GATE THAT MUST CATCH IT READS THE `<n> commits-unmeasured` SEGMENT OF THE
+#      SUMMARY LINE (present only when n > 0; also on the `nothing to do` line), NOT THE RC.
 #   1  a KNOWN failure. TWO ROUTES REACH IT AND THEY ARE NOT CONDITIONAL ON THE SAME THING —
 #      the difference is the whole of what round 2 changed, so it is stated rather than implied:
 #        · a MEASURED un-applied move (`✗ … move NOT APPLIED`) — UNCONDITIONAL. Whatever else
@@ -1147,7 +1152,7 @@ else
   # and whether it ships what its subject names, has ONE implementation: `release-pr-body
   # --classify-commits`, the sibling in this same bin/ (not a PATH lookup, so the two cannot be
   # different toolkit versions disagreeing on the rule — the shape bin/release-tag-check uses for
-  # `--tag`). It reads git's `This reverts commit` line, so a revert ships no DL of its own, a change
+  # `--tag`). It reads git's `This reverts commit` line, so a revert ships no DL from the original it quotes, a change
   # a revert in the range takes back ships nothing, and a revert's inherited `(#N)` is not its own;
   # its contract is commit_rows' header in that file. A PR number is read ONLY from a row's
   # <shipped pr> and a DL token ONLY from its <shipped text>, both empty whenever a commit ships
@@ -1159,7 +1164,7 @@ else
   ROWS_RC=0
   ROWS="$(env -u KANBAN_WRITEBACK_TOKEN "$RPB" --classify-commits --base "$BASE" --head "$HEAD_REF")" || ROWS_RC=$?
   [ "$ROWS_RC" -eq 0 ] || die "$RPB --classify-commits exited $ROWS_RC over $RANGE — refusing to promote from a range nothing classified. A release-pr-body older than this mover has no --classify-commits (it refuses the flag as 'unknown arg'): re-vendor the two TOGETHER"
-  SHIPPED_TEXT=""; PR_NUMS=""
+  SHIPPED_TEXT=""; PR_NUMS=""; UNMEASURED_N=0
   while IFS=$'\x1f' read -r rc_class rc_sha rc_pr rc_rel rc_text; do
     [ -n "$rc_sha" ] || continue
     if [ -n "$rc_text" ]; then SHIPPED_TEXT="$SHIPPED_TEXT$rc_text"$'\n'; fi
@@ -1168,13 +1173,18 @@ else
       reverted|revert-reverted)
         echo "  ⊘ $(git rev-parse --short "$rc_sha"): reverted in this range by $(git rev-parse --short "$rc_rel") — it ships nothing, so no PR or DL it names is promoted from it" >&2 ;;
       unmeasured)
+        UNMEASURED_N=$((UNMEASURED_N + 1))
         echo "  ⚠ $(git rev-parse --short "$rc_sha"): NOT MEASURED — this is a shallow clone, and the commit its \`This reverts commit\` line names cannot be read, so whether it reverts anything is unknown; nothing it names is promoted from it. Deepen the clone (fetch-depth: 0) and re-run" >&2 ;;
     esac
   done <<< "$ROWS"
   DL_NUMS="$(printf '%s' "$SHIPPED_TEXT" | grep -oiE "$REF_RE" | numlist || true)"
   PR_NUMS="$(printf '%s' "$PR_NUMS" | numlist || true)"
 fi
-[ -n "$DL_NUMS$PR_NUMS$CARD_IDS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do."; exit 0; }
+# An unmeasured commit is COUNTED wherever the run ends, because it exits 0 (EXIT CODES) and its refs
+# are simply absent — a gate that must catch it reads this count, not the rc.
+unm_txt=""
+if [ "${UNMEASURED_N:-0}" -gt 0 ]; then unm_txt="$UNMEASURED_N commits-unmeasured, "; fi
+[ -n "$DL_NUMS$PR_NUMS$CARD_IDS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do${unm_txt:+ (${unm_txt%, }: a shallow clone could not classify them; see NOT MEASURED above)}."; exit 0; }
 jarr() { printf '%s' "$1" | jq -R . | jq -s 'map(select(. != ""))'; }
 DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"; CARDS_J="$(jarr "$CARD_IDS")"
 
@@ -2257,7 +2267,7 @@ if [ "$program_held" -gt 0 ]; then prog_txt="$program_held program-withheld, "; 
 # sits right after it because its `continue` is right after that one in the move loop.
 part_txt=""
 if [ "$partial_held" -gt 0 ]; then part_txt="$partial_held partial-held, "; fi
-echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$([ "$REQUIRE_COMPLETE" = 1 ] && printf '%s completeness-refused, ' "$incomplete")$prog_txt$part_txt$qual_txt$unqual_txt$div_txt$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+echo "promote-released-cards: $moved moved, $skipped already-released, ${SHIPPED_STAGES:+$guarded stage-guarded, }$([ "$REQUIRE_COMPLETE" = 1 ] && printf '%s completeness-refused, ' "$incomplete")$prog_txt$part_txt$unm_txt$qual_txt$unqual_txt$div_txt$nmiss no-card, $na_txt$unv_txt$failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
 # The guard's state, ALWAYS, on its own stderr line. #5144 made an explicitly-EMPTY
 # --shipped-stages die, but the ABSENT case still printed a summary indistinguishable from
 # a guarded run — so an unguarded promote read as clean, which is the same "looks enabled,

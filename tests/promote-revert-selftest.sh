@@ -95,7 +95,7 @@ JSON
 run_in() {
   local dir="$1" bin="$2"; shift 2
   : > "$PATCH_LOG"; rc=0
-  (cd "$dir" && env GITHUB_ACTIONS=1 GITHUB_REPOSITORY=acme/widget "$bin" --config "$CFG" --base v0.1.0 "$@") >/dev/null 2>"$TMP/err" || rc=$?
+  out="$( (cd "$dir" && env GITHUB_ACTIONS=1 GITHUB_REPOSITORY=acme/widget "$bin" --config "$CFG" --base v0.1.0 "$@") 2>"$TMP/err")" || rc=$?
   err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"
 }
 moved() { has "/tasks/$1.json" "$patched"; }
@@ -131,6 +131,26 @@ eq "…naming the missing sibling"                                  "true"  "$(h
 run_in "$G" "$TMP/alone/promote-released-cards" --dls DL-6
 eq "an explicit --dls run does not need it, and moves its card"   "0|true" "$rc|$(moved 7)"
 
+echo "== a squash whose branch reverted a dev commit still ships its own refs =="
+# GitHub's squash body (COMMIT_MESSAGES) keeps the branch revert's `This reverts commit W.`, W being
+# an ancestor, so the squash IS a revert by its body line — and its own title still ships.
+Q="$TMP/squash"; g init -q "$Q"
+echo 0 > "$Q/f"; g -C "$Q" add f; g -C "$Q" commit -qm "chore: init"; g -C "$Q" tag v0.1.0
+echo 1 > "$Q/w"; g -C "$Q" add w; g -C "$Q" commit -qm "feat: temp workaround DL-3 (#30)"; QW="$(g -C "$Q" rev-parse HEAD)"
+g -C "$Q" rm -q w; echo 2 > "$Q/n"; g -C "$Q" add n
+g -C "$Q" commit -qm "feat: new thing DL-77 (closes card#50) (#40)" -m "This reverts commit $QW."
+cat > "$BOARD_FILE" <<'JSON'
+{"data":[
+  {"id":7,"workflow_stage_id":51,"payload":{"dl_number":"DL-77","repo":"acme/widget"}},
+  {"id":8,"workflow_stage_id":51,"payload":{"pr_number":"40","pr_url":"https://github.com/acme/widget/pull/40"}},
+  {"id":9,"workflow_stage_id":51,"payload":{"dl_number":"DL-3","repo":"acme/widget"}}
+],"meta":{"last_page":1,"total":3}}
+JSON
+run_in "$Q" "$PRC"
+eq "the squash's DL card (#7) moves"                              "0|true" "$rc|$(moved 7)"
+eq "…and its PR card (#8)"                                        "true"  "$(moved 8)"
+eq "…while the workaround it took back (#9) does not"             "false" "$(moved 9)"
+
 echo "== a shallow clone that cannot read what a revert reverts: NOT MEASURED, not promoted =="
 # init · T `feat: t DL-9 (#60)` · B (tagged v0.1.0) · RT = T reverted by a direct push ·
 # Q `feat: q DL-6 (#23)`; a depth-3 clone holds Q, RT and B, not T.
@@ -154,5 +174,6 @@ eq "shallow: the run exits 0 and the control card (#7) moves"     "0|true" "$rc|
 eq "shallow: the unmeasured revert's DL card (#8) is NOT promoted" "false" "$(moved 8)"
 eq "shallow: stderr names the revert NOT MEASURED, by short sha" \
    "true" "$(has "⚠ $(g -C "$TMP/shal" rev-parse --short "$SRT"): NOT MEASURED" "$err")"
+eq "shallow: the summary line counts the unmeasured commit" "true" "$(has "1 commits-unmeasured, " "$out")"
 
 _summary "promote-revert-selftest"

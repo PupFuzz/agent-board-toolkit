@@ -2059,7 +2059,7 @@ eq "…K ships #23 and its subject" "shipped|23||fix: keep DL-6 (card#8) (#23)" 
 eq "…P ships no PR number" "shipped|||fix: a (#12) and b card#9" "$(_rxcc "$RX_P")"
 eq "…Y is back, and ships #22" "shipped|22||fix: y (card#4) (#22)" "$(_rxcc "$RX_Y")"
 eq "…Y1, revert-PR #25, was itself reverted and ships nothing" "revert-reverted||$RX_Y2|" "$(_rxcc "$RX_Y1")"
-eq "…Y2, the direct-push reapply, has no PR number of its own" "revert||$RX_Y1|" "$(_rxcc "$RX_Y2")"
+eq "…Y2, the direct-push reapply, has no PR number of its own, and ships only the token-less text after its quote" "revert||$RX_Y1| (#25)" "$(_rxcc "$RX_Y2")"
 eq "…RZ reverts Z, which is outside the range" "revert||$RX_Z|" "$(_rxcc "$RX_RZ")"
 eq "…one row per non-merge commit in the range, and no other" \
    "$(g -C "$RX" rev-list --no-merges v0.1.0..HEAD | sort)" "$(printf '%s\n' "$RX_CC" | awk 'BEGIN { FS = "\037" } { print $2 }' | sort)"
@@ -2082,6 +2082,28 @@ eq "a reverted merge: the card on its merged side is not shipped" "" "$(_mx --ca
 eq "…nor its DL" "" "$(_mx --manifest 2>/dev/null)"
 eq "…and the body names the side commit as reverted in the range" \
    "true" "$(has_line "Reverted in this range, so not shipped by it: #30 (DL-8, card#10), reverted by $(g -C "$MX" rev-parse --short "$MX_R")." "$(_mx 2>/dev/null)")"
+eq "…and the reverted merge, which is IN the range, is not named as shipped before it" \
+   "false" "$(has "Reverted by this range, shipped before it" "$(_mx 2>/dev/null)")"
+
+# A SQUASH WHOSE BRANCH REVERTED A DEV COMMIT is a revert by its body line — GitHub's squash body
+# (COMMIT_MESSAGES) keeps the branch revert's `This reverts commit W.`, and W is an ancestor — but
+# its own subject is the PR's title, and the refs there ship. W, taken back by it, ships nothing.
+QX="$T/qx"; g init -q "$QX"
+echo 0 > "$QX/f"; g -C "$QX" add f; g -C "$QX" commit -qm "chore: init"; g -C "$QX" tag v0.1.0
+echo 1 > "$QX/w"; g -C "$QX" add w; g -C "$QX" commit -qm "feat: temp workaround DL-3 (#30)"; QX_W="$(g -C "$QX" rev-parse HEAD)"
+g -C "$QX" rm -q w; echo 2 > "$QX/n"; g -C "$QX" add n
+g -C "$QX" commit -qm "feat: new thing DL-77 (closes card#50) (#40)" -m "* wip
+
+* Revert \"feat: temp workaround DL-3 (#30)\"
+
+This reverts commit $QX_W."; QX_S="$(g -C "$QX" rev-parse HEAD)"
+echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$QX/.release-pr.json"
+_qx() { (cd "$QX" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+eq "a squash carrying a branch revert's body line still ships its own DL" "DL-77" "$(_qx --manifest 2>/dev/null | paste -sd' ' -)"
+eq "…and its own card" "50" "$(_qx --card-manifest 2>/dev/null | paste -sd' ' -)"
+eq "…and is credited its own PR" "true" "$(has_line "- **#40** (\`DL-77\`) feat: new thing DL-77 (closes card#50)" "$(_qx 2>/dev/null)")"
+eq "…while the commit it reverted is named reverted in the range" \
+   "true" "$(has_line "Reverted in this range, so not shipped by it: #30 (DL-3), reverted by $(g -C "$QX" rev-parse --short "$QX_S")." "$(_qx 2>/dev/null)")"
 
 # A SHALLOW CLONE CANNOT READ WHAT A REVERT REVERTS, so that commit is not measured: it ships
 # nothing, and the body says so by name rather than leaving its refs out in silence. History:
