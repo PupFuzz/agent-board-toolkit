@@ -132,7 +132,7 @@
 # error, or the range could not be classified.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.44.0'
+ABTK_TOOL_VERSION='0.45.0'
 
 # A bracket range is a COLLATION range and en_US.UTF-8 widens `[0-9]` to non-ASCII digits
 # (card#5409); exported so the greps below inherit it, not just this shell.
