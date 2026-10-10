@@ -1,4 +1,4 @@
-## Recent releases (last 10)
+# Recent releases (last 10)
 
 Filled in by the release PR that produces each version tag — which also **trims the oldest row back to 10**. This table is the ergonomic snapshot, deliberately truncated; [`docs/CHANGELOG.md`](CHANGELOG.md) is the canonical per-version log and is **never** truncated, so nothing is lost by trimming here.
 
