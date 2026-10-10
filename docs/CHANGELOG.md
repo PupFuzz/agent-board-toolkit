@@ -8,7 +8,7 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ### Changed
 
-- **card#11670** — **The release-snapshot table moved out of `CLAUDE.md` into `docs/RECENT-RELEASES.md`, so it is no longer loaded into every agent session in this repo.** Its rows moved unchanged; `CLAUDE.md` keeps a one-line pointer to it. `VERSIONING.md` step 5 now adds each release's row there, and `.release-pr.json` declares `docs/RECENT-RELEASES.md § Recent releases row` as the release artifact, with the old `CLAUDE.md` member listed in `retired_artifacts`. `tests/by-ref-source-claim-selftest.sh` and `tests/lib-set-derivation-selftest.sh` split the new file at its table header (the first already split `CLAUDE.md` there; the second carved `CLAUDE.md` out whole), and both now read `CLAUDE.md` like any other file.
+- **card#11670** — **The release-snapshot table moved out of `CLAUDE.md` into `docs/recent-changes.md`, so it is no longer loaded into every agent session in this repo.** Its rows moved unchanged; `CLAUDE.md` keeps a one-line pointer to it. `VERSIONING.md` step 5 now adds each release's row there, and `.release-pr.json` declares `docs/recent-changes.md § Recent releases row` as the release artifact, with the old `CLAUDE.md` member listed in `retired_artifacts`. `tests/by-ref-source-claim-selftest.sh` and `tests/lib-set-derivation-selftest.sh` split the new file at its table header (the first already split `CLAUDE.md` there; the second carved `CLAUDE.md` out whole), and both now read `CLAUDE.md` like any other file.
   - **No upgrade action.** Nothing vendored or installed changes.
 
 ## [0.45.0] - 2026-10-10

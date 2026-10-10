@@ -6,7 +6,7 @@
 #
 # WHY THIS FILE EXISTS. `[Unreleased]` is where this repo records shipped work between
 # releases, and 21 of the 24 cards merged to `dev` since v0.23.1 had an entry there. Nothing
-# asserted it. Three did not, and the CHANGELOG is the *canonical* record — `docs/RECENT-RELEASES.md`'s
+# asserted it. Three did not, and the CHANGELOG is the *canonical* record — `docs/recent-changes.md`'s
 # release table is explicitly a truncated snapshot of it (VERSIONING.md step 5), so an entry
 # that never lands is not recoverable from a second copy later; the release PR that bundles
 # the version section simply ships without it (card#5767).

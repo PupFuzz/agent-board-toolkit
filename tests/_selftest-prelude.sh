@@ -277,7 +277,7 @@ _adopt_fn() {
 # Hoisted here at the second caller (canon #5). `tests/lib-set-derivation-selftest.sh` leg 3 and
 # `tests/by-ref-source-claim-selftest.sh` leg 3 each refuse a prose shape ANYWHERE in the repo, and
 # each must exempt the append-only at-that-version records — `docs/CHANGELOG.md`, `docs/UPGRADE.md`,
-# and `docs/RECENT-RELEASES.md`'s release table — where a statement that was true AT a
+# and `docs/recent-changes.md`'s release table — where a statement that was true AT a
 # version cannot rot. Two hand-spellings of one split is the shape prelude-shadow-selftest.sh
 # exists to refuse.
 
