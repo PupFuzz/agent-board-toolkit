@@ -54,6 +54,18 @@ export PYTHONDONTWRITEBYTECODE=1
 # (`promote-source-qualify-selftest.sh` § 7 is the one that does, and asserts this floor holds).
 unset GITHUB_REPOSITORY
 
+# THE REVIEW-RECORD VERIFIER IS TURNED OFF FOR THE WHOLE SUITE, for the same reason and at the same
+# layer. With the variable unset, `bin/release-pr-body` runs whatever `coord-review-verify` the
+# HOST has on $PATH, once per bundled PR, against the `<owner>/<repo>` it derives from a fixture's
+# origin path. On a machine with the coord plugin installed that is the real verifier, which calls
+# the real `gh api` with the operator's credentials ($GH_TOKEN or ~/.config/gh): an outward
+# GitHub request from a selftest, and a `gh` state dir written into $HOME. A CI runner has no
+# verifier on PATH, so it never happens there and only a laptop sees it. A per-call
+# `RELEASE_PR_REVIEW_VERIFIER=off` was the previous spelling, and the call sites it missed are how
+# it leaked. A file for which the verifier IS the subject removes this per arm (`env -u`) and
+# hands in a stub; `release-pr-body-selftest.sh` asserts this floor holds.
+export RELEASE_PR_REVIEW_VERIFIER=off
+
 fails=0
 # `checks` counts every assertion that ran, passed or failed. `fails` alone cannot tell a suite
 # that ran its whole battery from one that lost half of it: delete an `eq` line and the file
