@@ -8,8 +8,11 @@
   "artifacts": [
     "VERSION → {{version}}",
     "docs/CHANGELOG.md → [{{version}}] section",
-    "CLAUDE.md § Recent releases row",
+    "docs/RECENT-RELEASES.md § Recent releases row",
     "docs/UPGRADE.md → §6 v{{version}} entry"
+  ],
+  "retired_artifacts": [
+    "CLAUDE.md § Recent releases row"
   ],
   "promote": {
     "board_id": 12,
