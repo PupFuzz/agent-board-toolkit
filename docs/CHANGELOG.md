@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-10-11
+
+**Patch — `bin/changelog-gate`'s "move the entry back to `[Unreleased]`" remedy sentences now say to merge the PR's base branch first (card#11719).** The only PR in `v0.46.0..v0.46.1` that carries a change is #461, enumerated below and in the release PR's generated `## Bundled` table. Per `VERSIONING.md` § Bump sizing this is a **patch**: only the wording of two remedy sentences changes; no new surface, and no narrowings this release — every input the gate accepted it still accepts, and the verdict (red or green, `rc 1`) is unchanged.
+
 ### Fixed
 
 - **card#11719** — **`bin/changelog-gate`'s "move the entry back to `[Unreleased]`" remedy now says to merge the PR's base branch into the branch first.** On a pre-fold or sync branch that has not merged the base yet, the entry sitting under the released `## [X]` heading exists only in the PR's merge result, so an author who followed the old sentence found nothing to move on their branch. Both sentences now name the merge as the first step (the carried-entry one: if the base is not already merged in); the verdict is unchanged.
