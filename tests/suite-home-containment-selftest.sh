@@ -134,11 +134,8 @@ eq "  …not softened into unmeasured"                             "" "$SWEEP_UN
 echo "== the population, re-derived from the tree on every run =="
 # The glob IS the derivation — no list to fall out of date, and no written number for a later
 # pass to quote back instead of re-computing. THERE IS NO EXCLUSION LIST: every subject the
-# glob finds is run, and the one subject that could not run under CI's default depth-1
-# checkout (changelog-card-entry-selftest, which refuses when no release tag resolves) is
-# served by this job's own `fetch-depth: 0` rather than dropped from the population. The
-# single name this file does skip is ITSELF — it runs the suite, so including itself is
-# unbounded recursion — and that skip is asserted rather than assumed.
+# glob finds is run. The single name this file does skip is ITSELF — it runs the suite, so
+# including itself is unbounded recursion — and that skip is asserted rather than assumed.
 subjects=()
 for f in "$HERE"/*selftest*.sh; do
     [[ "$(basename "$f")" == "$SELF" ]] && continue

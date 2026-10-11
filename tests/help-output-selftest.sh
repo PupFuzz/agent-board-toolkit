@@ -72,6 +72,7 @@ _mktmp_scratch
 
 # The CLIs whose --help prints a leading comment header.
 CLIS=(promote-released-cards card-completeness release-pr-body release-artifacts-check release-tag-check
+      changelog-gate
       agent-board-toolkit-runtime-check dependabot-deploy-reconcile board-stats gh-code-search
       gitignore-secret-family-check run-coverage-check board-hooks-check)
 
