@@ -649,11 +649,17 @@ _kb_discovered_boards() {
     printf '%s' "$out"
 }
 
+# kb_snapshot_boards_file: the roster file's path — $KANBAN_SNAPSHOT_BOARDS, else
+# ~/.kanban-snapshot-boards. Read the path here rather than re-defaulting the variable.
+kb_snapshot_boards_file() {
+    printf '%s' "${KANBAN_SNAPSHOT_BOARDS:-$HOME/.kanban-snapshot-boards}"
+}
+
 # kb_board_roster: the boards this box knows about, one `<name><TAB><label>` line per board,
-# in roster order. The roster file is ~/.kanban-snapshot-boards (override
-# $KANBAN_SNAPSHOT_BOARDS): one `<name>:<label>` per line, `#` comments and blank lines
-# skipped, a line with no `:` taking its name as its label. Whitespace inside a NAME is
-# stripped (it resolves to a filename); a label is taken verbatim after the first `:`.
+# in roster order. The roster file is kb_snapshot_boards_file's: one `<name>:<label>` per
+# line, `#` comments and blank lines skipped, a line with no `:` taking its name as its
+# label. Whitespace inside a NAME is stripped (it resolves to a filename); a label is taken
+# verbatim after the first `:`.
 #
 # When the roster file is absent, unreadable, or holds no usable line, it falls back to
 # DISCOVERY — every ~/.kanban-<name>-board.env present, label = name — so a box that never
@@ -670,7 +676,8 @@ _kb_discovered_boards() {
 # must be carried across by hand. The open item is recorded in
 # docs/CONSOLIDATION-PLAN.md (post-program dispositions), which owns it.
 kb_board_roster() {
-    local rosterf="${KANBAN_SNAPSHOT_BOARDS:-$HOME/.kanban-snapshot-boards}"
+    local rosterf
+    rosterf="$(kb_snapshot_boards_file)"
     local line name label envf n=0
     if [[ -r "$rosterf" ]]; then
         while IFS= read -r line || [[ -n "$line" ]]; do

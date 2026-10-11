@@ -1,200 +1,35 @@
 #!/usr/bin/env bash
-# changelog-card-entry-selftest.sh — assert that every card shipped since the last release tag
-# owns a line-initial `- **card#NNNN**` entry in docs/CHANGELOG.md, and that no PR left a
-# SUPERSEDED entry standing beside its replacement — i.e. under the same `###` heading, which is
-# what "beside its replacement" means here and, until card#10176, was NOT what the leg measured.
+# changelog-card-entry-selftest.sh — the FIXTURES for `bin/changelog-gate`, the CHANGELOG
+# `[Unreleased]` gate. This file sources the bin and drives its rule functions — and, from the
+# "END TO END" section on, the bin itself — against throwaway repositories carrying known data.
+# It runs NO live leg: the live judgement of this repository is `bin/changelog-gate`, run by the
+# second step of `.github/workflows/changelog-card-entry.yml` through `./changelog-gate`
+# (card#11698). The bin's header owns the rule; nothing here restates it.
 #
-# WHY THIS FILE EXISTS. `[Unreleased]` is where this repo records shipped work between
-# releases, and 21 of the 24 cards merged to `dev` since v0.23.1 had an entry there. Nothing
-# asserted it. Three did not, and the CHANGELOG is the *canonical* record — `CLAUDE.md`'s
-# release table is explicitly a truncated snapshot of it (VERSIONING.md step 5), so an entry
-# that never lands is not recoverable from a second copy later; the release PR that bundles
-# the version section simply ships without it (card#5767).
+# WHY THE MACHINERY IS FIXTURE-PROVEN. Right after a release both streams the gate compares are
+# genuinely empty (no commits since the tag; `[Unreleased]` emptied by the fold), so "non-empty"
+# cannot be asserted against a live repository without a false red on the first PR of every
+# cycle. Every red the gate can give is therefore shown here on a fixture carrying a known member,
+# beside a fixture on which the same code must go GREEN — without which "always reports
+# something" would satisfy every can-fail leg vacuously.
 #
-# The three misses were not uniform, and the third is why the rule below is spelled the way it
-# is:
-#   * card#5371 (#198) and card#5671 (#209) — no mention anywhere in the file.
-#   * card#5374 (#191) — no entry, and its ONLY mention is a *stale forward reference* inside
-#     card#5359's entry: "card#5374 proposes the selftest that would have caught both
-#     directions", written before #191 shipped it. A reader of a release cut from that file is
-#     told the gate was proposed, not delivered. So "the file mentions the card" is NOT the
-#     property worth gating — a mention can be prose that actively misinforms.
+# WHAT THE FIXTURES COVER, by the bin's legs:
+#   * the token leg — leftmost-token obligations, the R2 bullet grammar (`BULLET_RE`, the lead,
+#     every `card#N` in it), the region's floor and ceiling, the PR-title source, and "released"
+#     decided by patch / PR identity (the cherry-pick release, card#11034);
+#   * `changelog.exempt_paths` judged per landed unit, including the one shape where the PR run
+#     and a merge-commit push run disagree — asserted as that divergence, not hidden;
+#   * the remedy beside a red: the fold arm (card#8442), the carried-entry arm, the generic one;
+#   * `_squash_ends`' admission of a PR delta and its refusal on release and back-merge PRs;
+#   * end to end through the bin: the announce leg and its classification skip, the classifier's
+#     refusal and its `::warning::` relay, the release-body size arm, where `changelog.*` is read
+#     on each run kind (fork point, release cut, HEAD) and the refusals that read can hit, the
+#     unknown-key warning and the `tag_format` refusal.
+# ⛔ NO DUPLICATE SHAPE IS FIXTURED, because the bin reports none (card#11684 R8, D10).
 #
-# This is the same defect shape this repo has already closed three times by building the
-# tripwire instead of re-fixing instances — card#5355 (a selftest nothing runs), card#5389 (a
-# hand-maintained `bin/` enumeration that under-covered), card#5374 itself (README's table vs
-# `bin/`). Every one was "a list a human keeps in sync, with no check".
-#
-# THE RULE, and why line-initial. A card token in a commit subject obliges a bullet whose FIRST
-# characters are `- **card#NNNN**`. That spelling is the entry *claiming to be about* that card.
-# Bold-anywhere would be weaker in a way that matters here: `- **card#5766** — … supersedes
-# **card#1234**` would then discharge card#1234's obligation with a clause about a different
-# change. The cost is real and accepted — a PR that folds two cards owes two bullets, not one
-# bullet naming both (`- **card#5370** (with **card#5372** folded in)` discharges only 5370).
-# Two bullets is the more honest record anyway: both cards shipped.
-#
-# BOTH SIDES ARE DERIVED, neither is hand-listed — the property that makes this different from
-# the convention it replaces. Obligations come from commit subjects (plus the PR title, below);
-# discharges come from the file. There is no exempt-card list to maintain: a commit with no
-# `card#` token (`chore(deps)`, `docs(orientation)` syncs) creates no obligation at all, which
-# is the exemption, expressed as the absence of a trigger rather than as a second registry.
-#
-# WHY THE PR TITLE IS A SECOND OBLIGATION SOURCE. Under squash-merge the commit subject IS the
-# PR title, so before merge the branch's own subjects may carry no token and the obligation
-# would not exist yet — the gate would pass on the PR and fail on the push to `dev`
-# AFTERWARDS, leaving a red integration branch and a merged omission. Reading `$PR_TITLE`
-# (set from the pull_request event by .github/workflows/changelog-card-entry.yml) makes the
-# check pre-merge, against the exact string that is about to become the subject. It is a plain
-# env var, so a local run without it simply checks the merged history — the weaker of the two,
-# never a different rule.
-#
-# THAT PRE-MERGE CLAIM IS ONLY TRUE IF THE JOB RE-RUNS WHEN THE TITLE CHANGES, which is why
-# this gate has its OWN workflow rather than a job in ci.yml (card#6062): editing a PR title
-# fires `edited`, never `synchronize`, so under ci.yml's event set the last run kept answering
-# about the PRE-EDIT title — a token added by a title edit reached `dev` unchecked, exactly the
-# merged-omission case above. The workflow subscribes `edited` for that reason.
-#
-# WHAT A GREEN RUN HERE ACTUALLY PROVES — the weakest properties the assertions support. One:
-# every `card#NNNN` appearing in the subject of an UNRELEASED commit since the last release tag
-# (`_unreleased` owns "unreleased": not reachable from the tag, and not a copy of a commit that
-# is) also appears at the head of some bullet in the sections ABOVE that tag's section. Two: no
-# card in that region carries two line-initial bullets that a SINGLE PR put there and left
-# standing UNDER ONE `###` HEADING (card#10176 — a card's `### Added` bullet and its `### Changed` BREAKING bullet are two
-# claims of different KINDS about one change, which this repo's released sections have carried
-# since #180, and reporting that as a duplicate is what this leg used to do). Neither says
-# anything about whether a bullet's prose is accurate, current, or describes what shipped, and
-# the second sees BULLETS only — a duplicated line inside a multi-line entry is outside its
-# population, as is a superseded wording that was MOVED to another heading. Never report a green
-# run as "the CHANGELOG is correct"; it means "no shipped card is undocumented, and no PR left a
-# stale copy of its own entry beside its replacement under one heading".
-#
-# AND ON A SQUASH-MERGED pull_request RUN, PROPERTY TWO IS JUDGED ON WHAT THE MERGE WILL RECORD, NOT
-# ON THE BRANCH'S COMMITS (card#10338). A squash erases a branch's internal removals, so the diff
-# this gate was handed before a merge and the diff that landed after one were different objects: a
-# branch that filed two bullets and reworded one netted 1 here and 2 on `dev`, and the gate was
-# systematically WEAKER before the merge than after it — it admitted #388 and then reddened the
-# branch nobody can rebase. `_squash_ends` + `_added_bullets`' delta path own the repair, the two
-# derived conditions under which it applies AT ALL — this repo merge-commits its release and
-# back-merge PRs, where that basis would fold a whole release into one group — and the residual it
-# leaves (a local run, having no merge ref, still answers per commit). The live leg PRINTS which
-# basis answered; do not infer it.
-#
-# WHY THE SECOND PROPERTY EXISTS (card#7227). A `merge=union` attribute on docs/CHANGELOG.md
-# resolves the anchor collision every sibling PR creates by keeping both sides' lines, and on a
-# REBASE that same rule re-adds a line the branch had already superseded, at rc 0 and in
-# silence, so a branch that reworded its own entry ships both wordings. Presence — the first
-# property — cannot see it: both copies are line-initial bullets for the card, so the
-# obligation is discharged twice over and the gate stays green over a file that now says two
-# different things about one change.
-#
-# THIS REPO DOES NOT CARRY THAT ATTRIBUTE, AND HAS NO `.gitattributes` AT ALL — 6cbf5e5 dropped
-# it in the same card, its benefit measured and absent (GitHub's server-side merge does not apply
-# a merge driver, so sibling PRs still go CONFLICTING). So a catch-up `git merge origin/dev` on
-# this repo DOES conflict on this file and IS hand-edited; nothing here should be read as saying
-# otherwise. The leg stays because the shape it catches — one PR leaving a superseded bullet
-# beside its replacement — is reachable without union (a bad conflict resolution, a stray
-# copy-paste), and because the attribute is one `.gitattributes` away from returning.
-#
-# THE SCAN IS SECTION-SCOPED AT BOTH ENDS, and each end is load-bearing in a different
-# direction. Entries are read from the `## [Unreleased]` header down to the
-# `## [<last release tag>]` header — i.e. `[Unreleased]` plus any version section cut after that
-# tag, and nothing else.
-#
-# The CEILING errs GREEN without it: scanning down past the stop header would let an entry under
-# `[0.20.0]` discharge a commit that landed after v0.23.1, a claim about the wrong release. It
-# also keeps the release PR green — step 4 of VERSIONING.md retitles `[Unreleased]` as `[X.Y.Z]`
-# while the newest tag is still the PREVIOUS version, so the just-renamed section is still above
-# the stop header and every entry still counts.
-#
-# The FLOOR errs GREEN too, and did — for real, until card#7293. Without it the region began at
-# LINE 1, so the H1, the format blurb and the `begins at [0.8.2]` note were all inside it: a
-# bullet sitting in NO section discharged its card. The card#7227 entry landed at line 1, above
-# the `# Changelog` H1, and this gate reported it as documented. The floor is the LITERAL
-# `## [Unreleased]` — step 4 opens a fresh one above the section it renames, so a correct release
-# PR still has it, and pinning to it is what makes a release PR that forgot the fresh header red
-# on that PR rather than on everyone else's afterwards (`_region` below carries the timing
-# argument in full).
-#
-# THAT SCOPE IS RIGHT AND ITS REMEDY WAS WRONG (card#8442). A branch cut BEFORE a release fold has
-# its `[Unreleased]` entry carried UNDER the folded `## [X.Y.Z]` heading by the merge — cleanly,
-# because step 4 is textually a pure insertion at the top of the old section's body and the
-# branch's bullet is an insertion further down it. The region is not at fault: the entry really is
-# outside it, and the card really is undocumented for the release it is about to be counted in. But
-# the only thing this gate said was "missing", so an author filed a SECOND entry and the file
-# shipped two wordings of one change — the `_stale_dupes` shape, minted by this gate's own advice.
-# So when `_missing` names a card, `_missing_remedy` now asks WHERE the branch's own new lines
-# landed and, when three legs establish that the heading they landed under was cut while this
-# branch was open, names the MOVE instead. It is a DIAGNOSTIC ONLY — the verdict is identical in
-# every shape, and a diagnosis that cannot be established prints the text this gate always printed.
-# `_prefold_heading` carries the three legs and the residuals they buy.
-#
-# "RELEASED" IS DECIDED BY PATCH AND PR IDENTITY, NOT BY REACHABILITY (card#11034). A release cut
-# by CHERRY-PICK — v0.41.0 was v0.40.0 plus four picked `dev` PRs — reaches the copies, not dev's
-# originals, so `$LAST_TAG..HEAD` alone made every picked card owe a second `[Unreleased]` bullet
-# from the moment `dev` merged the tag. A commit is released when its patch-id matches a commit in
-# the tag's history, OR its subject ends in a squash `(#N)` and is byte-identical to one there;
-# a subject without `(#N)` is never matched. ⛔ THE ONE WAY THIS GOES WRONG, accepted: a NEW commit
-# whose subject is byte-identical to a released squash subject, `(#N)` included, obliges nothing.
-# Only a hand-written subject copying an already-shipped PR's number reaches it, and patch-id
-# alone cannot clear the cherry-pick shape at all (context drift — measured: 1 of v0.41.0's 4
-# copies matched). `_unreleased` owns the rule, its bound and its residuals; the live leg prints
-# how many commits it excluded. The DUPLICATE leg stays on reachability (see its call below).
-#
-# EMPTY IS A LEGITIMATE ANSWER HERE, AND THAT IS WHY THE MACHINERY IS FIXTURE-PROVEN. Right
-# after a release both streams are genuinely empty (no commits since the tag; `[Unreleased]`
-# emptied by step 4), so "non-empty" cannot be asserted against the live repo without a false
-# red on the first PR of every cycle. The positive controls therefore run against FIXTURES
-# carrying known members — including a fixture on which the gate must go GREEN, without which
-# "always reports something" would satisfy the can-fail legs vacuously. The live repo is then
-# trusted to answer "" honestly.
-#
-# THE WAY THIS COULD GO SILENTLY GREEN is a checkout that cannot see the history it needs, or a
-# file whose section structure the region cannot find, so the preconditions below are refused
-# BEFORE any assertion runs. The workflow gives this job `fetch-depth: 0` for that reason, which
-# is also why it is its own job and not a `selftest` matrix entry in ci.yml (that job checks out
-# at the default depth 1). Do not restate their number here — it was inherited wrong once
-# already; count the `exit 1`s in that block.
-#
-# The load-bearing one is the MISSING STOP HEADER: with no `## [<last tag>]` section the scan
-# runs from `[Unreleased]` to EOF and an entry under any past version discharges a commit that
-# landed after the tag — that one errs GREEN, silently, and is the reason this block exists.
-#
-# The MISSING FLOOR precondition — no `## [Unreleased]` above the stop — is a DIAGNOSTIC, in the
-# shallow guard's sense rather than the stop header's. It cannot err green: an empty region
-# discharges nothing, so every obligation reds. But `_stale_dupes` asserts an ABSENCE over that
-# same region, and an empty region answers "" for a reason that has nothing to do with the file
-# being clean — which is precisely what this block exists to refuse. It also stops the run
-# blaming N innocent cards for one missing header. On a release PR it is the arm that fires: a
-# PR that renamed `[Unreleased]` without opening a fresh one reds HERE, on itself.
-#
-# The shallow guard is a DIAGNOSTIC, and saying so is the point — measured, not assumed. A
-# shallow clone does not actually produce a wrong answer: either no `v*` tag is reachable from
-# the truncated history and `git describe` fails (the tag guard catches it), or the tag IS
-# reachable, in which case every commit between it and HEAD is present and the range is
-# COMPLETE. What the shallow guard buys is an accurate message. Verified against a real
-# `--depth 1` clone carrying all 36 tags after `fetch --tags`: `describe` still finds none, so
-# without this guard that checkout is told "a checkout that fetched no tags lands here; fetch
-# them" — advice that is simply false for the state it is describing, and sends the reader
-# after the wrong fix. Do not read this guard as a second correctness catch; it is ordered
-# first so the true diagnosis wins.
-#
-# THE `card#[0-9]+` SPELLING HERE IS DELIBERATELY HARDCODED, not read from `.release-pr.json`'s
-# `card_token_regex` — even though that key now exists and carries the same string (card#5877).
-# They are two copies on purpose, with different trust models: this is a GATE, and a gate whose
-# obligation-detecting pattern comes from a PR-editable config file can be switched off by the
-# same PR that needs switching off. The cost of the divergence is bounded and visible — the live
-# leg prints its obligation and discharge COUNTS every run, so a spelling migration that emptied
-# the obligation set would show as `0 obligation(s)` rather than pass quietly. Do not "consolidate"
-# the two; if the repo's subject spelling changes, change this literal in the same PR.
-#
-# KNOWN, ACCEPTED FRICTION, and the second one belongs to the uniqueness leg. A commit subject
-# that cites a card it is not about ("supersedes card#1234") creates a real obligation for
-# card#1234; and the uniqueness leg's PR grouping reads the `(#NNN)` token that squash-merge
-# leaves in the subject, so two commits that reached `dev` WITHOUT one — a direct push, or a
-# branch merged with a merge commit — share the unsquashed group and would be read as one PR.
-# Neither errs green. The first is fixed by rewording
-# the subject — which the repo already requires for an unrelated reason: a foreign `card#` token
-# in a PR title hijacks the bridge's card correlation, so citing one is a defect on its own.
+# WHAT A GREEN RUN HERE PROVES — that each named function and each named run of the bin answers
+# as asserted on these fixtures, under this host's git, awk and jq. Nothing about this
+# repository's own CHANGELOG, which the workflow's second step judges.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -202,847 +37,13 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$HERE/_selftest-prelude.sh"
 
 ROOT="$HERE/.."
-CHANGELOG="$ROOT/docs/CHANGELOG.md"
-_need -r "$CHANGELOG"
+GATE="$ROOT/bin/changelog-gate"
+_need -x "$GATE"
 _mktmp_scratch
-
-# ---------------------------------------------------------------------------
-# The rule, as three pure functions over files. Every assertion below — fixture and live —
-# goes through these, so the fixtures test the code the live leg runs, not a paraphrase.
-# ---------------------------------------------------------------------------
-
-# _obliged <subjects-file> — the card tokens a set of commit subjects obliges, C-collated.
-# Position-free: a token anywhere in the subject counts, because the subject spellings in this
-# repo's history are not uniform ("… (card#5766) (#210)", "Close Stage D … (card#5566) (#206)").
-_obliged() {
-    { grep -oE 'card#[0-9]+' "$1" || true; } | LC_ALL=C sort -u
-}
-
-# _region <changelog> <version> — the scanned region: the file from its `## [Unreleased]` header
-# down to the `## [<version>]` header (exclusive), the floor line included. ONE owner for the
-# section scope; a second copy of the stop rule would be a second thing to get wrong. The reader
-# count is deliberately NOT restated here — it was stale within one card of being written, and
-# the callers are two screens away (card#7304 tracks consolidating what carves this concept).
-#
-# THE FLOOR IS THE POINT, and it was absent until card#7293. The region's PURPOSE has always
-# been "the sections recording unreleased work", but with no floor its PREDICATE was "anywhere
-# above the stop header" — which swallows the H1, the format blurb and the `begins at [0.8.2]`
-# note, i.e. every line of preamble. A `- **card#NNNN**` bullet parked in NO section therefore
-# discharged its card's obligation, and one was: the card#7227 entry landed at line 1, above
-# the `# Changelog` H1, and this gate reported 21 obligations / 21 discharged over it.
-#
-# THE FLOOR IS THE LITERAL `## [Unreleased]`, AND A RELEASE PR IS WHY — the opposite of what it
-# looks like. Step 4 of VERSIONING.md retitles the accumulated `## [Unreleased]` block as
-# `## [X.Y.Z]` *and opens a fresh, empty `## [Unreleased]` above it*, so on a correct release PR
-# the file reads `## [Unreleased]` → `## [X.Y.Z]` → `## [<prev>]` (the stop) and the renamed
-# section is INSIDE the region, discharging exactly as before. Measured over the tag history as
-# it stood at v0.29.0, not assumed: of the 42 `v*` tags, 31 carry a `docs/CHANGELOG.md` and 29 of
-# those have `## [Unreleased]` as their first section header; the two that do not (v0.23.0,
-# v0.23.1) predate the rule. Re-derive rather than trusting those figures — they were a reason,
-# not a constant.
-#
-# The generous spelling — floor at "whatever the first `## [` header is" — is what would go
-# wrong, and it goes wrong at the worst moment. A release PR that forgets the fresh
-# `## [Unreleased]` passes that floor (the renamed `## [X.Y.Z]` becomes the floor), merges, and
-# is tagged — and from the tag onward that same renamed section IS the stop header, so the region
-# is empty and the precondition below reds EVERY subsequent PR on `dev`, blaming whoever pushed
-# next. The literal floor reds on the release PR itself, where the omission is, while the person
-# who made it is looking at the check.
-#
-# WHEN THERE IS NO `## [Unreleased]` ABOVE THE STOP the region is EMPTY, which discharges nothing
-# and therefore reds loudly rather than passing over an unscanned file. The live leg refuses on
-# that state outright (precondition below) so the message names the real cause instead of listing
-# every shipped card as undocumented.
-#
-# BOTH headers are matched as LITERAL prefixes, not regexes: the stop version is interpolated,
-# and `0.23.1` as a regex also matches `0x23y1`. `index()` takes no pattern at all, so there is
-# nothing to escape and no awk `-v` escape-processing to get wrong; the floor uses the same
-# technique for the same reason, plus one of its own — `[` is a regex metacharacter, so the
-# obvious `/^## \[Unreleased\]/` spelling is one dropped backslash away from a character class.
-#
-# ⛔ RESIDUAL, unchanged in kind by this card: neither end is fence-aware, so a line beginning
-# `## [Unreleased]` (or the stop header) at column 1 inside a fenced code block would be taken as
-# the real header — the ceiling has carried that exposure since it was written, and
-# `docs/CHANGELOG.md` carries no fenced block at all today.
-_region() {
-    awk -v stop="## [$2]" '
-        index($0, stop) == 1 { exit }
-        !in_region && index($0, "## [Unreleased]") != 1 { next }
-        { in_region = 1; print }
-    ' "$1"
-}
-
-# _bullets <changelog> <version> — the region's line-initial card bullets, VERBATIM and in file
-# order. The uniqueness leg compares whole LINES, which is the one thing `_discharged` throws
-# away.
-_bullets() {
-    _region "$1" "$2" | { grep -E '^- \*\*card#[0-9]+\*\*' || true; }
-}
-
-# _region_kinds <changelog> <version> — one `<kind>\t<bullet line>` record per line-initial card
-# bullet standing in the region, where <kind> is the `### ` heading the bullet is filed under.
-#
-# THE KIND IS THE `###` HEADING ALONE, DELIBERATELY IGNORING WHICH `## [` SECTION IT SITS IN,
-# and both halves of that are load-bearing for `_stale_dupes` (card#10176):
-#   * `###` distinguishes `### Added` from `### Changed`. A Keep-a-Changelog heading is a CLAIM
-#     ABOUT THE KIND of the change, so one card's feature bullet and the same card's BREAKING
-#     bullet are two different claims, not two wordings of one.
-#   * `## [` is ignored so that a bullet carried under a folded `## [X.Y.Z]` heading and a second
-#     one filed under `## [Unreleased]` — the card#8442 shape, where the gate's own remedy used to
-#     mint a duplicate — still reads as ONE kind and is still reported. Keying on the pair would
-#     silence exactly that.
-#
-# A bullet with no `### ` above it inside the region takes the kind "" — its own kind, not a
-# missing value. Every `## [` section older than [0.31.0] is written that way, as are the fixtures
-# below and the union-rebase derivation, so "" is the common case in the historical file rather
-# than an edge.
-#
-# Headings are matched with `index(… ) == 1` for `_region`'s reason: `[` never reaches a regex and
-# there is nothing to escape. `### ` is tested FIRST because `index($0, "## ")` is 0 on a `###`
-# line (the third character is `#`, not a space) — the order is belt to that, not the mechanism.
-_region_kinds() {
-    _region "$1" "$2" | awk '
-        index($0, "### ") == 1 { kind = $0; sub(/[ \t]+$/, "", kind); next }
-        index($0, "## ") == 1  { kind = ""; next }
-        /^- \*\*card#[0-9]+\*\*/ { print kind "\t" $0 }
-    '
-}
-
-# _kinds_of <bullet line> <_region_kinds output> — every kind under which that EXACT line stands.
-# Empty when the line is not in the region at all, which is the presence test `_stale_dupes` runs;
-# more than one line when the identical wording stands under two headings.
-_kinds_of() {
-    awk -F'\t' -v b="$1" '$2 == b { print $1 }' <<< "$2"
-}
-
-# _discharged <changelog> <version> — the card tokens carrying a line-initial bullet in the
-# region. The head token is extracted BEFORE the id is, so a bullet whose prose cites a second
-# card does not discharge it (the card#5374 shape, fixtured below).
-_discharged() {
-    _bullets "$1" "$2" |
-        { grep -oE '^- \*\*card#[0-9]+\*\*' || true; } |
-        { grep -oE 'card#[0-9]+' || true; } | LC_ALL=C sort -u
-}
-
-# _missing <subjects-file> <changelog> <version> — obliged but not discharged.
-# `comm` validates input order in the AMBIENT locale, so it is pinned to C alongside both
-# producers: en_US collation ignores punctuation in its primary pass and would judge two
-# correctly C-sorted `card#NNNN` streams as unsorted.
-_missing() {
-    LC_ALL=C comm -23 <(_obliged "$1") <(_discharged "$2" "$3")
-}
-
-# _has_version_header <changelog> <version> — is there a `## [<version>]` section at all?
-_has_version_header() {
-    [[ -n "$(awk -v stop="## [$2]" 'index($0, stop) == 1 { print "y"; exit }' "$1")" ]]
-}
-
-# _bullets_at <repo> <rev> <path> <version> — the line-initial card bullets standing in the
-# REGION of <path> as of <rev>, through the same `_region`/`_bullets` the live leg uses rather
-# than a second carve of the same concept. "" on any revision whose region cannot be CARVED —
-# the three arms are enumerated at `_added_bullets` below, which is the caller that decides what
-# silence buys.
-#
-# ⛔ THE STOP-HEADER GATE IS NOT BELT-AND-BRACES, it is the arm that errs GREEN. `_region`'s
-# ceiling is `index($0, "## [<version>]") == 1 { exit }` — a test that simply never fires on a
-# revision carrying no such header, so the carve runs `[Unreleased]` → EOF and reports every
-# frozen released section as in-region. The live leg refuses that state outright (the missing
-# stop header is the load-bearing hard exit in the preconditions block); this function is handed
-# ARBITRARY historical revisions and cannot refuse, so it gates on the same `_has_version_header`
-# the precondition uses and drops the revision instead.
-#
-# The blob goes to a FILE, not a `<(printf …)` process substitution: `_has_version_header` and
-# `_bullets` are two readers, and a builtin writer feeding an `awk` that `exit`s early is the
-# SIGPIPE shape `_selftest-prelude.sh`'s `has_line` header documents at length.
-_bullets_at() {
-    local blob at="$TMP/bullets-at"
-    blob="$(git -C "$1" show "$2:$3" 2>/dev/null)" || return 0
-    printf '%s\n' "$blob" > "$at"
-    if _has_version_header "$at" "$4"; then _bullets "$at" "$4"; fi
-    rm -f "$at"
-}
-
-# _added_bullets <repo> <path> <range> <version> [<squash-base> <squash-head>] — one TAB-separated
-# `<pr>\t<+|->\t<bullet line>` record per line-initial card bullet a PR in <range> added to <path>,
-# or removed from the unreleased REGION of <path>. Both signs are emitted; `_stale_dupes` owns what
-# they mean.
-#
-# ⛔ THE UNIT IS A PR'S TREE DELTA, NOT A COMMIT SERIES (card#10338), and until that card those
-# were the same thing only for PRs that had ALREADY been squashed. The records for a merged PR come
-# from its squashed commit's diff — ONE tree delta — while the records for the PR being CHECKED came
-# from `git log -p` over the branch's own commits, i.e. N deltas unioned. Those are different
-# objects, because a SQUASH ERASES A BRANCH'S INTERNAL REMOVALS: a branch that files two bullets and
-# then rewords one records `+A +B −A +A'` as a series and `+A' +B` as a squash. The net rule in
-# `_stale_dupes` reads the first as 1 and the second as 2, so the gate was systematically WEAKER
-# before a merge than after it — measured on #388 (PR runs 35936139848 / 35932847183 SUCCESS, push
-# run 35936951086 on dev@1b301f36 FAILURE). A gate that admits the branch it would block and then
-# reds the branch nobody can rebase is worse than no gate on that shape.
-#
-# SO THE SQUASH ENDS ARE PASSED IN AND THE DELTA IS DIFFED DIRECTLY. `<squash-base>` is the base
-# branch tip and `<squash-head>` the revision whose TREE will land on it — on a pull_request run
-# that pair is `_squash_ends`' output, i.e. the base tip and the MERGE COMMIT `actions/checkout`
-# leaves in the tree, so `git diff <base> <merged>` is byte-for-byte the diff the squashed commit
-# will record. The commits that delta re-derives (`<base>..<merged>` — the branch's own, plus any
-# catch-up merge) are then DROPPED from the per-commit walk, or the same work would be counted
-# twice into one group. Everything else in <range> — the base branch's own squashed commits since
-# the tag — keeps coming from `git log -p`, where one commit already IS one PR's tree delta.
-#
-# ⛔ RESIDUAL, named rather than left implied: with NO ends supplied the function answers exactly
-# as it did before this card, per commit. That is what a LOCAL `bash tests/…` run and a `push` run
-# on a branch carrying unsquashed commits get, and on those the pre-card weakness stands. It is not
-# the shape that matters: the two runs that gate a merge — the pull_request run and the push run on
-# `dev` — now judge the SAME two revisions (base tip → resulting tree) against the SAME file, so
-# their verdicts agree by construction. The parity claim is also specific to SQUASH merging, which
-# is this repo's method; under rebase-merge the branch's commits land individually and the
-# asymmetry would return with the signs swapped.
-#
-# THE TWO SIGNS ARE SCOPED IN DIFFERENT PLACES, AND THAT IS THE POINT (card#7303). `_stale_dupes`
-# states its scope as the region and both halves of its arithmetic have to honour it — but the
-# evidence for the two signs lives in two different files. An ADD can be judged against the
-# CHANGELOG as it stands: the bullet is either standing in the region now or it is not, which is
-# the presence test `_stale_dupes` already runs, so its net half is gated on that same test and
-# nothing is owed here. A REMOVAL cannot be judged that way at all — the line is GONE from the
-# file, so the only witness to where it stood is the revision it was removed FROM. Hence the
-# `<version>` argument and the witness-revision read below: `<sha>^` for a commit's own diff, and
-# `<squash-base>` for the delta, which is the SAME revision the squashed commit's `^` will be.
-#
-# ⛔ THE PATH-SCOPED VERSION ERRED GREEN, measured by construction rather than reasoned about:
-# ONE commit adding two `card#4000` bullets to `[Unreleased]` while deleting two `card#4000`
-# bullets from the frozen `## [0.23.1]` section leaves two duplicate wordings standing and was
-# reported as NOTHING, because the path-scoped net was 2 − 2 = 0. The out-of-region removals are
-# the entire difference — the same commit without them reds. A suppressed red is not a weaker
-# check; on that axis it is a decoration. Both shapes are fixtured below, as a pair.
-#
-# THE BURDEN OF PROOF SITS ON THE SIDE THAT COULD SUPPRESS. A removal LOWERS net, so it is
-# emitted only where the parent revision PROVES the line stood in the region. THREE arms drop it,
-# and they are not equivalent — the third is the one that would have erred GREEN:
-#   * the path does not exist at that revision;
-#   * the revision carries no `## [Unreleased]`, so `_region` yields an empty region;
-#   * the revision carries `## [Unreleased]` but NOT the stop header `## [<version>]`, so
-#     `_region`'s ceiling never fires and a carve would run to EOF, reporting every frozen
-#     released section as in-region — which is card#7303's own defect, re-minted one layer down
-#     on a surface that has no precondition to refuse it. `_bullets_at` gates that arm on
-#     `_has_version_header` rather than trusting the carve, and the arm is fixtured below.
-# Given those three, a dropped removal can only leave net HIGHER — this side can only
-# over-report. Adds need no such branch: they are emitted unconditionally and gated on presence
-# downstream, so two surviving bullets always contribute net ≥ 2 by themselves.
-#
-# THE GROUP KEY IS THE PR NUMBER, and that is the whole trick. This repo squash-merges, so every
-# commit that reached `dev` carries its PR number in the subject (`… (card#7038) (#265)`), and a
-# commit that has not been squashed yet — the branch you are on — carries none. Grouping by it
-# separates TWO PRs each documenting the same card, which is legitimate and is in this file
-# twice today (card#6645 via #261/#262, card#7038 via #265/#266), from ONE PR leaving two
-# bullets for one card, which is what a union merge mints. A whole-file "no id twice" rule — the
-# obvious spelling, and the one to reach for first — reds this repo as it stands, on two entries
-# that are correct.
-#
-# A BRANCH'S CATCH-UP MERGE NEVER CONTRIBUTES ITS SIBLINGS, on either path, and the two reasons are
-# different. In the per-commit walk it is `git log -p`'s default of not diffing merge commits; in
-# the delta it is that those siblings already stand AT THE SQUASH BASE, so they are on both sides of
-# the diff and cannot appear as additions. Either way, a branch that catches up with
-# `git merge origin/dev` (by hand — this repo has no `.gitattributes`, so that merge conflicts on
-# this file) is not reddened for entries it did not write.
-#
-# THE MARKERS ARE THE STREAM'S OWN GRAMMAR, three of them, and they arrive in the order the awk
-# needs: `@@COVERED@@` first (the shas the delta re-derives), then `@@DELTA@@` (its witness
-# revision) with the delta's diff behind it, then the per-commit walk. A `@@COMMIT@@` whose sha the
-# first group named emits nothing.
-#
-# THE DELTA'S GROUP KEY IS THE PR'S OWN NUMBER WHERE THE CALLER KNOWS IT (`<delta-pr>`, 7th
-# argument; the live leg reads `$PR_NUMBER`, set from `github.event.number` by the workflow). That
-# is the same key the SQUASHED commit will carry on `dev`, so the two runs group identically as well
-# as diffing identically — the last place the two bases could still disagree. Defaulting to
-# `(unsquashed)` is a real weakening and not a neutral fallback: that key conflates every commit in
-# the range whose subject carries no `(#N)`, so a DIRECT PUSH to `dev` filing a bullet for card X
-# shares a group with the PR under review, and a PR filing its own bullet for X under the same
-# heading reds here while the post-merge `dev` run — where its records move to `(#N)` — is green.
-# That is a pre-existing false red (card#10338 R1), not one the delta introduced; supplying the
-# number closes it for every run that has one.
-_added_bullets() {
-    local repo="$1" path="$2" range="$3" version="$4" sbase="${5:-}" shead="${6:-}"
-    local dpr="${7:-(unsquashed)}"
-    local witness pr sign line memo_rev="" memo_bullets=""
-    {
-        if [[ -n "$sbase" && -n "$shead" ]]; then
-            git -C "$repo" log --no-color --format='@@COVERED@@ %H' "$sbase..$shead"
-            printf '@@DELTA@@ %s\n' "$sbase"
-            git -C "$repo" diff --no-color "$sbase" "$shead" -- "$path"
-        fi
-        git -C "$repo" log -p --no-color --format='@@COMMIT@@ %H %s' "$range" -- "$path"
-    } | awk -v deltapr="$dpr" '
-        /^@@COVERED@@ / { covered[$2] = 1; next }
-        /^@@DELTA@@ /   { witness = $2; skip = 0; pr = deltapr; next }
-        /^@@COMMIT@@ / {
-            witness = $2 "^"
-            skip = ($2 in covered)
-            pr = "(unsquashed)"; s = $0
-            while (match(s, /\(#[0-9]+\)/)) {
-                pr = substr(s, RSTART + 2, RLENGTH - 3)
-                s  = substr(s, RSTART + RLENGTH)
-            }
-            next
-        }
-        skip { next }
-        /^\+- \*\*card#[0-9]+\*\*/ { print witness "\t" pr "\t+\t" substr($0, 2); next }
-        /^-- \*\*card#[0-9]+\*\*/  { print witness "\t" pr "\t-\t" substr($0, 2); next }
-    ' | while IFS=$'\t' read -r witness pr sign line; do
-        if [[ "$sign" == "-" ]]; then
-            # One read per witness revision, not per record: both producers emit a revision's
-            # records together, so a single memo slot is all the caching this needs.
-            if [[ "$memo_rev" != "$witness" ]]; then
-                memo_rev="$witness"
-                memo_bullets="$(_bullets_at "$repo" "$witness" "$path" "$version")"
-            fi
-            [[ "$(has_line "$line" "$memo_bullets")" == true ]] || continue
-        fi
-        printf '%s\t%s\t%s\n' "$pr" "$sign" "$line"
-    done
-}
-
-# _stale_dupes <records> <changelog> <version> — the card ids for which ONE PR left two or more
-# bullets standing UNDER ONE `###` HEADING in the region. <records> is `_added_bullets`' output,
-# whose REMOVALS are already region-scoped there (they have to be — see below); this function
-# scopes the additions.
-#
-# ⛔ THE HEADING SCOPE IS card#10176, AND IT NARROWS A PREDICATE THAT WAS WIDER THAN ITS OWN
-# STATED SCOPE. This leg is announced as "no PR left a SUPERSEDED entry standing beside its
-# REPLACEMENT" and its predicate was "no card carries two surviving bullets from one PR" — not the
-# same set, and the difference is not hypothetical: #388 filed card#10176's `--require-complete`
-# feature under `### Added` and the same card's ⚠ BREAKING refusal of `dry-run: 'True'` under
-# `### Changed`, two claims of different KINDS about one change, neither superseding the other,
-# and the gate reported a duplicate on `dev`. **Folding them into one bullet is the wrong remedy**
-# — it files a breaking change under `### Added`, where the reader who scans `### Changed` for
-# what an upgrade will break does not look, and `docs/CHANGELOG.md` is the file a release section
-# is cut from.
-#
-# THE SPLIT IS THIS REPO'S CONVENTION, DERIVED FROM THE FILE RATHER THAN ARGUED. Of the commits in
-# `docs/CHANGELOG.md`'s whole history that added two or more bullets for ONE card (re-derive with
-# the recipe below), three did it across two or three `###` headings and all three are standing in
-# released sections today: #221 filed card#5910 under `### Added` + `### Fixed`, #212 filed
-# card#5776 under `### Added` + `### Changed` (its second bullet says "same change as above,
-# refactor half" in so many words), and #180 filed card#5200 across `### Added` + `### Changed` +
-# `### Fixed`. VERSIONING.md § The `[Unreleased]` entry rule obliges *a* line-initial bullet and
-# has never said "exactly one".
-#
-#     git log --format=%H -- docs/CHANGELOG.md | while read -r s; do
-#         git show --format= "$s" -- docs/CHANGELOG.md | grep -oE '^\+- \*\*card#[0-9]+\*\*'
-#     done | sort | uniq -c | awk '$1 > 1'   # …then read each one's headings at that revision
-#
-# WHAT IT STILL CATCHES, WHICH IS THE WHOLE POINT OF NARROWING RATHER THAN DELETING. The shape
-# this leg exists for is a `merge=union` rebase (or a hand-resolved conflict) re-adding a wording
-# the branch had already superseded. Union keeps BOTH sides' lines AT THE COLLIDING ANCHOR, so the
-# re-added copy lands where the original stood — under the same heading, by construction. The
-# end-to-end derivation below drives a real union rebase and the repaired predicate still reports
-# it; so does the across-the-fold case, where the two copies sit under the same `###` in two
-# different `## [` sections. A predicate that could not red on those would be a loosening; these
-# are fixtured as a pair with the legitimate two-heading case, in both directions.
-#
-# ⛔ RESIDUAL THE HEADING SCOPE BUYS, named rather than discovered: a superseded wording that ends
-# up under a DIFFERENT heading from its replacement — a branch that reworded its bullet and moved
-# it from `### Added` to `### Changed`, with a bad merge re-adding the old one — now reads as the
-# legitimate split and passes. Nothing structural tells those two apart: they are the same shape,
-# and the only difference is in the PROSE, which this gate does not and should not judge (its
-# green has never meant "the wording is right" — see WHAT A GREEN RUN HERE ACTUALLY PROVES).
-#
-# ⛔ RESIDUAL UNCHANGED BY THIS CARD: two or more bullets legitimately filed under ONE heading for
-# one card by one PR are still reported. #180 did exactly that (fourteen `### Fixed` bullets for
-# card#5200) and would red today — as it would have before this change, which is why it is a
-# standing residual and not one this narrowing introduces.
-#
-# TWO CONDITIONS BESIDES THE HEADING, AND EACH REJECTS A REAL SHAPE THE OTHER ACCEPTS.
-#
-#   NET ≥ 2 — the PR's arithmetic, IN THE REGION AT BOTH ENDS (card#7303): bullets it added that
-#   still STAND in the region, minus bullets it removed FROM the region. Editing somebody else's
-#   entry is a remove plus an add and nets to zero, which is the only reason this leg can run on
-#   the live history at all: #266 REWORDED #265's card#7038
-#   bullet and added its own, so two of the three surviving card#7038 lines are its doing. Net
-#   arithmetic reads that as one new entry. Counting raw additions reported it as a duplicate —
-#   a false red on merged, correct history, seen before this rule was written and fixtured below.
-#
-#   TWO STILL PRESENT UNDER ONE HEADING — the file's state: both copies are in the region right
-#   now, claiming the same KIND of change. A branch that corrects its own entry adds two wordings
-#   across two commits, and whether that reaches net two depends on the BASIS: on a squash delta it
-#   does not, because the delta never records the superseded wording at all; on the commit series it
-#   does only when `union` re-adds the superseded one during a rebase. Either way, if the branch
-#   simply reworded, the first wording is gone and there is nothing for a reader to trip over.
-#
-# Requiring both means a red always corresponds to two lines a reader can see, which is what
-# makes the failure actionable — and neither leg alone is sound: net-only reds a PR that
-# legitimately split one card across two entries, presence-only reds #266.
-#
-# ⛔ UNTIL card#7303 THIS FUNCTION SAID "in the region" AND MEANT IT ON ONE HALF ONLY. `present`
-# was region-scoped; the net arithmetic consumed `_added_bullets` whole, and that is scoped to the
-# PATH. So a bullet a PR removed from a FROZEN released section — tidying a stray preamble bullet,
-# correcting a shipped entry — subtracted from a net computed over the region's survivors, and two
-# duplicate bullets standing in `[Unreleased]` reported NOTHING. It erred GREEN: a suppressed red,
-# measured by construction (`_added_bullets` carries the reproduction) rather than argued.
-#
-# THE SCOPE WAS RIGHT AND THE PREDICATE WAS WRONG, so the predicate is what moved. The removal
-# side is filtered where its evidence lives — in `_added_bullets`, against the parent revision,
-# because a removed line is gone from the file and the file cannot answer for it. The addition
-# side is filtered HERE, by letting an add count toward net only when the presence test has
-# already found it standing in the region: it needs no history, it deletes the second copy of
-# that test rather than adding one, and it makes net ≥ pres STRUCTURALLY — so the only thing that
-# can pull a genuine duplicate back under the threshold is a genuine in-region removal. The
-# heading scope does not disturb that invariant: per-heading presence can only be ≤ the total
-# presence the net already dominates.
-#
-# ⛔ THE NET STAYS PER (PR, CARD) — it is NOT scoped by heading, and that is a decision with a
-# residual rather than an oversight. A removal's heading lives at the PARENT revision (see
-# `_added_bullets`), so scoping it would need a second historical read to buy a STRICTER check
-# than the one this card is correcting — out of this change's scope. The residual: a PR that
-# removes one card bullet from `### Added` and files two under `### Fixed` nets to 1 and stays
-# green. That is the replace-an-existing-entry trade below, taken across headings.
-#
-# ⛔ RESIDUAL, deliberate and unchanged in kind: a PR that removes two in-region bullets for one
-# card and files two of its own nets to zero and stays green. That is the replace-an-existing-entry
-# case at multiplicity two — the same trade the net rule already makes at multiplicity one, and a
-# card whose entry a PR must replace TWICE was carrying duplicates before that PR existed.
-_stale_dupes() {
-    local kinds pr sign line id kind standing
-    kinds="$(_region_kinds "$2" "$3")"
-    while IFS=$'\t' read -r pr sign line; do
-        [[ -n "$line" ]] || continue
-        id="${line#- \*\*}"; id="${id%%\**}"
-        if [[ "$sign" == "-" ]]; then
-            printf '%s\t%s\tnet\t-1\n' "$pr" "$id"
-            continue
-        fi
-        standing=false
-        while IFS= read -r kind; do
-            standing=true
-            printf '%s\t%s\tpresent\t%s\t%s\n' "$pr" "$id" "$kind" "$line"
-        done < <(_kinds_of "$line" "$kinds")
-        if [[ "$standing" == true ]]; then
-            printf '%s\t%s\tnet\t1\n' "$pr" "$id"
-        fi
-    done < "$1" | awk -F'\t' '
-        $3 == "net" { net[$1 FS $2] += $4; next }
-        $3 == "present" {
-            if (!(($1 FS $2 FS $4 FS $5) in seen)) {
-                seen[$1 FS $2 FS $4 FS $5] = 1
-                pres[$1 FS $2 FS $4]++
-            }
-        }
-        END {
-            for (k in pres) {
-                split(k, a, FS)
-                if (pres[k] >= 2 && net[a[1] FS a[2]] >= 2) print a[2]
-            }
-        }
-    ' | LC_ALL=C sort -u
-}
-
-# ---------------------------------------------------------------------------
-# THE REMEDY WHEN THE REGION FINDS NOTHING (card#8442) — a DIAGNOSTIC, not a verdict.
-#
-# `_region`'s bound is right and stays exactly where it is: everything below decides only WHICH
-# SENTENCE prints beside a red `_missing` has already returned. No arm here can make the gate
-# pass, which is why "the diagnosis could not be established" is not a failure — it prints the
-# generic text, the only text this gate had before this card.
-#
-# WHAT IT EXISTS FOR. A branch cut BEFORE a release fold has its `[Unreleased]` entry carried
-# UNDER the folded `## [X.Y.Z]` heading by the merge, at rc 0 and with no conflict for anyone to
-# resolve. Step 4 of VERSIONING.md is textually a pure INSERTION — the new `## [X.Y.Z]` heading
-# goes in at the TOP of the old section's body — and the branch's bullet is an insertion further
-# down that same body, so git applies both and the bullet ends up below the new heading. The
-# entry is then OUTSIDE the region, `_missing` names the card, and the only thing the author was
-# told was that the entry is missing. Following that, they file a SECOND one and the file ships
-# two wordings of one change — the `_stale_dupes` shape, minted by this gate's own remedy.
-# Bridge card#8339 / DL-329 measured the same mechanism on its own copy (run 33544122079); this
-# is the toolkit half, reported here rather than forked.
-# ---------------------------------------------------------------------------
-
-# _added_section_label <merged-changelog> <added-lines> <baseline-changelog> — the label of the
-# FIRST RELEASED section of <merged-changelog> whose BODY carries a line the branch introduced.
-#
-# ⚠ THE LABEL IS NOT THE DIAGNOSIS, and treating it as one is the false-positive shape bridge
-# #632 measured and repaired before this card was written. This function answers "where did the
-# branch's own new lines land"; `_prefold_heading` below owns whether a FOLD is what put them
-# there, and it is the only caller.
-#
-# A NEEDLE THE BASELINE ALREADY CARRIES IS DROPPED, and that subtraction is load-bearing rather
-# than tidy: `docs/CHANGELOG.md` carries 67 `### Added` / `### Fixed` / `### Docs` heads today, so
-# a branch opening one under `[Unreleased]` would otherwise match the identical head inside a
-# released section and return a label with nothing behind it. A branch line that merely
-# duplicates a standing one is dropped with them — no label rather than a wrong one.
-#
-# THE HEADER TEST IS `_region`'s, GENERALISED — not a second carve of it. Same `index($0, "## [")
-# == 1` technique for the same two reasons: nothing to escape, and `[` never reaching a regex.
-# `_region` asks whether a line IS one nominated header; this asks which header a line is UNDER.
-# A header whose bracket never closes opens no released section while still being a BOUNDARY,
-# which is the reading the plain carve already gives it.
-#
-# THE HEADER LINE IS NEVER A NEEDLE SITE (`next` before the membership test). A branch that adds
-# the version heading ITSELF has not thereby filed anything under it — and that is precisely the
-# shape leg 2 below refuses, so letting it match here would hand that leg a label to reject
-# instead of never minting one.
-_added_section_label() {
-    awk -v addedf="$2" -v basef="$3" '
-        FILENAME == basef  { known[$0] = 1; next }
-        FILENAME == addedf {
-            if ($0 ~ /[^[:space:]]/ && !($0 in known)) needle[$0] = 1
-            next
-        }
-        index($0, "## [") == 1 {
-            rest = substr($0, 5)
-            close_at = index(rest, "]")
-            label = (close_at > 1) ? substr(rest, 1, close_at - 1) : ""
-            released = (label != "" && label != "Unreleased")
-            next
-        }
-        released && ($0 in needle) { print label; exit }
-    ' "$3" "$2" "$1"
-}
-
-# _branch_added_lines <repo> <path> <base> <head> — the lines the BRANCH adds to <path>, one per
-# line. ONE owner, because there are two readers: `_prefold_heading` feeds them to the locator on
-# the live path, and the fixtures below feed them to the locator in isolation. A second
-# `git diff | awk` for the second reader would be free to answer a question the first one did not.
-#
-# `$base...$head` is the branch's OWN work — the diff from the merge-base, not from the base tip —
-# so a line the BASE brought in while the branch was open is not among these.
-#
-# THE `+` SIDE ONLY, with git's DEFAULT indicator. Bridge's copy re-spells the OLD indicator
-# because it reads the `-` side too, where a deleted line spelled `-- text` renders as `--- text`
-# and is indistinguishable from the `--- a/path` header — skipping it would HIDE a deletion. Here
-# the mirror collision (`++ text` rendering as `+++ text`) costs a NEEDLE, which DROPS a diagnosis
-# rather than minting one, and that is the safe direction.
-_branch_added_lines() {
-    git -C "$1" diff --no-color "$3...$4" -- "$2" |
-        awk '/^\+\+\+ /{next} /^\+/{print substr($0, 2)}'
-}
-
-# _prefold_heading <repo> <path> <base> <head> <merged-changelog> <card> — the released label to
-# NAME in <card>'s remedy, or nothing at rc 1 when the fold diagnosis is not established for it.
-#
-# ⚠ THE QUESTION IS PER-CARD, and that is what makes the remedy safe when `_missing` names more
-# than one (card#8442 R1). The needles are narrowed to the line-initial `- **<card>**` bullets THIS
-# BRANCH ADDED, so the label answers "where did THIS card's entry land" rather than "does any line
-# this branch wrote sit in a released section". Without the narrowing, one folded card would put
-# every other missing card under a "do NOT file a second entry" instruction that is false for
-# them — they have no entry to move, and following it would leave them undocumented. It also
-# tightens the single-card case: a branch line that is not a card bullet at all can no longer mint
-# a label.
-#
-# THE FOLD IS ASSERTED, NOT INFERRED FROM THE LABEL. Bridge #632 R1 measured two shapes that make
-# `_added_section_label` return a released label while the fold sentence is FALSE, and both are
-# reachable here: a branch CORRECTING a line inside a section that already stood when it forked,
-# and a branch that CUTS the section itself and files under it. So the predicate has three legs,
-# and each of the two extra ones rejects one of those shapes:
-#
-#   LEG 2 — the label EXISTS on `$BASE`. Rejects the branch that cut the section: a PR that adds
-#   `## [X.Y.Z]` and files under it would otherwise be told that X.Y.Z "was cut while this branch
-#   was open" by somebody else.
-#   LEG 3 — the label is ABSENT at `git merge-base $BASE $HEAD`. Rejects the stale-fix and the
-#   deliberate-edit shapes: a section that already stood where this branch forked was not cut
-#   while it was open, and telling an author to lift a SHIPPED line out of a release is worse
-#   than telling them nothing.
-#
-# BOTH READS GO THROUGH `_has_version_header` — the section parser the live preconditions and
-# `_bullets_at` already use. A second `grep '## \['` for either file would be two carvings of one
-# boundary free to disagree, which is the defect class this repo keeps closing.
-#
-# ⛔ THE DISCLOSED RESIDUAL, and it is the price of spelling leg 3 as the MERGE-BASE: a genuinely
-# pre-fold branch that has ALREADY merged the folded base makes that base its own merge-base, so
-# the heading stands there, leg 3 goes false, and the author gets the generic text. Unhelpful,
-# never confidently wrong — and fixtured below rather than argued. (Bridge's copy spells leg 3 at
-# the branch's FORK POINT instead, which keeps the diagnosis across that merge at the cost of
-# refusing every branch whose own oldest commit is itself a merge. That trade is bridge's; this
-# card's spec pinned the merge-base spelling and this comment is where the difference is
-# recorded.)
-#
-# ⛔ AN EMPTY `$BASE` OR `$HEAD` REFUSES rather than defaulting. `_pr_merge_refs` answers with
-# NOTHING off a checkout that is not a pull_request merge ref, and `git diff "...$head"` off an
-# empty base is a legal command with a different meaning — a diagnosis derived from it would be a
-# confident claim about a range nobody asked for.
-_prefold_heading() {
-    local repo="$1" path="$2" base="$3" head="$4" merged="$5" card="$6"
-    local d="$TMP/prefold" label='' mb='' rc=0
-    [[ -n "$base" && -n "$head" && -n "$card" ]] || return 1
-    rm -rf "$d"
-    mkdir -p "$d"
-    {
-        _branch_added_lines "$repo" "$path" "$base" "$head" > "$d/all-added" &&
-        # The needle set, narrowed to this card's own bullets. `index(...) == 1` is `_discharged`'s
-        # line-initial rule spelled literally — the token carries `#`, which is not a regex
-        # metacharacter, but the version labels alongside it are matched by `index()` everywhere
-        # else in this file and a lone regex here would be the odd one out.
-        awk -v want="- **$card**" 'index($0, want) == 1' "$d/all-added" > "$d/added" &&
-        # No bullet for this card among the branch's additions ⇒ nothing was folded FOR IT, so the
-        # diagnosis stops here rather than borrowing another card's evidence.
-        [[ -s "$d/added" ]] &&
-        git -C "$repo" show "$base:$path" > "$d/baseline" &&
-        mb="$(git -C "$repo" merge-base "$base" "$head")" &&
-        git -C "$repo" show "$mb:$path" > "$d/mergebase" &&
-        # An EMPTY read of either revision is REFUSED, not read as "that revision had no
-        # sections". It inverts the safe direction on both legs at once: leg 2 would find no
-        # heading and drop a true diagnosis, and leg 3 — which is INVERTED — would find none and
-        # SATISFY itself off a failed read, turning a tooling fault into a confident answer.
-        [[ -s "$d/baseline" && -s "$d/mergebase" ]] &&
-        label="$(_added_section_label "$merged" "$d/added" "$d/baseline")" &&
-        [[ -n "$label" ]] &&
-        _has_version_header "$d/baseline" "$label" &&
-        ! _has_version_header "$d/mergebase" "$label"
-    } || rc=$?
-    rm -rf "$d"
-    [[ "$rc" -eq 0 ]] || return 1
-    printf '%s\n' "$label"
-}
-
-# _missing_remedy <repo> <path> <base> <head> <merged-changelog> <missing-cards> — the text printed
-# beside a red `_missing`, ONE LINE PER MISSING CARD. `<missing-cards>` is `_missing`'s own output.
-# ONE spelling of every arm, in one function: a guard's remediation string is a doc surface, and a
-# per-caller copy is two versions of one instruction free to drift.
-#
-# ⛔ PER-CARD IS THE POINT, not formatting (card#8442 R1). `_missing` routinely names more than one
-# card, and a fold is a property of ONE card's bullet — so a single verdict-wide sentence would
-# tell the author of a genuinely undocumented card "do NOT file a second entry", which is the exact
-# wrong instruction and would leave that card undocumented. Each card is asked separately and gets
-# the arm that is true of it; the shared paragraph prints only when at least one card really was
-# folded, and it points back at those lines rather than at "your entry".
-#
-# The `|| heading=''` collapses EVERY refusal in `_prefold_heading` — an unestablished diagnosis
-# and a tooling failure alike mean "not established", and the remedy for that is the one this gate
-# always printed. Naming a fold nobody verified would send the author to edit a RELEASED section.
-_missing_remedy() {
-    local repo="$1" path="$2" base="$3" head="$4" merged="$5" missing="$6"
-    local card heading folded=0
-    while IFS= read -r card; do
-        [[ -n "$card" ]] || continue
-        heading="$(_prefold_heading "$repo" "$path" "$base" "$head" "$merged" "$card")" || heading=''
-        if [[ -n "$heading" ]]; then
-            folded=1
-            printf '%s — your entry landed under `[%s]` after the fold; move it back to `[Unreleased]`.\n' \
-                "$card" "$heading"
-        else
-            printf '%s — add a line-initial `- **%s**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.\n' \
-                "$card" "$card"
-        fi
-    done <<< "$missing"
-    if [[ "$folded" -eq 1 ]]; then
-        printf 'A release was cut while this branch was open. The fold renamed the `[Unreleased]` heading\n'
-        printf 'those entries sat under and opened a fresh one above it, so the merge left them inside a\n'
-        printf 'RELEASED section, which now claims work that did not ship in it. Do NOT file a second entry\n'
-        printf 'for a card named above as FOLDED — move the one it already has. The other lines above are\n'
-        printf 'ordinary missing entries and do need a new bullet.\n'
-    fi
-}
-
-# _pr_merge_refs <repo> — `<base> <head>` when HEAD is the pull_request MERGE COMMIT that
-# `actions/checkout` leaves in the tree, and NOTHING otherwise.
-#
-# The diagnosis is about a MERGE — the entry moves only when the base's fold and the branch's
-# bullet are combined — so it needs the merged file, and this gate already runs against exactly
-# that: `refs/pull/N/merge`, whose first parent is the base tip and whose second is the branch.
-#
-# BOTH CONDITIONS ARE REQUIRED, and neither implies the other. `GITHUB_BASE_REF` is set only on a
-# `pull_request` event, which is what makes that parent ORDER a documented fact rather than a
-# guess about an arbitrary two-parent commit; the parent-count test is what keeps a checkout that
-# is NOT a merge from being read as one on an event that does set the variable.
-#
-# ⛔ RESIDUAL: a local `bash tests/changelog-card-entry-selftest.sh` and the `push` runs on
-# main/dev therefore establish NO diagnosis and print the generic remedy. The VERDICT is identical
-# in all three, and the pull_request run is the one an author is looking at while the branch is
-# still open and the move is still cheap.
-_pr_merge_refs() {
-    [[ -n "${GITHUB_BASE_REF:-}" ]] || return 0
-    [[ "$(git -C "$1" rev-list --parents -n 1 HEAD 2>/dev/null | wc -w)" -eq 3 ]] || return 0
-    printf '%s %s\n' "$(git -C "$1" rev-parse HEAD^1)" "$(git -C "$1" rev-parse HEAD^2)"
-}
-
-# _unreleased <repo> <tag> <rev-list args>... — the commits of `git rev-list <args> --not <tag>`,
-# newest first, MINUS every non-merge commit whose change is already in <tag>'s history under
-# another sha (card#11034). This is the ONE definition of "released" in this file: the live
-# obligation leg and `_squash_ends`' UNRELEASED leg both read it.
-#
-# ⛔ REACHABILITY WAS THE WRONG QUESTION, measured on v0.41.0. That release was cut from v0.40.0
-# with #429–#432 cherry-picked onto it, so dev's originals (2be21bd, 500a57d, 828d95e, 9d5903d) are
-# not reachable from the tag that shipped them, and once `dev` merged the tag every one of them
-# obliged a bullet for a card whose bullet had already moved under `## [0.41.0]` — card#10353,
-# card#10922 and card#10924 red on the sync PR (#434) and on every `dev` PR after it.
-#
-# A COMMIT IS RELEASED WHEN EITHER OF TWO EXACT MATCHES FINDS IT IN THE TAG'S HISTORY:
-#   PATCH — its `git patch-id --stable` equals a non-merge commit's there. Necessary, NOT
-#   sufficient, and that was measured too: only ONE of v0.41.0's four copies is patch-identical
-#   (500a57d/db06427). The other three were applied to a v0.40.0 that lacked #425 and #428, which
-#   touch the same README/kbcard/CHANGELOG lines, so their diff CONTEXT differs and patch-id —
-#   which hashes context — differs with it. That is built into the cherry-pick release shape:
-#   any skipped commit near a picked one breaks the patch match.
-#   SUBJECT — its full subject ENDS in a squash `(#N)` token and is byte-identical to a subject
-#   there. Cherry-pick carries the subject verbatim, and `(#N)` is the PR's own number, so the
-#   pair is one PR's content. ONLY subjects ending in `(#N)` take part: an unsquashed branch
-#   commit, or a direct push on either side, has no PR identity to match on and is never
-#   discharged by its subject — it can be released by PATCH alone.
-#
-# WHAT THIS DOES NOT LOOSEN: a follow-up PR on an already-shipped card is a NEW PR with a new
-# `(#N)` and its own patch, so it matches nothing and stays obliged. Discharging from the
-# `## [<tag>]` section, or by card token, would have let it skip its `[Unreleased]` bullet; this
-# never reads the CHANGELOG or a card number at all.
-#
-# ⛔ THE ONE WAY IT GOES WRONG, accepted: a NEW commit whose subject is byte-identical to a released
-# squash subject, `(#N)` included, is read as released and obliges nothing. Reaching it takes a
-# subject naming a PR number that already merged and shipped — a squash merge writes the NEW PR's
-# number, so only a hand-written subject copying an old one gets there, and that subject is already
-# false about which PR it is. Accepted because the alternative, patch-id alone, cannot clear the
-# cherry-pick release shape at all (above). The miss errs green for that one commit only; the PR
-# title is still a separate obligation source.
-#
-# THE TAG-SIDE POPULATION IS BOUNDED, NOT THE WHOLE HISTORY. `git log --cherry-pick A...B` cannot be
-# used: once `dev` has merged the tag, the tag is an ancestor of HEAD, so the symmetric difference's
-# tag side is EMPTY and nothing is ever matched — the exact post-sync state that reds. Instead the
-# candidates that do NOT already contain the tag (a commit that does postdates it and cannot be one
-# of its copies; merges have no patch and are never discharged) are compared against the tag's
-# commits that are not ancestors of their common ancestor with it (`merge-base --octopus --all`).
-# That is a superset of each candidate's own `<tag>...<candidate>` tag side, so no copy is missed,
-# and on a normal cycle it is one release wide. With no such candidate there is nothing to compare
-# and the reachability answer stands untouched.
-#
-# ⛔ IT FAILS CLOSED, and has to say so in code: every caller reads it through `$(…)`, where this
-# file's `set -e` does not reach (no `inherit_errexit`), so a git failure that printed nothing
-# would read as "nothing unreleased" — an empty obligation set, i.e. a silent GREEN. Each read
-# therefore returns 1 on failure and the callers propagate it.
-#
-# ⛔ RESIDUAL, errs RED: a candidate that RE-APPLIES a patch already in its own ancestry is compared
-# only against commits above the common ancestor, so it stays obliged.
-_unreleased() {
-    local repo="$1" tag="$2"; shift 2
-    local all nm c rc pre=() bases=() sides="$TMP/unreleased"
-    all="$(git -C "$repo" rev-list "$@" --not "$tag")" || return 1
-    [[ -n "$all" ]] || return 0
-    nm="$(git -C "$repo" rev-list --no-merges "$@" --not "$tag")" || return 1
-    while IFS= read -r c; do
-        [[ -n "$c" ]] || continue
-        rc=0; git -C "$repo" merge-base --is-ancestor "$tag" "$c" || rc=$?
-        case "$rc" in 0) ;; 1) pre+=("$c") ;; *) return 1 ;; esac
-    done <<< "$nm"
-    if ((${#pre[@]} == 0)); then
-        printf '%s\n' "$all"
-        return 0
-    fi
-    mkdir -p "$sides"
-    printf '%s\n' "$all" > "$sides/all"
-    # rc 1 with no output is "no common ancestor": the whole tag history is then the population.
-    mapfile -t bases < <(git -C "$repo" merge-base --octopus --all "$tag" "${pre[@]}" || true)
-    git -C "$repo" log -p --no-merges --no-color --format='commit %H' "$tag" --not "${bases[@]}" |
-        git -C "$repo" patch-id --stable | cut -d' ' -f1 > "$sides/tag-patches" || return 1
-    git -C "$repo" log --format='%s' "$tag" --not "${bases[@]}" |
-        { grep -E '\(#[0-9]+\)$' || true; } > "$sides/tag-subjects" || return 1
-    git -C "$repo" log -p --no-color --no-walk=unsorted --format='commit %H' "${pre[@]}" |
-        git -C "$repo" patch-id --stable > "$sides/pre-patches" || return 1
-    git -C "$repo" log --no-walk=unsorted --format='%H %s' "${pre[@]}" > "$sides/pre-subjects" ||
-        return 1
-    awk '
-        FILENAME ~ /tag-patches$/  { tp[$0] = 1; next }
-        FILENAME ~ /tag-subjects$/ { ts[$0] = 1; next }
-        FILENAME ~ /pre-patches$/  { if ($1 in tp) rel[$2] = 1; next }
-        FILENAME ~ /pre-subjects$/ {
-            s = substr($0, length($1) + 2)
-            if (s ~ /\(#[0-9]+\)$/ && (s in ts)) rel[$1] = 1
-            next
-        }
-        !($0 in rel)
-    ' "$sides/tag-patches" "$sides/tag-subjects" "$sides/pre-patches" "$sides/pre-subjects" \
-        "$sides/all" || return 1
-    rm -rf "$sides"
-}
-
-# _obligation_subjects <repo> <tag> — the subjects of `_unreleased <repo> <tag> HEAD`, the commit
-# half of the live leg's obligation source. Fixtures and the live leg call this same function.
-_obligation_subjects() {
-    local shas
-    shas="$(_unreleased "$1" "$2" HEAD)" || return 1
-    [[ -n "$shas" ]] || return 0
-    # shellcheck disable=SC2086 # one sha per word, by construction
-    git -C "$1" log --no-walk=unsorted --format='%s' $shas
-}
-
-# _squash_ends <repo> <floor> — `<base> <merged>`: the two revisions whose TREE DELTA this pull
-# request's SQUASHED commit will record on the base branch, and NOTHING off a checkout for which
-# that sentence is not true (card#10338). `_added_bullets` diffs them. <floor> is the release tag
-# the live range starts at.
-#
-# ⛔ `_pr_merge_refs`' TWO CONDITIONS ARE NOT ENOUGH, and the gap was a BLOCKER on a shape this repo
-# ships every release. That function asks "is HEAD a pull_request merge ref", which is deliberately
-# BASE-AGNOSTIC — its own consumer, the fold diagnosis, wants every PR class. This one needs
-# something strictly narrower, because `changelog-card-entry.yml` puts no `branches:` filter on
-# `pull_request` and VERSIONING.md § Anti-patterns says outright: *"Don't squash a release PR or a
-# back-merge sync PR … Both use a merge commit; only `dev`-targeted PRs are squashed."* On a release
-# PR (`release/v<version>` → `main`) `HEAD^1` is main's tip, a whole release behind `dev`, so the
-# delta spans EVERY PR in the release and re-emits all of their bullets under ONE group — which
-# destroys the PR-number grouping that exists to separate two PRs each documenting one card.
-# MEASURED by replaying all 44 release merges in this repo's history through both bases: two of them
-# — #295/v0.29.0 (card#6645 AND card#7038, the two this file's own `_added_bullets` docblock names
-# verbatim as legitimate) and #308/v0.30.0 (card#7536) — go from green to RED on correct,
-# already-merged, already-gated history. `changelog-card-entry` is a required context beside
-# `ci-gate` (`tests/ci-gate-selftest.sh`), so that red would have blocked the release with no fix
-# available inside the PR short of deleting a correct bullet from a released section.
-#
-# SO THE PRECONDITION IS DERIVED, IN THIS GATE'S OWN TERMS, NOT DECLARED AS A BRANCH NAME. What the
-# delta stands in for is exactly what its group key claims: the UNRELEASED, UNSQUASHED commits. Two
-# legs, and the case analysis is why there are two rather than one — neither catches the other's
-# class, measured on real history:
-#
-#   UNRELEASED — every covered commit must be unreleased by `_unreleased`'s definition: not reachable
-#   from <floor>, and not a copy of a commit that is (card#11034 — the one definition this file
-#   holds; a copy can only make the count SMALLER, so the change can refuse more, never admit more,
-#   and a refusal is the safe fallback below). Rejects the BACK-MERGE sync PR, whose
-#   base IS `dev` (so no base-name test would reject it) and which is merge-committed too: its
-#   covered commits came from `main` and are ancestors of the tag the merge ref already reaches.
-#   Measured on the four most recent syncs: covered 5/4/3/3, above-the-tag 2/2/1/1 — every one
-#   refused. It does NOT reject a release PR (48 of 48 and 12 of 12 covered commits sit above the
-#   previous tag).
-#   UNSQUASHED — no covered commit may already carry a `(#N)` of its own, because a commit that has
-#   one IS a PR and cannot be folded into another PR's group. Rejects the RELEASE PR: 39 of 48 and 8
-#   of 12 covered commits carry one. It does not reject the back-merge (0 of N do).
-#
-# ⛔ REFUSING IS SAFE AND SILENCE IS NOT: a refusal falls back to the per-commit basis — which, on
-# exactly these two classes, is the CORRECT basis anyway, because a merge-commit merge lands each
-# commit individually and that is what any later run would read. The live leg PRINTS which basis
-# answered, so a refusal is legible rather than a quiet weakening.
-#
-# ⛔ RESIDUAL the UNSQUASHED leg buys, named rather than discovered: a feature branch whose own
-# commit subject happens to carry a `(#N)` — *"follow-up to (#390)"* — refuses the delta and drops
-# to the per-commit basis. That is a false DECLINE, never a false red, and it is printed.
-#
-# ⛔ RESIDUAL the UNRELEASED leg rests on, stated because it is a PREMISE rather than a check: the
-# leg recognises a back-merge only because `<floor>` is the tag that merge brings back, which holds
-# because the release is tagged before the sync PR is opened (VERSIONING.md steps 9–10). Where that
-# tag is MISSING — auto-tag's push refused, the card#6579 shape — `<floor>` is the previous release,
-# every covered commit sits above it, and the delta is admitted on a back-merge. Benign rather than
-# guarded: a fold is textually an insertion of headings and adds no bullet, so the delta has no
-# record to group. Named, not fixtured; the fixture below pins the floor instead of deriving it.
-#
-# ⛔ THE SECOND END IS THE MERGE COMMIT, NOT THE BRANCH TIP, and the difference is the whole
-# function. `git diff <base-tip> <branch-tip>` is a two-dot diff between two divergent trees: every
-# line the BASE gained while the branch was open reads as a REMOVAL by the branch. The merge commit
-# is the tree that will actually land, so `git diff <base-tip> <merged>` is the squashed commit's
-# own diff and needs no three-dot spelling to be right. It is also the pair whose witness revision
-# — `<base-tip>` — is exactly the `<squashed-sha>^` the later push run on `dev` will read, which is
-# what makes the two runs' records the same objects rather than merely similar ones.
-#
-# It reuses `_pr_merge_refs` for the base and for the REFUSAL, rather than re-deciding either: that
-# function is what establishes HEAD is a two-parent pull_request merge ref at all, so `HEAD` here is
-# the commit it already validated and `HEAD^1` is a documented parent rather than a guess.
-_squash_ends() {
-    local repo="$1" floor="$2" refs base head covered unreleased subjects
-    [[ -n "$floor" ]] || return 0
-    refs="$(_pr_merge_refs "$repo")"
-    [[ -n "$refs" ]] || return 0
-    base="${refs%% *}"
-    head="$(git -C "$repo" rev-parse HEAD)"
-    covered="$(git -C "$repo" rev-list --count "$base..$head")"
-    # A failed read REFUSES the delta — the printed per-commit fallback, never a wider admission.
-    unreleased="$(_unreleased "$repo" "$floor" "$base..$head")" || return 0
-    unreleased="$(grep -c . <<< "$unreleased" || true)"
-    [[ "$covered" -eq "$unreleased" ]] || return 0
-    # A HERESTRING, not a pipeline: the producer is the shell writing an already-complete string,
-    # so the early-exit window `_selftest-prelude.sh`'s `has_line` header documents does not exist
-    # — and the needle is a REGEX, which is the case that helper cannot answer.
-    subjects="$(git -C "$repo" log --format='%s' "$base..$head")"
-    if grep -qE '\(#[0-9]+\)' <<< "$subjects"; then return 0; fi
-    printf '%s %s\n' "$base" "$head"
-}
+# The bin's functions, verbatim: the fixtures test the code the live run executes, not a
+# paraphrase of it. Its run guard keeps the live leg from firing when sourced.
+# shellcheck source=bin/changelog-gate
+source "$GATE"
 
 # ---------------------------------------------------------------------------
 # Fixtures FIRST — the machinery is proven against known data before the live repo's answer is
@@ -1226,10 +227,8 @@ card#9003" "$(_missing "$FIX/subjects" "$FIX/changelog-released-pr.md" "0.23.1")
 
 echo "== no [Unreleased] above the stop ⇒ an EMPTY region, not a silent whole-file scan =="
 # The floor's failure mode with nothing above the stop at all. It cannot err green — an empty
-# region discharges nothing, so every obligation reds — but `_stale_dupes` asserts an ABSENCE
-# over this same region and would answer "" for a reason unrelated to the file being clean,
-# which is why the live leg refuses on it (precondition below) rather than reporting alongside
-# a pass.
+# region discharges nothing, so every obligation reds — but it would blame every shipped card for
+# one missing header, which is why the live run refuses on it outright and names the cause.
 printf '# Changelog\n\nA preamble and nothing else.\n\n## [0.23.1] - 2026-07-27\n\n- **card#9001** — released.\n' \
     > "$FIX/changelog-nofloor.md"
 eq "the region is empty when the stop header is the only section header" "" \
@@ -1245,162 +244,10 @@ printf '%s\n' "refactor(z): a card that only the PR title names (card#9004)" >> 
 eq "a card named only by the PR title is obliged" "true" \
    "$(has_line 'card#9004' "$(_missing "$FIX/subjects-pr" "$FIX/changelog-complete.md" "0.23.1")")"
 
-# ---------------------------------------------------------------------------
-# The uniqueness leg (card#7227). A `merge=union` attribute buys conflict-free sibling entries
-# and pays for it with a silent both-sides-keep on the one shape that is not an append: a branch
-# that REWORDS its own `[Unreleased]` entry and is then REBASED keeps the superseded wording too.
-# Presence — everything above — cannot see that: both copies are line-initial bullets for the
-# card, so the obligation is discharged twice over and the gate stays green over a file that now
-# says two different things about one change. This repo has NO `.gitattributes` (6cbf5e5), so the
-# fixtures below create the attribute in a throwaway repo of their own to exercise the mechanism;
-# the leg guards the shape, which a hand-resolved conflict reaches without any attribute.
-# ---------------------------------------------------------------------------
-echo "== prove-it-can-fail: a superseded bullet ONE PR left behind is REPORTED =="
-# Six records over one unsquashed branch and two PRs. The branch's two are the corruption. #265
-# and #266 are the shape this file really carries today, #266's included: it REWORDED #265's
-# bullet and added its own, so it owns two of the surviving lines and must still not be named.
-printf '%s\t%s\t%s\n' \
-    '(unsquashed)' '+' '- **card#4000** — FIRST WORDING.' \
-    '(unsquashed)' '+' '- **card#4000** — CORRECTED WORDING.' \
-    '265'          '+' '- **card#7038** — one PR, one bullet.' \
-    '266'          '-' '- **card#7038** — one PR, one bullet.' \
-    '266'          '+' '- **card#7038** — one PR, one bullet, now cross-referenced.' \
-    '266'          '+' '- **card#7038** — a second PR on the same card, its own bullet.' \
-    > "$FIX/records"
-
-cat > "$FIX/changelog-dupe.md" <<'EOF'
-# Changelog
-
-## [Unreleased]
-
-- **card#9000** — a sibling entry that landed on dev while the branch was open.
-- **card#4000** — FIRST WORDING.
-- **card#4000** — CORRECTED WORDING.
-- **card#7038** — one PR, one bullet, now cross-referenced.
-- **card#7038** — a second PR on the same card, its own bullet.
-
-## [0.23.1] - 2026-07-27
-
-- **card#4000** — a released entry for the same card, below the stop header.
-EOF
-eq "the superseded copy is named, and ONLY it" \
-   "card#4000" "$(_stale_dupes "$FIX/records" "$FIX/changelog-dupe.md" "0.23.1")"
-# THE PAIRED WITNESS, and the reason this is not the obvious whole-file uniqueness rule:
-# card#7038 has two bullets in the very same region, one of which #266 authored and the other of
-# which #266 reworded, and it MUST NOT be reported. A rule that reds it reds this repo today.
-eq "two PRs documenting one card are NOT reported (witness: the run saw both)" "" \
-   "$(_stale_dupes "$FIX/records" "$FIX/changelog-dupe.md" "0.23.1" | grep -x 'card#7038' || true)"
-
-echo "== prove-it-can-PASS: an ordinary reword reports nothing =="
-# Same records — the branch still ADDED both wordings, one per commit, so its NET is still 2 —
-# but only the corrected line survives in the file. This is the leg that isolates the presence
-# condition: without it, every branch that ever fixed its own typo would red.
-cat > "$FIX/changelog-reworded.md" <<'EOF'
-# Changelog
-
-## [Unreleased]
-
-- **card#9000** — a sibling entry that landed on dev while the branch was open.
-- **card#4000** — CORRECTED WORDING.
-- **card#7038** — one PR, one bullet, now cross-referenced.
-- **card#7038** — a second PR on the same card, its own bullet.
-
-## [0.23.1] - 2026-07-27
-EOF
-eq "a reword whose superseded line is gone is not a duplicate" "" \
-   "$(_stale_dupes "$FIX/records" "$FIX/changelog-reworded.md" "0.23.1")"
-eq "the region scope holds: the released section's own card#4000 is not read as a survivor" \
-   "" "$(_stale_dupes "$FIX/records" "$FIX/changelog-dupe.md" "0.23.1" | grep -x 'card#9000' || true)"
 
 # ---------------------------------------------------------------------------
-# THE `###` HEADING SCOPE (card#10176). Everything above is written against sections carrying no
-# `###` heading at all — the layout of every `## [` section in this file older than [0.31.0], and
-# the one the union derivation below builds. That makes the kind "" the only kind those fixtures
-# exercise, so the heading rule is fixtured HERE, in both directions, over one file that carries
-# real headings. The three arms are not variants of one assertion: the first is the false red this
-# card removes, the second and third are the two shapes that must still red, and a predicate
-# satisfying any two without the third is wrong.
+# Repository scaffolding the fixtures below build on.
 # ---------------------------------------------------------------------------
-echo "== one PR filing one card under TWO headings is a SPLIT, not a superseded entry =="
-printf '%s\t%s\t%s\n' \
-    '388' '+' '- **card#10176** — the `--require-complete` gate and its oracle.' \
-    '388' '+' '- **card#10176** — ⚠ BREAKING: a boolean input spelled `True` now refuses.' \
-    '388' '+' '- **card#4000** — FIRST WORDING, under Fixed.' \
-    '388' '+' '- **card#4000** — CORRECTED WORDING, under Fixed.' \
-    '221' '+' '- **card#8442** — the entry the fold carried under the version heading.' \
-    '221' '+' '- **card#8442** — the entry its author filed again after the gate said MISSING.' \
-    > "$FIX/records-kinds"
-
-cat > "$FIX/changelog-kinds.md" <<'EOF'
-# Changelog
-
-## [Unreleased]
-
-### Added
-- **card#10176** — the `--require-complete` gate and its oracle.
-- **card#8442** — the entry its author filed again after the gate said MISSING.
-
-### Changed
-- **card#10176** — ⚠ BREAKING: a boolean input spelled `True` now refuses.
-
-### Fixed
-- **card#4000** — FIRST WORDING, under Fixed.
-- **card#4000** — CORRECTED WORDING, under Fixed.
-
-## [0.36.0] - 2026-09-20
-
-### Added
-- **card#8442** — the entry the fold carried under the version heading.
-
-## [0.23.1] - 2026-07-27
-EOF
-# The witness first: all six bullets stand in the region and the kinds are the ones claimed, so a
-# green below is a ruling about headings and not about an unread file.
-eq "the region's kinds are derived per bullet, with the ## [ container ignored" \
-   "### Added	- **card#10176** — the \`--require-complete\` gate and its oracle.
-### Added	- **card#8442** — the entry its author filed again after the gate said MISSING.
-### Changed	- **card#10176** — ⚠ BREAKING: a boolean input spelled \`True\` now refuses.
-### Fixed	- **card#4000** — FIRST WORDING, under Fixed.
-### Fixed	- **card#4000** — CORRECTED WORDING, under Fixed.
-### Added	- **card#8442** — the entry the fold carried under the version heading." \
-   "$(_region_kinds "$FIX/changelog-kinds.md" "0.23.1")"
-eq "card#10176 is NOT reported: ### Added and ### Changed are two claims, not two wordings" "" \
-   "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds.md" "0.23.1" | grep -x 'card#10176' || true)"
-
-echo "== prove-it-can-fail: the same PR, the same card, ONE heading, is still REPORTED =="
-# The union-rebase shape in a sectioned file: two wordings under one `### Fixed`. Same records,
-# same file, same PR as the pass above — the only thing that differs is the heading.
-eq "two surviving wordings under ONE heading are named" "card#4000" \
-   "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds.md" "0.23.1" | grep -x 'card#4000' || true)"
-
-echo "== THE DISCRIMINATOR: card#10176's own bullets, moved under ONE heading, DO red =="
-# The tightest control available, and the one that stops the green above being vacuous: the same
-# records, the same PR, the same card, the same two wordings — only the heading of the second one
-# moves. If this passed too, the leg would be answering about something other than the heading.
-sed 's/^### Changed$/### Added/' "$FIX/changelog-kinds.md" > "$FIX/changelog-kinds-merged.md"
-eq "with both filed under ### Added, card#10176 IS reported" "card#10176" \
-   "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds-merged.md" "0.23.1" | grep -x 'card#10176' || true)"
-
-echo "== prove-it-can-fail: the same heading in TWO ## [ sections is still ONE kind =="
-# The card#8442 shape the gate's own remedy used to mint: the fold carried the branch's bullet
-# under `## [0.36.0]`, the author filed a second under `## [Unreleased]`, and both sit under
-# `### Added`. Keying the kind on the (`## [`, `###`) PAIR would silence this — it does not.
-eq "a duplicate spanning the fold is named" "card#8442" \
-   "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds.md" "0.23.1" | grep -x 'card#8442' || true)"
-eq "and those are the only two reported (witness: the whole verdict, not three greps)" \
-   "card#4000
-card#8442" "$(_stale_dupes "$FIX/records-kinds" "$FIX/changelog-kinds.md" "0.23.1")"
-
-echo "== the derivation against the REAL mechanism: a union rebase, with its no-attribute control =="
-# `_stale_dupes` above is proven over hand-written records. This proves the thing that mints
-# them — `_added_bullets` reading a real history — and reproduces the measured defect end to end
-# rather than restating it: two branch commits (add, then reword) rebased onto a `dev` that
-# gained a sibling entry at the same anchor.
-#
-# THE CONTROL IS THE SAME FIXTURE WITHOUT THE ATTRIBUTE, and it is what makes this a measurement
-# of `merge=union` rather than of git: without it the rebase STOPS for a human. If some future
-# git conflicts under union too, the control still passes and this arm reds — the right way
-# round.
 g() { git -c init.defaultBranch=dev -c user.name=t -c user.email=t@example.invalid \
           -c commit.gpgsign=false -c gc.auto=0 "$@"; }
 
@@ -1419,223 +266,6 @@ _newrepo() {
     else : > "$1/.gitattributes"; fi
     g -C "$1" add -A && g -C "$1" commit -qm 'base'
 }
-# _mkrebase <dir> <union|plain> — build the branch/sibling collision, attempt the rebase, echo rc.
-_mkrebase() {
-    local d="$1"
-    _newrepo "$d" "$2"
-    g -C "$d" checkout -q -b feat
-    _prepend "$d/CHANGELOG.md" '- **card#4000** — FIRST WORDING.'
-    g -C "$d" commit -qam 'docs(changelog): the entry (card#4000)'
-    sed -i 's/FIRST WORDING/CORRECTED WORDING/' "$d/CHANGELOG.md"
-    g -C "$d" commit -qam 'docs(changelog): reword the entry (card#4000)'
-    g -C "$d" checkout -q dev
-    _prepend "$d/CHANGELOG.md" '- **card#9000** — a sibling PR filed at the same anchor.'
-    g -C "$d" commit -qam 'fix(x): a sibling (card#9000) (#265)'
-    g -C "$d" checkout -q feat
-    local rc=0
-    g -C "$d" rebase dev >/dev/null 2>&1 || rc=$?
-    echo "$rc"
-}
-
-RB="$TMP/rebase-union"
-eq "with merge=union the rebase reports SUCCESS" "0" "$(_mkrebase "$RB" union)"
-eq "and it silently kept the superseded wording" "true" \
-   "$(has_line '- **card#4000** — FIRST WORDING.' "$(cat "$RB/CHANGELOG.md")")"
-# The rebased reword commit records NO removal — union swallowed it — which is why the branch's
-# NET is 2 rather than 1, and why net arithmetic can tell this apart from a plain reword at all.
-eq "the derivation attributes both to the one unsquashed branch, and the sibling to its PR" \
-   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
-(unsquashed)	+	- **card#4000** — FIRST WORDING.
-265	+	- **card#9000** — a sibling PR filed at the same anchor." \
-   "$(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD' "0.23.1" | LC_ALL=C sort)"
-eq "END TO END: the union-rebase duplicate is reported by the live code path" "card#4000" \
-   "$(_stale_dupes <(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD' "0.23.1") "$RB/CHANGELOG.md" "0.23.1")"
-eq "and the sibling that arrived from dev is not (witness: it was seen)" "" \
-   "$(_stale_dupes <(_added_bullets "$RB" CHANGELOG.md 'dev~1..HEAD' "0.23.1") "$RB/CHANGELOG.md" "0.23.1" \
-      | grep -x 'card#9000' || true)"
-
-RBC="$TMP/rebase-plain"
-eq "CONTROL — without the attribute the same rebase STOPS for a human" "1" "$(_mkrebase "$RBC" plain)"
-g -C "$RBC" rebase --abort >/dev/null 2>&1 || true
-
-echo "== a PR that reworks an earlier PR's entry AND adds its own is not a duplicate =="
-# The #266-over-#265 shape, on a real history rather than on records: it edits the standing
-# card#7038 bullet and files its own beneath it, leaving two card#7038 lines in the file that it
-# alone touched. This is the false red that net arithmetic removed — asserted, not argued.
-MV="$TMP/reflow"
-_newrepo "$MV"
-_prepend "$MV/CHANGELOG.md" '- **card#7038** — the first PR on this card.'
-g -C "$MV" commit -qam 'fix(a): first (card#7038) (#265)'
-sed -i 's/^- \*\*card#7038\*\* — the first PR on this card\./- **card#7038** — the first PR on this card, now cross-referenced./' "$MV/CHANGELOG.md"
-_prepend "$MV/CHANGELOG.md" '- **card#7038** — the second PR on the same card.'
-g -C "$MV" commit -qam 'test(a): second (card#7038) (#266)'
-eq "the edit is recorded with its removal, so #266 nets ONE new entry" \
-   "265	+	- **card#7038** — the first PR on this card.
-266	+	- **card#7038** — the first PR on this card, now cross-referenced.
-266	+	- **card#7038** — the second PR on the same card.
-266	-	- **card#7038** — the first PR on this card." \
-   "$(_added_bullets "$MV" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1" | LC_ALL=C sort)"
-eq "so two surviving bullets from one PR are NOT reported when one replaced an existing entry" \
-   "" "$(_stale_dupes <(_added_bullets "$MV" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1") "$MV/CHANGELOG.md" "0.23.1")"
-
-echo "== prove-it-can-fail: gating ADDS on presence closes the FALSE RED (card#7303) =="
-# The other direction of the same defect, and the half of the predicate change nothing else here
-# witnesses — `$MV` above stays green with adds gated or not, so it is the CONTROL, not the
-# evidence. With adds counted whether or not they stand, a PR that rewords a prior card's bullet
-# (+1/−1), files its own (+1) and backfills one UNDER the stop header (+1) reaches net 2 over two
-# survivors and reds the legitimate two-PRs-on-one-card shape this leg exists to let through.
-FRB="$TMP/false-red-backfill"
-_newrepo "$FRB"
-_prepend "$FRB/CHANGELOG.md" '- **card#7038** — the first PR on this card.'
-g -C "$FRB" commit -qam 'fix(a): the first PR on this card (card#7038) (#265)'
-sed -i 's/^- \*\*card#7038\*\* — the first PR on this card\.$/- **card#7038** — the first PR on this card, now cross-referenced./' \
-    "$FRB/CHANGELOG.md"
-_prepend "$FRB/CHANGELOG.md" '- **card#7038** — the second PR on the same card.'
-printf -- '- **card#7038** — a backfilled note under the released version.\n' >> "$FRB/CHANGELOG.md"
-g -C "$FRB" commit -qam 'test(a): the second PR, plus a backfill under the released header (card#7038) (#266)'
-eq "#266 really files THREE adds (witness: ungated, its own net reaches the threshold)" "3" \
-   "$(_added_bullets "$FRB" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1" |
-      awk -F'\t' '$1 == "266" && $2 == "+"' | { grep -c . || true; })"
-eq "and exactly ONE in-region removal, which is all the net has to pull it back down" "1" \
-   "$(_added_bullets "$FRB" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1" |
-      awk -F'\t' '$1 == "266" && $2 == "-"' | { grep -c . || true; })"
-eq "the backfilled bullet stands in the FILE but not in the REGION (witness: both, in that order)" \
-   "true false" \
-   "$(has_line '- **card#7038** — a backfilled note under the released version.' \
-       "$(cat "$FRB/CHANGELOG.md")") $(has_line \
-       '- **card#7038** — a backfilled note under the released version.' \
-       "$(_bullets "$FRB/CHANGELOG.md" "0.23.1")")"
-eq "so a PR that reworded one entry and filed its own is NOT reported for backfilling a third" \
-   "" "$(_stale_dupes <(_added_bullets "$FRB" CHANGELOG.md 'HEAD~2..HEAD' "0.23.1") "$FRB/CHANGELOG.md" "0.23.1")"
-
-# ---------------------------------------------------------------------------
-# BOTH ENDS OF THE NET ARITHMETIC ARE REGION-SCOPED (card#7303). `_added_bullets` is scoped to the
-# PATH, and until this card `_stale_dupes` consumed it whole while stating its own scope as "in
-# the region" — so a bullet removed from a FROZEN released section subtracted from a net computed
-# over the region's survivors, and a real duplicate went unreported. It erred GREEN, which is the
-# one direction a guard must not err, so what follows is the defect fixture and its MIRROR
-# CONTROL: identical arithmetic (two adds, two removes, one PR), differing only in WHERE the two
-# removed bullets stood. Without the control, "stop counting removals" would satisfy the fixture.
-# ---------------------------------------------------------------------------
-echo "== prove-it-can-fail: an OUT-OF-region removal does not offset an in-region add =="
-OOR="$TMP/removal-out-of-region"
-_newrepo "$OOR"
-printf -- '- **card#4000** — a released wording, frozen under the stop header.\n' >> "$OOR/CHANGELOG.md"
-printf -- '- **card#4000** — a second released wording.\n' >> "$OOR/CHANGELOG.md"
-g -C "$OOR" commit -qam 'docs(changelog): the released section (#264)'
-g -C "$OOR" checkout -q -b feat
-_prepend "$OOR/CHANGELOG.md" '- **card#4000** — FIRST WORDING.'
-_prepend "$OOR/CHANGELOG.md" '- **card#4000** — CORRECTED WORDING.'
-sed -i '/^- \*\*card#4000\*\* — a released wording, frozen under the stop header\.$/d
-        /^- \*\*card#4000\*\* — a second released wording\.$/d' "$OOR/CHANGELOG.md"
-g -C "$OOR" commit -qam 'docs(changelog): file the entry and tidy the released section (card#4000)'
-# The two witnesses that make the assertion below about SCOPE rather than about an absent diff:
-# the commit really does remove two card#4000 bullets, and two really do stand in the region.
-eq "the branch commit really removes two card#4000 bullets (witness: the diff is not empty)" "2" \
-   "$(g -C "$OOR" show HEAD -- CHANGELOG.md | { grep -c '^-- \*\*card#4000\*\*' || true; })"
-eq "and two duplicate wordings stand in the region right now" \
-   "- **card#4000** — CORRECTED WORDING.
-- **card#4000** — FIRST WORDING." "$(_bullets "$OOR/CHANGELOG.md" "0.23.1")"
-eq "the derivation keeps the in-region adds and drops the out-of-region removals" \
-   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
-(unsquashed)	+	- **card#4000** — FIRST WORDING." \
-   "$(_added_bullets "$OOR" CHANGELOG.md 'dev..feat' "0.23.1" | LC_ALL=C sort)"
-eq "END TO END: the duplicate is REPORTED — a released-section tidy-up cannot suppress it" \
-   "card#4000" \
-   "$(_stale_dupes <(_added_bullets "$OOR" CHANGELOG.md 'dev..feat' "0.23.1") "$OOR/CHANGELOG.md" "0.23.1")"
-
-echo "== CONTROL: the same arithmetic with IN-region removals still nets to zero =="
-# Two adds, two removes, one PR — the only difference from the fixture above is that the removed
-# bullets stood INSIDE the region, which is the replace-an-existing-entry case the net rule
-# exists to let through. A fix that simply stopped counting removals reds here.
-INR="$TMP/removal-in-region"
-_newrepo "$INR"
-_prepend "$INR/CHANGELOG.md" '- **card#4000** — a standing wording, inside the region.'
-_prepend "$INR/CHANGELOG.md" '- **card#4000** — a second standing wording, inside the region.'
-g -C "$INR" commit -qam 'docs(changelog): two standing entries (#264)'
-g -C "$INR" checkout -q -b feat
-_prepend "$INR/CHANGELOG.md" '- **card#4000** — FIRST WORDING.'
-_prepend "$INR/CHANGELOG.md" '- **card#4000** — CORRECTED WORDING.'
-sed -i '/standing wording, inside the region\.$/d' "$INR/CHANGELOG.md"
-g -C "$INR" commit -qam 'docs(changelog): replace both standing entries (card#4000)'
-eq "the in-region removals ARE recorded (witness: the filter drops removals by scope, not by sign)" \
-   "2" "$(_added_bullets "$INR" CHANGELOG.md 'dev..feat' "0.23.1" | cut -f2 | { grep -c '^-' || true; })"
-eq "so a PR that replaced two standing entries is NOT reported" "" \
-   "$(_stale_dupes <(_added_bullets "$INR" CHANGELOG.md 'dev..feat' "0.23.1") "$INR/CHANGELOG.md" "0.23.1")"
-
-echo "== a PARENT REVISION CARRYING NO STOP HEADER proves nothing either =="
-# The third unprovable arm, and the one that errs GREEN if `_bullets_at` merely CARVES: with no
-# `## [0.23.1]` at the parent, `_region`'s ceiling test never fires, the carve runs
-# `[Unreleased]` → EOF, and bullets removed from a FROZEN released section read as in-region and
-# subtract — card#7303's own defect, intact, one layer down. Not a paper shape: a branch that
-# catches up across a release boundary has exactly this parent, and this repo creates those.
-NST="$TMP/parent-no-stop-header"
-_newrepo "$NST"
-cat > "$NST/CHANGELOG.md" <<'EOF'
-# Changelog
-
-## [Unreleased]
-
-## [0.22.0] - 2026-06-01
-
-- **card#4000** — a released wording, frozen.
-- **card#4000** — a second released wording.
-EOF
-g -C "$NST" commit -qam 'docs(changelog): the file as it stood before 0.23.1 was cut (#264)'
-g -C "$NST" checkout -q -b feat
-_prepend "$NST/CHANGELOG.md" '- **card#4000** — FIRST WORDING.'
-_prepend "$NST/CHANGELOG.md" '- **card#4000** — CORRECTED WORDING.'
-sed -i '/^- \*\*card#4000\*\* — a released wording, frozen\.$/d
-        /^- \*\*card#4000\*\* — a second released wording\.$/d' "$NST/CHANGELOG.md"
-awk '/^## \[0\.22\.0\]/ { print "## [0.23.1] - 2026-07-27"; print "" } 1' \
-    "$NST/CHANGELOG.md" > "$NST/CHANGELOG.md.t" && mv "$NST/CHANGELOG.md.t" "$NST/CHANGELOG.md"
-g -C "$NST" commit -qam 'docs(changelog): catch up across the release and tidy the released section (card#4000)'
-eq "the parent revision carries the FLOOR …" "true" \
-   "$(has_line '## [Unreleased]' "$(g -C "$NST" show 'feat^:CHANGELOG.md')")"
-eq "… and not the STOP HEADER, which is what makes this the third arm and not the second" "false" \
-   "$(has '## [0.23.1]' "$(g -C "$NST" show 'feat^:CHANGELOG.md')")"
-eq "so that revision proves nothing about where a removed line stood …" "" \
-   "$(_bullets_at "$NST" 'feat^' CHANGELOG.md "0.23.1")"
-eq "… while still carrying the released bullets an unbounded carve would have returned (witness)" \
-   "true" "$(has_line '- **card#4000** — a released wording, frozen.' \
-       "$(g -C "$NST" show 'feat^:CHANGELOG.md')")"
-eq "the branch commit really removes two card#4000 bullets (witness: the diff is not empty)" "2" \
-   "$(g -C "$NST" show HEAD -- CHANGELOG.md | { grep -c '^-- \*\*card#4000\*\*' || true; })"
-eq "the derivation keeps the in-region adds and drops both unprovable removals" \
-   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
-(unsquashed)	+	- **card#4000** — FIRST WORDING." \
-   "$(_added_bullets "$NST" CHANGELOG.md 'dev..feat' "0.23.1" | LC_ALL=C sort)"
-eq "END TO END: the duplicate is REPORTED — a parent predating the stop header cannot suppress it" \
-   "card#4000" \
-   "$(_stale_dupes <(_added_bullets "$NST" CHANGELOG.md 'dev..feat' "0.23.1") "$NST/CHANGELOG.md" "0.23.1")"
-
-echo "== the removal side reads the PARENT revision, and says nothing when it cannot =="
-# `_bullets_at`'s own arms, unit-tested: a removal is counted only where the parent revision
-# PROVES the line stood in the region, so every way of failing to prove it has to answer "" —
-# and each "" needs a witness, or it is indistinguishable from a helper that always answers "".
-eq "at a revision carrying the region, its bullets are read back (positive control)" \
-   "- **card#4000** — CORRECTED WORDING.
-- **card#4000** — FIRST WORDING." "$(_bullets_at "$OOR" feat CHANGELOG.md "0.23.1")"
-eq "a path that does not exist at the revision is not an error, it is nothing" "" \
-   "$(_bullets_at "$OOR" feat NOTHING-HERE.md "0.23.1")"
-g -C "$OOR" checkout -q -b noheader
-sed -i '/^## \[Unreleased\]$/d' "$OOR/CHANGELOG.md"
-g -C "$OOR" commit -qam 'docs(changelog): a revision with no [Unreleased] header at all'
-eq "a revision whose region cannot be carved answers with nothing …" "" \
-   "$(_bullets_at "$OOR" noheader CHANGELOG.md "0.23.1")"
-eq "… while that same revision still carries the bullets (witness: not an empty file)" "true" \
-   "$(has_line '- **card#4000** — FIRST WORDING.' "$(g -C "$OOR" show noheader:CHANGELOG.md)")"
-g -C "$OOR" checkout -q -b nostop dev
-sed -i '/^## \[0\.23\.1\]/d' "$OOR/CHANGELOG.md"
-g -C "$OOR" commit -qam 'docs(changelog): a revision predating the stop header section'
-eq "a revision with the floor but NO stop header answers with nothing too …" "" \
-   "$(_bullets_at "$OOR" nostop CHANGELOG.md "0.23.1")"
-eq "… and its \"\" is the GATE, not an empty region: it carries the floor AND the frozen bullets" \
-   "true true" \
-   "$(has_line '## [Unreleased]' "$(g -C "$OOR" show nostop:CHANGELOG.md)") $(has_line \
-       '- **card#4000** — a released wording, frozen under the stop header.' \
-       "$(g -C "$OOR" show nostop:CHANGELOG.md)")"
-g -C "$OOR" checkout -q feat
 
 # ---------------------------------------------------------------------------
 # THE PRE-FOLD REMEDY (card#8442). `_missing`'s VERDICT is settled above and no fixture here
@@ -1700,13 +330,16 @@ _pf_prmerge() {
     g -C "$1" merge -q --no-ff --no-edit "$2" >/dev/null 2>&1 || rc=$?
     echo "$rc"
 }
-# _pf_remedy <dir> <missing-cards> — the LIVE LEG's two calls, verbatim: derive the refs off the merge commit,
-# then ask for the remedy. `GITHUB_BASE_REF` is what a pull_request run sets and what
-# `_pr_merge_refs` requires; setting it here is the fixture standing in for that event.
+# _pf_remedy <dir> <missing-cards> <stop-version> — the LIVE run's two calls, verbatim: derive
+# the refs off the merge commit, then ask for the remedy. `GITHUB_BASE_REF` is what a pull_request
+# run sets and what `_pr_merge_refs` requires; setting it here is the fixture standing in for that
+# event. <stop-version> is a LITERAL, because the `_pf_*` fixtures mint no tag (`_pf_newrepo`
+# commits, never tags): it models the tag on the fixture's release commit — `0.24.0` where the
+# fold is committed as a release, `0.23.1` where the branch cuts `[0.24.0]` itself.
 _pf_remedy() {
     local refs
     refs="$(GITHUB_BASE_REF=dev _pr_merge_refs "$1")"
-    _missing_remedy "$1" CHANGELOG.md "${refs%% *}" "${refs##* }" "$1/CHANGELOG.md" "$2"
+    _missing_remedy "$1" CHANGELOG.md "${refs%% *}" "${refs##* }" "$1/CHANGELOG.md" "$2" "$3"
 }
 # _pf_heading <dir> <card> — the same derivation, stopping at the label the three legs establish.
 _pf_heading() {
@@ -1731,9 +364,10 @@ _pf_label() {
 # Spelled out per card rather than built by a helper: an expectation formatted by the same rule the
 # implementation uses would agree with it whatever that rule became.
 PF_FOLD_9100='card#9100 — your entry landed under `[0.24.0]` after the fold; move it back to `[Unreleased]`.'
-PF_GEN_9100='card#9100 — add a line-initial `- **card#9100**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.'
-PF_GEN_8902='card#8902 — add a line-initial `- **card#8902**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.'
-PF_GEN_9200='card#9200 — add a line-initial `- **card#9200**` bullet under `## [Unreleased]` in docs/CHANGELOG.md.'
+PF_GEN_9100='card#9100 — add a line-initial `- **card#9100**` bullet under `## [Unreleased]` in CHANGELOG.md.'
+PF_GEN_9200='card#9200 — add a line-initial `- **card#9200**` bullet under `## [Unreleased]` in CHANGELOG.md.'
+PF_CAR_8902='card#8902 — a bullet for it already stands under `## [0.24.0]`, below the scanned region. If a merge carried this card'"'"'s entry there after the fold, move the WHOLE entry — the bullet and every indented line under it — back under `## [Unreleased]`; otherwise add a new bullet under `## [Unreleased]` for the work that landed after v0.24.0. The gate cannot tell which; where `[0.24.0]` holds more than one entry for the card, judge each.'
+PF_CAR_9100='card#9100 — a bullet for it already stands under `## [0.24.0]`, below the scanned region. If a merge carried this card'"'"'s entry there after the fold, move the WHOLE entry — the bullet and every indented line under it — back under `## [Unreleased]`; otherwise add a new bullet under `## [Unreleased]` for the work that landed after v0.24.0. The gate cannot tell which; where `[0.24.0]` holds more than one entry for the card, judge each.'
 printf 'fix(x): the branch entry (card#9100)\n' > "$TMP/prefold-subjects"
 
 echo "== prove-it-can-fail: a PRE-FOLD branch's entry is folded under [0.24.0] and NAMED =="
@@ -1759,7 +393,7 @@ eq "the three legs establish the fold and name the heading" "0.24.0" "$(_pf_head
 # ONE call, three assertions off the captured text: the leading line, the absence of the generic
 # arm, and the instruction the card exists to deliver. `${x%%$'\n'*}` rather than `| head -1` —
 # nothing in this file reaches for a pipeline it does not need.
-PF_OUT="$(_pf_remedy "$PFF" card#9100)"
+PF_OUT="$(_pf_remedy "$PFF" card#9100 0.24.0)"
 eq "so the remedy names the MOVE, not a second entry" "$PF_FOLD_9100" "${PF_OUT%%$'\n'*}"
 eq "and it says so out loud (witness: the generic arm is NOT what printed for it)" "false" \
    "$(has_line "$PF_GEN_9100" "$PF_OUT")"
@@ -1788,7 +422,12 @@ eq "the LABEL is the same one the fold fixture returns (witness: leg 3 is what d
    "$(_pf_label "$PFS")"
 eq "but 0.24.0 already stood at the merge-base, so no fold is established" "" \
    "$(_pf_heading "$PFS" card#8902)"
-eq "and the remedy is the generic one" "$PF_GEN_8902" "$(_pf_remedy "$PFS" card#8902)"
+# PREDICATE 6 (d): the shipped line stands under `[0.24.0]`, at or below the stop, so the remedy
+# says where — with both options, because it cannot tell a shipped line from a carried one —
+# and STILL never the MOVE verdict leg 3 refuses.
+PF_STALE="$(_pf_remedy "$PFS" card#8902 0.24.0)"
+eq "the remedy names where the shipped bullet stands, with both options" "$PF_CAR_8902" "$PF_STALE"
+eq "… and it is never the MOVE text" "false" "$(has 'after the fold; move it back' "$PF_STALE")"
 
 echo "== CONTROL: a branch that CUTS the section itself is not told somebody else cut it =="
 # The second shape, and the only fixture LEG 2 decides: the release PR adds `## [0.24.0]` and
@@ -1810,14 +449,15 @@ eq "… and that heading stands on NO base — the branch brought it (witness fo
    "$(g -C "$PFC" show 'HEAD^1:CHANGELOG.md' > "$TMP/pf-cuts-base" &&
       _has_version_header "$TMP/pf-cuts-base" 0.24.0 && echo true || echo false)"
 eq "so no fold is established" "" "$(_pf_heading "$PFC" card#9100)"
-eq "and the remedy is the generic one" "$PF_GEN_9100" "$(_pf_remedy "$PFC" card#9100)"
+eq "and the remedy is the generic one" "$PF_GEN_9100" "$(_pf_remedy "$PFC" card#9100 0.23.1)"
 
-echo "== THE DISCLOSED RESIDUAL: a pre-fold branch that already MERGED the fold drops to generic =="
+echo "== THE DISCLOSED RESIDUAL: a pre-fold branch that already MERGED the fold gets the carried-entry sentence =="
 # Same defect as the first fixture — the entry really is stranded under [0.24.0] and really was
 # put there by the fold — but this branch has since merged the folded base, which makes that base
-# its own merge-base, so leg 3 cannot see that the heading arrived late. Spelling leg 3 at the
-# merge-base buys this residual; it errs toward saying nothing, which is the safe direction, and
-# it is pinned here so a future author meets the trade instead of rediscovering it as a bug.
+# its own merge-base, so leg 3 cannot see that the heading arrived late and the MOVE verdict is
+# not established. Spelling leg 3 at the merge-base buys this residual. The author still reads
+# where the entry went and both options (predicate 6), never a confident MOVE: pinned here so a
+# future author meets the trade instead of rediscovering it as a bug.
 PFR="$TMP/prefold-residual"
 _pf_newrepo "$PFR"
 g -C "$PFR" checkout -q -b feat
@@ -1838,8 +478,8 @@ eq "the merge-base IS the folded base, so leg 3 goes false" "true" \
    "$(g -C "$PFR" show \
         "$(g -C "$PFR" merge-base 'HEAD^1' 'HEAD^2'):CHANGELOG.md" > "$TMP/pf-res-mb" &&
       _has_version_header "$TMP/pf-res-mb" 0.24.0 && echo true || echo false)"
-eq "so the diagnosis is not established, and the generic remedy prints" "$PF_GEN_9100" \
-   "$(_pf_remedy "$PFR" card#9100)"
+eq "so the MOVE is not established, and the carried-entry sentence prints" "$PF_CAR_9100" \
+   "$(_pf_remedy "$PFR" card#9100 0.24.0)"
 
 echo "== TWO missing cards, ONE folded: each gets the arm that is TRUE OF IT =="
 # The shape a verdict-wide sentence gets WRONG, and the reason the needles are scoped per card
@@ -1870,7 +510,7 @@ eq "card#9100's own bullet is located under the fold" "0.24.0" \
    "$(_pf_heading "$PFM" card#9100)"
 eq "card#9200 has no bullet the branch added, so nothing is established for it" "" \
    "$(_pf_heading "$PFM" card#9200)"
-PF_MULTI="$(_pf_remedy "$PFM" "$PF_MULTI_MISSING")"
+PF_MULTI="$(_pf_remedy "$PFM" "$PF_MULTI_MISSING" 0.24.0)"
 eq "the folded card is told to MOVE its entry" "true" "$(has_line "$PF_FOLD_9100" "$PF_MULTI")"
 eq "and the undocumented card is told to ADD one — not to withhold it" "true" \
    "$(has_line "$PF_GEN_9200" "$PF_MULTI")"
@@ -1915,7 +555,7 @@ eq "with GITHUB_BASE_REF EMPTY nothing is derived from that same merge commit, u
 g -C "$PFF" checkout -q feat
 eq "and on a non-merge checkout, nothing is derived even on a pull_request event" "" \
    "$(export GITHUB_BASE_REF=dev; GITHUB_BASE_REF=dev _pr_merge_refs "$PFF")"
-eq "so the remedy falls back to the generic text" "$PF_GEN_9100" "$(_pf_remedy "$PFF" card#9100)"
+eq "so the remedy falls back to the generic text" "$PF_GEN_9100" "$(_pf_remedy "$PFF" card#9100 0.24.0)"
 g -C "$PFF" checkout -q pr-feat
 
 echo "== the locator subtracts what the BASELINE already carries, and still finds what it does not =="
@@ -1973,16 +613,12 @@ eq "the version heading a branch adds is a BOUNDARY, never a line filed under it
    "$(_added_section_label "$PFU/merged.md" "$PFU/added-heading-only" "$PFU/baseline-prefold.md")"
 
 # ---------------------------------------------------------------------------
-# SQUASH PARITY (card#10338). Everything above judges a branch by its COMMIT SERIES, which is not
-# the object a squash-merge lands. The fixtures below drive the same branch through BOTH bases and
-# through a REAL `git merge --squash`, so the disagreement is measured rather than described: the
-# pre-card basis is still reachable (call `_added_bullets` with no ends — the local-run path), which
-# makes it the control, and the squashed commit is git's own answer to what the PR records.
-#
-# THE FIXTURE CARRIES A SIBLING ENTRY ON `dev` AND IT IS LOAD-BEARING TWICE. It proves the delta
-# does not attribute a base-side bullet to the branch (it stands on both sides of the diff), and it
-# proves the per-commit walk still covers the base side after the branch's own commits are dropped
-# from it — a skip that took the sibling with it would narrow the gate silently.
+# THE SQUASH DELTA (card#10338). `exempt_paths` judges a PR's own tokens on the diff its squash
+# will LAND, so the delta must be admitted exactly where the merge will be a squash — and refused
+# on the PR classes this repo merges with a merge commit, whose commits land individually. The
+# fixtures below drive `_squash_ends` through each shape. The fixture carries a sibling entry on
+# `dev`, which proves the second end is the MERGE COMMIT (the tree that lands) and not the
+# branch tip.
 # ---------------------------------------------------------------------------
 
 # _sq_file <dir> <heading> <bullet> — file a bullet at the TOP of <heading>'s body. `_prepend` has
@@ -2017,19 +653,8 @@ EOF
     # be a real revision rather than a name these fixtures agree to pretend about.
     g -C "$1" tag -a v0.23.1 -m 'v0.23.1' -q 2>/dev/null || g -C "$1" tag v0.23.1
 }
-# _sq_records <dir> <range> [<base> <merged> [<delta-pr>]] — `_added_bullets`, C-sorted. Two callers
-# per fixture and the sort is the same every time; spelling it twice per assertion is what drifts.
-_sq_records() {
-    local d="$1" range="$2"
-    _added_bullets "$d" CHANGELOG.md "$range" "0.23.1" "${3:-}" "${4:-}" "${5:-(unsquashed)}" |
-        LC_ALL=C sort
-}
-# _sq_verdict <dir> <records> — `_stale_dupes` over captured records and the dir's CURRENT file.
-_sq_verdict() {
-    _stale_dupes <(printf '%s\n' "$2") "$1/CHANGELOG.md" "0.23.1"
-}
 
-echo "== prove-it-can-fail: the branch series and the SQUASHED delta DISAGREE on one branch =="
+echo "== the squash ENDS are the base tip and the merge commit, on a branch that reworded its entry =="
 SQ="$TMP/squash-parity"
 _sq_newrepo "$SQ"
 SQ_DEV0="$(g -C "$SQ" rev-parse dev)"
@@ -2051,97 +676,10 @@ eq "the ends are the BASE TIP and the MERGE COMMIT — not the branch tip" \
 eq "… and the branch tip is a THIRD revision (witness: the distinction is not vacuous)" "false" \
    "$(has "$(g -C "$SQ" rev-parse feat)" "$SQ_ENDS")"
 
-# THE BEFORE — the basis this gate used until this card, still reachable and still what a local run
-# gets. Its `-` record is the branch's own removal, which the squash will not record.
-SQ_BEFORE="$(_sq_records "$SQ" "$SQ_DEV0..HEAD")"
-eq "the SERIES carries the branch's internal removal, and the sibling from dev" \
-   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
-(unsquashed)	+	- **card#4000** — FIRST WORDING.
-(unsquashed)	+	- **card#4000** — a second claim of the SAME kind.
-(unsquashed)	-	- **card#4000** — FIRST WORDING.
-265	+	- **card#9002** — a sibling PR, filed on dev while this branch was open." "$SQ_BEFORE"
-eq "so on the SERIES this PR is GREEN — the defect, reproduced" "" "$(_sq_verdict "$SQ" "$SQ_BEFORE")"
-
-# THE AFTER — the same branch, the same file, the same function; only the basis moves.
-SQ_AFTER="$(_sq_records "$SQ" "$SQ_DEV0..HEAD" "${SQ_ENDS%% *}" "${SQ_ENDS##* }")"
-eq "the DELTA carries no removal at all, and still carries the base side's own PR" \
-   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
-(unsquashed)	+	- **card#4000** — a second claim of the SAME kind.
-265	+	- **card#9002** — a sibling PR, filed on dev while this branch was open." "$SQ_AFTER"
-eq "so on the DELTA the same PR is RED" "card#4000" "$(_sq_verdict "$SQ" "$SQ_AFTER")"
-
-# THE ORACLE, produced by git rather than argued: squash `feat` onto `dev` for real and ask the
-# push-run basis. This is the verdict that reddened `dev` at 1b301f36.
-SQ_PR_BLOB="$(g -C "$SQ" rev-parse HEAD:CHANGELOG.md)"
-g -C "$SQ" checkout -q dev
-g -C "$SQ" merge -q --squash feat >/dev/null 2>&1
-g -C "$SQ" commit -qm 'feat(x): the change, documented twice (card#4000) (#500)'
-eq "the squashed commit carries the very tree the PR run judged (witness: one object, two runs)" \
-   "$SQ_PR_BLOB" "$(g -C "$SQ" rev-parse HEAD:CHANGELOG.md)"
-SQ_PUSH="$(_sq_records "$SQ" "$SQ_DEV0..HEAD")"
-eq "the squashed diff records the two survivors and NO removal" \
-   "265	+	- **card#9002** — a sibling PR, filed on dev while this branch was open.
-500	+	- **card#4000** — CORRECTED WORDING.
-500	+	- **card#4000** — a second claim of the SAME kind." "$SQ_PUSH"
-eq "and dev's push run REDS — which is where this was discovered, after the merge" "card#4000" \
-   "$(_sq_verdict "$SQ" "$SQ_PUSH")"
-
-echo "== CONTROL: the blessed CROSS-HEADING split stays green on the delta, reworded and all =="
-# The shape this repo's released sections have carried since #180 (#221/card#5910 Added+Fixed,
-# #212/card#5776 Added+Changed, #180/card#5200 across three) — re-derive with the recipe in
-# `_stale_dupes`. A fix that bought parity by refusing this would be a worse gate than the one it
-# replaces: an operator who learns the gate reds correct work learns to bypass it.
-SQS="$TMP/squash-parity-split"
-_sq_newrepo "$SQS"
-SQS_DEV0="$(g -C "$SQS" rev-parse dev)"
-g -C "$SQS" checkout -q -b feat
-_sq_file "$SQS" '### Added' '- **card#4000** — FIRST WORDING of the feature half.'
-_sq_file "$SQS" '### Fixed' '- **card#4000** — the other half, a claim of a different KIND.'
-g -C "$SQS" commit -qam 'feat(x): the change, split by kind (card#4000)'
-sed -i 's/FIRST WORDING/CORRECTED WORDING/' "$SQS/CHANGELOG.md"
-g -C "$SQS" commit -qam 'docs(changelog): reword the Added half (card#4000)'
-eq "the PR merge is clean here too" "0" "$(_pf_prmerge "$SQS" feat)"
-SQS_ENDS="$(GITHUB_BASE_REF=dev _squash_ends "$SQS" v0.23.1)"
-SQS_AFTER="$(_sq_records "$SQS" "$SQS_DEV0..HEAD" "${SQS_ENDS%% *}" "${SQS_ENDS##* }")"
-eq "the delta still reaches NET 2 for this card (witness: the heading is what saves it)" \
-   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING of the feature half.
-(unsquashed)	+	- **card#4000** — the other half, a claim of a different KIND." "$SQS_AFTER"
-eq "and the split is NOT reported" "" "$(_sq_verdict "$SQS" "$SQS_AFTER")"
-# THE DISCRIMINATOR, without which the green above is satisfied by a delta nobody read: the same
-# records against the same file with the two headings merged into one.
-sed 's/^### Fixed$/### Added/' "$SQS/CHANGELOG.md" > "$SQS/CHANGELOG-merged.md"
-eq "… while under ONE heading those identical records ARE reported" "card#4000" \
-   "$(_stale_dupes <(printf '%s\n' "$SQS_AFTER") "$SQS/CHANGELOG-merged.md" "0.23.1")"
-
-echo "== CONTROL: on the delta a removal of a STANDING entry still offsets (the #266 shape) =="
-# The other direction, and the one that stops "drop the removals" satisfying everything above: a PR
-# that REWORDS a bullet somebody else's PR left standing and files its own owns two surviving lines
-# under one heading and must stay green. The delta records that removal, because the line stood at
-# the squash base rather than inside the branch.
-SQR="$TMP/squash-parity-replace"
-_sq_newrepo "$SQR"
-_sq_file "$SQR" '### Added' '- **card#7038** — the first PR on this card.'
-g -C "$SQR" commit -qam 'fix(a): first (card#7038) (#265)'
-SQR_DEV0="$(g -C "$SQR" rev-parse dev)"
-g -C "$SQR" checkout -q -b feat
-sed -i 's/^- \*\*card#7038\*\* — the first PR on this card\.$/- **card#7038** — the first PR on this card, now cross-referenced./' \
-    "$SQR/CHANGELOG.md"
-_sq_file "$SQR" '### Added' '- **card#7038** — the second PR on the same card.'
-g -C "$SQR" commit -qam 'test(a): second (card#7038)'
-eq "the PR merge is clean here too" "0" "$(_pf_prmerge "$SQR" feat)"
-SQR_ENDS="$(GITHUB_BASE_REF=dev _squash_ends "$SQR" v0.23.1)"
-SQR_AFTER="$(_sq_records "$SQR" "$SQR_DEV0..HEAD" "${SQR_ENDS%% *}" "${SQR_ENDS##* }")"
-eq "the delta records the removal of the line that stood at the BASE" \
-   "(unsquashed)	+	- **card#7038** — the first PR on this card, now cross-referenced.
-(unsquashed)	+	- **card#7038** — the second PR on the same card.
-(unsquashed)	-	- **card#7038** — the first PR on this card." "$SQR_AFTER"
-eq "two surviving bullets under one heading, and NOT reported — the net is 1" "" \
-   "$(_sq_verdict "$SQR" "$SQR_AFTER")"
-
-echo "== the branch's CATCH-UP MERGE contributes no sibling to the delta, and both runs still agree =="
-# The universal `_added_bullets` states on BOTH paths, fixtured on the delta path where its reason is
-# different (the siblings stand at the squash BASE, so they are on both sides of the diff) — until
-# card#10338 R1 that half had no fixture anywhere in this file and two surfaces claimed one.
+echo "== the branch's CATCH-UP MERGE: the squash delta is still admitted =="
+# The one shape of the three a branch can take (split, reword, catch-up) that carries a merge
+# commit of its own. The delta must still be admitted: the siblings the catch-up brought in stand
+# at the squash BASE, so they are on both sides of the diff and cannot enter the unit.
 SQC="$TMP/squash-parity-catchup"
 _sq_newrepo "$SQC"
 SQC_DEV0="$(g -C "$SQC" rev-parse dev)"
@@ -2160,38 +698,21 @@ eq "the branch really carries a merge commit from dev (witness: this is the catc
    "$(g -C "$SQC" rev-list --count --merges "$SQC_DEV0..feat")"
 eq "the PR merge is clean here too" "0" "$(_pf_prmerge "$SQC" feat)"
 SQC_ENDS="$(GITHUB_BASE_REF=dev _squash_ends "$SQC" v0.23.1)"
-SQC_AFTER="$(_sq_records "$SQC" "$SQC_DEV0..HEAD" "${SQC_ENDS%% *}" "${SQC_ENDS##* }")"
-eq "the delta carries the branch's own two bullets and NOT the sibling it merged in" \
-   "(unsquashed)	+	- **card#4000** — CORRECTED WORDING.
-(unsquashed)	+	- **card#4000** — a second claim of the SAME kind.
-265	+	- **card#9002** — a sibling PR, filed on dev while this branch was open." "$SQC_AFTER"
-eq "the PR verdict names the branch's own card, and only it" "card#4000" \
-   "$(_sq_verdict "$SQC" "$SQC_AFTER")"
-# And the ORACLE for this shape too, because "agree" is the claim and one side of it is a squash.
-g -C "$SQC" checkout -q dev && g -C "$SQC" merge -q --squash feat >/dev/null 2>&1
-g -C "$SQC" commit -qm 'feat(x): the entry (card#4000) (#500)'
-eq "and the push run after a real squash agrees" "card#4000" \
-   "$(_sq_verdict "$SQC" "$(_sq_records "$SQC" "$SQC_DEV0..HEAD")")"
+eq "the ends are the BASE TIP and the MERGE COMMIT here too — the catch-up does not refuse the delta" \
+   "$(g -C "$SQC" rev-parse dev) $(g -C "$SQC" rev-parse HEAD)" "$SQC_ENDS"
 
 # ---------------------------------------------------------------------------
-# ⛔ THE DELTA BASIS IS REFUSED ON THE PR CLASSES THIS REPO DOES NOT SQUASH (card#10338 R1). The
-# repair above is right about WHAT to diff and was wrong about WHEN: `_pr_merge_refs`' two
-# conditions are base-agnostic by design, `changelog-card-entry.yml` puts no `branches:` filter on
-# `pull_request`, and VERSIONING.md § Anti-patterns merge-commits both the release PR and the
-# back-merge sync PR. Replaying all 44 release merges in this repo's history through a FORCED delta
-# reddens two of them on correct, already-merged history — #295/v0.29.0 on card#6645 and card#7038,
-# the two `_added_bullets`' own docblock names as legitimate, and #308/v0.30.0 on card#7536.
-#
-# TWO FIXTURES BECAUSE THERE ARE TWO LEGS AND NEITHER CATCHES THE OTHER'S CLASS — the case analysis
-# `_squash_ends` states, driven rather than asserted about. Each one carries the CROSS-WITNESS that
-# the other leg would have let it through, or a single leg would satisfy both fixtures.
+# ⛔ THE DELTA IS REFUSED ON THE PR CLASSES THIS REPO DOES NOT SQUASH (card#10338 R1).
+# `_pr_merge_refs`' two conditions are base-agnostic by design, and VERSIONING.md § Anti-patterns
+# merge-commits both the release PR and the back-merge sync PR, whose commits therefore land — and
+# are judged — one by one. TWO FIXTURES BECAUSE THERE ARE TWO LEGS AND NEITHER CATCHES THE OTHER'S
+# CLASS; each carries the CROSS-WITNESS that the other leg would have let it through.
 # ---------------------------------------------------------------------------
-echo "== prove-it-can-fail: a RELEASE PR's delta spans every PR in the release and reds correct history =="
+echo "== a RELEASE PR is refused the delta: its covered commits are squashed PRs of their own =="
 SQREL="$TMP/squash-parity-release"
 _sq_newrepo "$SQREL"
 g -C "$SQREL" branch main
-# The real card#7038 shape, on two squashed `dev` PRs: #265 files a bullet, #266 rewords it and
-# files its own. Per PR each nets 1 and both are correct; over ONE delta they net 2.
+# Two squashed `dev` PRs on one card, then a release branch merged to MAIN with a merge commit.
 _sq_file "$SQREL" '### Added' '- **card#7038** — the first PR on this card.'
 g -C "$SQREL" commit -qam 'fix(a): first (card#7038) (#265)'
 sed -i 's/^- \*\*card#7038\*\* — the first PR on this card\.$/- **card#7038** — the first PR on this card, now cross-referenced./' \
@@ -2206,19 +727,6 @@ g -C "$SQREL" commit -qam 'chore(release): v0.24.0'
 g -C "$SQREL" checkout -q -b pr-release main
 eq "the release PR's merge is clean" "0" \
    "$(rc=0; g -C "$SQREL" merge -q --no-ff --no-edit release/v0.24.0 >/dev/null 2>&1 || rc=$?; echo "$rc")"
-SQREL_RANGE="v0.23.1..HEAD"
-# THE CONTROL — the basis this repo used before card#10338, and the one a merge-commit merge leaves
-# behind afterwards: each PR is its own group, each nets 1, nothing is reported.
-eq "per COMMIT this release is GREEN, which is the right answer on correct history" "" \
-   "$(_sq_verdict "$SQREL" "$(_sq_records "$SQREL" "$SQREL_RANGE")")"
-# THE DEFECT — the delta FORCED, i.e. exactly what the pre-R1 `_squash_ends` returned here.
-SQREL_FORCED="$(_sq_records "$SQREL" "$SQREL_RANGE" \
-    "$(g -C "$SQREL" rev-parse HEAD^1)" "$(g -C "$SQREL" rev-parse HEAD)")"
-eq "the FORCED delta re-emits both PRs' bullets under ONE group (the grouping is destroyed)" \
-   "(unsquashed)	+	- **card#7038** — the first PR on this card, now cross-referenced.
-(unsquashed)	+	- **card#7038** — the second PR on the same card." "$SQREL_FORCED"
-eq "so the FORCED delta REDS a correct release — the blocker, reproduced" "card#7038" \
-   "$(_sq_verdict "$SQREL" "$SQREL_FORCED")"
 # THE GUARD — and the cross-witness that it is the UNSQUASHED leg doing the work here.
 eq "the shipped derivation REFUSES the delta on this shape" "" \
    "$(GITHUB_BASE_REF=main _squash_ends "$SQREL" v0.23.1)"
@@ -2227,9 +735,6 @@ eq "… because covered commits carry a (#N) of their own (the UNSQUASHED leg)" 
 eq "… and NOT because they are released — every one is unreleased (the other leg is silent)" \
    "$(g -C "$SQREL" rev-list --count 'HEAD^1..HEAD')" \
    "$(_unreleased "$SQREL" v0.23.1 'HEAD^1..HEAD' | grep -c . || true)"
-eq "so the live spelling is GREEN on this release PR" "" \
-   "$(SQ_E="$(GITHUB_BASE_REF=main _squash_ends "$SQREL" v0.23.1)"
-      _sq_verdict "$SQREL" "$(_sq_records "$SQREL" "$SQREL_RANGE" "${SQ_E%% *}" "${SQ_E##* }")")"
 
 echo "== prove-it-can-fail: a BACK-MERGE sync PR is based on dev and is not squashed either =="
 # The class no base-name test could reject — its base IS `dev`. What disqualifies it is that the
@@ -2269,31 +774,6 @@ eq "… because a covered commit is ALREADY RELEASED (the UNRELEASED leg: covere
          "$(_unreleased "$SQBM" "$SQBM_TAG" 'HEAD^1..HEAD' | grep -c . || true)" ]] && echo true || echo false)"
 eq "… and NOT because they carry a (#N) — none does (the other leg is silent)" "0" \
    "$(g -C "$SQBM" log --format='%s' 'HEAD^1..HEAD' | { grep -cE '\(#[0-9]+\)' || true; })"
-
-echo "== the delta's GROUP KEY is the PR's own number where the caller knows it =="
-# The last place the two bases could disagree: the squashed commit will carry `(#NNN)`, so the PR
-# run has to group by the same key. Defaulting to `(unsquashed)` conflates the PR under review with
-# every unnumbered commit in the range — a DIRECT PUSH to dev, below.
-SQK="$TMP/squash-parity-key"
-_sq_newrepo "$SQK"
-SQK_DEV0="$(g -C "$SQK" rev-parse dev)"
-# A direct push to dev: no PR, so no `(#N)` in its subject, and a bullet for the same card.
-_sq_file "$SQK" '### Added' '- **card#4000** — filed by a direct push to dev.'
-g -C "$SQK" commit -qam 'docs(changelog): a direct push, no PR number (card#4000)'
-g -C "$SQK" checkout -q -b feat
-_sq_file "$SQK" '### Added' '- **card#4000** — the PR under review, same card, same heading.'
-g -C "$SQK" commit -qam 'feat(x): the PR under review (card#4000)'
-eq "the PR merge is clean here too" "0" "$(_pf_prmerge "$SQK" feat)"
-SQK_ENDS="$(GITHUB_BASE_REF=dev _squash_ends "$SQK" v0.23.1)"
-eq "with NO number the two share the (unsquashed) group and the PR REDS — the pre-existing red" \
-   "card#4000" \
-   "$(_sq_verdict "$SQK" "$(_sq_records "$SQK" "$SQK_DEV0..HEAD" "${SQK_ENDS%% *}" "${SQK_ENDS##* }")")"
-SQK_KEYED="$(_sq_records "$SQK" "$SQK_DEV0..HEAD" "${SQK_ENDS%% *}" "${SQK_ENDS##* }" 501)"
-eq "given the number, the delta's records carry it and the direct push keeps its own group" \
-   "(unsquashed)	+	- **card#4000** — filed by a direct push to dev.
-501	+	- **card#4000** — the PR under review, same card, same heading." "$SQK_KEYED"
-eq "so the PR is GREEN, exactly as the post-squash dev run would be" "" \
-   "$(_sq_verdict "$SQK" "$SQK_KEYED")"
 
 # ---------------------------------------------------------------------------
 # A RELEASE CUT BY CHERRY-PICK (card#11034). v0.41.0 was cut from v0.40.0 with four `dev` PRs
@@ -2410,115 +890,633 @@ eq "and the pre-sync originals A and B count as released over an explicit range 
    "$(_unreleased "$CP" v0.24.0 "v0.23.1..$CP_PRESYNC" | grep -c . || true)"
 
 # ---------------------------------------------------------------------------
-# Live preconditions. Each is a HARD exit, not an assertion: the live leg below asserts an
-# ABSENCE, so anything that can make it answer "" for a reason unrelated to the repo being
-# clean has to stop the run rather than be reported alongside a pass.
+# THE BULLET GRAMMAR (card#11684 R2). One grammar, cut in one place (`_bullet_id`): a bullet is
+# `- **` or `- ⚠ **` at column 1, its LEAD runs to the first `**`, and every `card#N` in the lead
+# discharges. Each consumer of the lead gets its own loose-bullet fixture below — discharge, the
+# fold diagnosis, the carried-entry arm — because a consumer that kept its own spelling of the old
+# `- **card#N**` prefix would pass every other fixture and miss exactly this shape.
 # ---------------------------------------------------------------------------
-git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-    echo "selftest: $ROOT is not a git work tree — the obligation set cannot be derived" >&2
-    exit 1
+echo "== the lead: a ⚠ bullet, a multi-card lead, and prose that names a card discharge as ruled =="
+cat > "$FIX/changelog-grammar.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Changed
+- ⚠ **BREAKING — a refusal that used to pass (card#9600)** — the warning-prefixed shape.
+- **card#9700 / card#9701** (#880) — one lead naming two cards.
+- **card#9702** — its prose mentions card#9703 and must not discharge it.
+- **an unclosed lead naming card#9704
+- not a bullet: **card#9705** sits behind a prefix the grammar does not take.
+
+## [0.23.1] - 2026-07-27
+EOF
+eq "_bullet_id cuts each bullet's lead and lists its tokens" \
+   "card#9600	- ⚠ **BREAKING — a refusal that used to pass (card#9600)** — the warning-prefixed shape.
+card#9700 card#9701	- **card#9700 / card#9701** (#880) — one lead naming two cards.
+card#9702	- **card#9702** — its prose mentions card#9703 and must not discharge it.
+card#9704	- **an unclosed lead naming card#9704" \
+   "$(_bullet_id < "$FIX/changelog-grammar.md")"
+eq "every card a lead names is discharged — and only those" \
+   "card#9600
+card#9700
+card#9701
+card#9702
+card#9704" "$(_discharged "$FIX/changelog-grammar.md" "0.23.1")"
+printf '%s\n' 'fix(a): the ⚠ one (card#9600) (#881)' 'fix(b): a mention (card#9703) (#882)' \
+    > "$FIX/subjects-grammar"
+eq "so the ⚠ bullet discharges, and a card named only in prose stays missing" "card#9703" \
+   "$(_missing "$FIX/subjects-grammar" "$FIX/changelog-grammar.md" "0.23.1")"
+
+echo "== the obligation is the LEFTMOST token of a subject (card#11684 Q2) =="
+printf '%s\n' 'fix(x): the change (card#9800) — supersedes card#9801 (#883)' \
+    'docs(y): one token only (card#9802) (#884)' > "$FIX/subjects-leftmost"
+eq "a two-token subject obliges its leftmost card only" "card#9800
+card#9802" "$(_obliged "$FIX/subjects-leftmost")"
+
+# ---------------------------------------------------------------------------
+# THE MERGED-FILE REMEDY ARMS, OVER THE NEW GRAMMAR. Each reuses the `_pf_*` mechanism above — a
+# real fold, a real merge — with a ⚠ bullet where the fixtures above file a plain one.
+# ---------------------------------------------------------------------------
+echo "== the FOLD arm finds a ⚠ bullet the branch filed before the fold =="
+PFW="$TMP/prefold-warning-bullet"
+_pf_newrepo "$PFW"
+g -C "$PFW" checkout -q -b feat
+_pf_file_entry "$PFW" '- ⚠ **BREAKING — filed while [Unreleased] was still open (card#9101)** — the entry.'
+g -C "$PFW" commit -qam 'fix(x): a breaking change (card#9101)'
+g -C "$PFW" checkout -q dev
+_pf_fold "$PFW" 0.24.0
+g -C "$PFW" commit -qam 'chore(release): v0.24.0 (#301)'
+eq "the merge is clean" "0" "$(_pf_prmerge "$PFW" feat)"
+eq "the three legs establish the fold for the ⚠ bullet" "0.24.0" "$(_pf_heading "$PFW" card#9101)"
+PFW_OUT="$(_pf_remedy "$PFW" card#9101 0.24.0)"
+eq "and the remedy names the MOVE" \
+   'card#9101 — your entry landed under `[0.24.0]` after the fold; move it back to `[Unreleased]`.' \
+   "${PFW_OUT%%$'\n'*}"
+
+# _p6_file_entry <dir> <lines-file> — file a multi-line ENTRY (a bullet and its indented lines)
+# at the foot of the `[Unreleased]` body, where `_pf_file_entry` files one line.
+_p6_file_entry() {
+    awk -v f="$2" '{ print } /^- \*\*card#8903\*\*/ { while ((getline l < f) > 0) print l }' \
+        "$1/CHANGELOG.md" > "$1/CHANGELOG.md.t"
+    mv "$1/CHANGELOG.md.t" "$1/CHANGELOG.md"
 }
-if [[ "$(git -C "$ROOT" rev-parse --is-shallow-repository)" != "false" ]]; then
-    echo "selftest: shallow clone. The range would still be correct IF a tag were reachable," >&2
-    echo "          but on a truncated history 'git describe' usually finds none — and the tag" >&2
-    echo "          guard below would then blame missing tags you may already have. Check out" >&2
-    echo "          with fetch-depth: 0." >&2
-    exit 1
-fi
-LAST_TAG="$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)"
-if [[ -z "$LAST_TAG" ]]; then
-    echo "selftest: no v* tag is reachable from HEAD — no release baseline to measure from." >&2
-    echo "          A checkout that fetched no tags lands here (the shallow case is caught" >&2
-    echo "          above), as does a branch with no tagged ancestor. Fetch tags." >&2
-    exit 1
-fi
-LAST_VERSION="${LAST_TAG#v}"
-if ! _has_version_header "$CHANGELOG" "$LAST_VERSION"; then
-    echo "selftest: docs/CHANGELOG.md has no '## [$LAST_VERSION]' section for the newest tag" >&2
-    echo "          $LAST_TAG. Without it the scan runs to EOF, and an entry under any past" >&2
-    echo "          version would discharge a commit that landed after the tag." >&2
-    exit 1
-fi
-if [[ -z "$(_region "$CHANGELOG" "$LAST_VERSION")" ]]; then
-    echo "selftest: docs/CHANGELOG.md has no '## [Unreleased]' header above '## [$LAST_VERSION]'," >&2
-    echo "          so the scanned region is EMPTY. Every entry filed for an unreleased card is" >&2
-    echo "          currently outside it. On a release PR this means step 4 of VERSIONING.md was" >&2
-    echo "          half-done: retitling '## [Unreleased]' as '## [X.Y.Z]' must also open a" >&2
-    echo "          fresh, empty '## [Unreleased]' above it. Add that header back." >&2
-    exit 1
-fi
+# _p6_sync <dir> <release-branch> — a back-merge sync PR's merge ref: `pr-sync` off `dev`, merging
+# the release branch, which stands in for `main` after the release merged.
+_p6_sync() {
+    local rc=0
+    g -C "$1" checkout -q -b pr-sync dev
+    g -C "$1" merge -q --no-ff --no-edit "$2" >/dev/null 2>&1 || rc=$?
+    echo "$rc"
+}
+
+echo "== predicate 6 (a): a sync merge CARRIES a multi-line entry under [0.24.0] — the #782 shape =="
+P6A="$TMP/p6-carried-entry"
+_pf_newrepo "$P6A"
+g -C "$P6A" checkout -q -b release/v0.24.0
+_pf_fold "$P6A" 0.24.0
+g -C "$P6A" commit -qam 'chore(release): v0.24.0'
+g -C "$P6A" checkout -q dev
+printf '%s\n' '- **card#9300** — filed on dev after the release was cut.' \
+    '  - the first indented line of the entry' '  - the second indented line of the entry' \
+    > "$TMP/p6-entry"
+_p6_file_entry "$P6A" "$TMP/p6-entry"
+g -C "$P6A" commit -qam 'fix(x): the entry (card#9300) (#305)'
+eq "the sync merge is clean" "0" "$(_p6_sync "$P6A" release/v0.24.0)"
+eq "the merge carried the WHOLE entry under the release heading (witness)" "0.24.0" \
+   "$(_added_section_label "$P6A/CHANGELOG.md" "$TMP/p6-entry" /dev/null)"
+printf 'fix(x): the entry (card#9300) (#305)\nfix(z): never documented (card#9500) (#307)\n' \
+    > "$TMP/p6-subjects"
+P6A_MISSING="$(_missing "$TMP/p6-subjects" "$P6A/CHANGELOG.md" 0.24.0)"
+eq "THE VERDICT IS RED: the carried entry is outside the region" "card#9300
+card#9500" "$P6A_MISSING"
+eq "the fold arm is NOT established — the sync branch did not ADD that bullet" "" \
+   "$(_pf_heading "$P6A" card#9300)"
+P6A_OUT="$(_pf_remedy "$P6A" "$P6A_MISSING" 0.24.0)"
+P6A_9300="$(printf '%s\n' "$P6A_OUT" | { grep '^card#9300 ' || true; })"
+eq "the sentence names [0.24.0]" "true" "$(has 'stands under `## [0.24.0]`, below the scanned region' "$P6A_9300")"
+eq "… says WHOLE entry and every indented line" "true" \
+   "$(has 'move the WHOLE entry — the bullet and every indented line under it — back under `## [Unreleased]`' "$P6A_9300")"
+eq "… prints the other option too" "true" \
+   "$(has 'otherwise add a new bullet under `## [Unreleased]` for the work that landed after v0.24.0' "$P6A_9300")"
+eq "… and decides neither" "true" "$(has 'The gate cannot tell which' "$P6A_9300")"
+echo "== predicate 6 (c) CONTROL: a card with no bullet anywhere gets the GENERIC sentence =="
+eq "card#9500 gets the generic arm (the carried arm is keyed on a found bullet)" \
+   'card#9500 — add a line-initial `- **card#9500**` bullet under `## [Unreleased]` in CHANGELOG.md.' \
+   "$(printf '%s\n' "$P6A_OUT" | { grep '^card#9500 ' || true; })"
+
+echo "== predicate 6 (b): [0.24.0] holds a SHIPPED bullet and a CARRIED entry for one card — the #808 shape =="
+P6B="$TMP/p6-shipped-and-carried"
+_pf_newrepo "$P6B"
+_pf_file_entry "$P6B" '- **card#9400** — the DL-428 half, standing when the release is cut.'
+g -C "$P6B" commit -qam 'fix(a): the first half (card#9400) (#304)'
+g -C "$P6B" checkout -q -b release/v0.24.0
+_pf_fold "$P6B" 0.24.0
+g -C "$P6B" commit -qam 'chore(release): v0.24.0'
+g -C "$P6B" tag v0.24.0
+g -C "$P6B" checkout -q dev
+printf '%s\n' '- **card#9400** — the DL-430 half, filed after the cut.' '  - its indented line' \
+    > "$TMP/p6b-entry"
+_p6_file_entry "$P6B" "$TMP/p6b-entry"
+g -C "$P6B" commit -qam 'fix(a): the second half (card#9400) (#305)'
+eq "the sync merge is clean" "0" "$(_p6_sync "$P6B" release/v0.24.0)"
+eq "the first bullet stands at the v0.24.0 tag — it genuinely SHIPPED (witness)" "true" \
+   "$(has_line '- **card#9400** — the DL-428 half, standing when the release is cut.' \
+       "$(g -C "$P6B" show v0.24.0:CHANGELOG.md)")"
+eq "and the carried one does not (witness: it was never released)" "false" \
+   "$(has_line '- **card#9400** — the DL-430 half, filed after the cut.' \
+       "$(g -C "$P6B" show v0.24.0:CHANGELOG.md)")"
+eq "both stand under [0.24.0] in the merged file" "2" \
+   "$(_region "$P6B/CHANGELOG.md" 0.23.1 | _lines_naming card#9400 | grep -c .)"
+eq "THE VERDICT IS RED for the post-cut work" "card#9400" \
+   "$(_missing <(printf 'fix(a): the second half (card#9400) (#305)\n') "$P6B/CHANGELOG.md" 0.24.0)"
+P6B_OUT="$(_pf_remedy "$P6B" card#9400 0.24.0)"
+eq "ONE sentence for the card — not one per bullet" "1" "$(printf '%s\n' "$P6B_OUT" | grep -c '^card#9400 ')"
+eq "it names [0.24.0] and offers both options" "true true" \
+   "$(has 'stands under `## [0.24.0]`' "$P6B_OUT") $(has 'otherwise add a new bullet' "$P6B_OUT")"
+eq "and tells the author to judge each entry, since [0.24.0] holds more than one" "true" \
+   "$(has 'where `[0.24.0]` holds more than one entry for the card, judge each' "$P6B_OUT")"
+
+echo "== predicate 6 over the new grammar: a CARRIED ⚠ bullet is found too =="
+P6W="$TMP/p6-carried-warning"
+_pf_newrepo "$P6W"
+g -C "$P6W" checkout -q -b release/v0.24.0
+_pf_fold "$P6W" 0.24.0
+g -C "$P6W" commit -qam 'chore(release): v0.24.0'
+g -C "$P6W" checkout -q dev
+_pf_file_entry "$P6W" '- ⚠ **BREAKING — filed on dev after the cut (card#9302)** — the entry.'
+g -C "$P6W" commit -qam 'fix(x): breaking (card#9302) (#306)'
+eq "the sync merge is clean" "0" "$(_p6_sync "$P6W" release/v0.24.0)"
+eq "the carried ⚠ bullet's section is named" "0.24.0" \
+   "$(_carried_heading "$P6W/CHANGELOG.md" 0.24.0 card#9302)"
 
 # ---------------------------------------------------------------------------
-# The live assertion.
+# `changelog.exempt_paths`, JUDGED PER LANDED UNIT (card#11684 predicate 3). Obligations are
+# re-derived from every unreleased subject on every run, so an exemption has to be a property of
+# the UNIT that landed — the squash delta a PR run admits, or a commit's own first-parent diff —
+# or the next run would forget it.
 # ---------------------------------------------------------------------------
-SUBJECTS="$TMP/subjects-live"
-# RELEASED IS DECIDED BY `_unreleased`, NOT BY `$LAST_TAG..HEAD` (card#11034): a commit whose copy
-# shipped in the tag — the cherry-pick release shape — obliges nothing. The printed figure below
-# says how many commits that excluded, so a rule that excluded too much is visible on every run.
-_obligation_subjects "$ROOT" "$LAST_TAG" > "$SUBJECTS"
-COMMIT_SUBJECTS="$(grep -c . "$SUBJECTS" || true)"
-if [[ -n "${PR_TITLE:-}" ]]; then
-    printf '%s\n' "$PR_TITLE" >> "$SUBJECTS"
-fi
 
-echo "== every card shipped since $LAST_TAG owns a line-initial CHANGELOG entry =="
-printf '  ..   baseline %s · %s commit subject(s)%s · %s more commit(s) excluded as already released · %s obligation(s) · %s discharged\n' \
-    "$LAST_TAG" "$COMMIT_SUBJECTS" \
-    "$([[ -n "${PR_TITLE:-}" ]] && echo " + PR title" || echo "")" \
-    "$(( $(git -C "$ROOT" rev-list --count "$LAST_TAG..HEAD") - COMMIT_SUBJECTS ))" \
-    "$(_obliged "$SUBJECTS" | grep -c . || true)" \
-    "$(_discharged "$CHANGELOG" "$LAST_VERSION" | grep -c . || true)"
-MISSING="$(_missing "$SUBJECTS" "$CHANGELOG" "$LAST_VERSION")"
-eq "no card shipped since $LAST_TAG is missing its entry" "" "$MISSING"
-if [[ -n "$MISSING" ]]; then
-    # THE REMEDY, BESIDE THE RED IT BELONGS TO (card#8442). The verdict is already fixed one line
-    # up; this only chooses the SENTENCE. `_pr_merge_refs` answers with nothing off any checkout
-    # that is not a pull_request merge ref, and `_missing_remedy` takes the generic arm on that —
-    # so a local run prints exactly what this gate printed before this card.
-    PR_REFS="$(_pr_merge_refs "$ROOT")"
-    while IFS= read -r REMEDY_LINE; do
-        printf '  ..   %s\n' "$REMEDY_LINE" >&2
-    done <<< "$(_missing_remedy "$ROOT" docs/CHANGELOG.md \
-        "${PR_REFS%% *}" "${PR_REFS##* }" "$CHANGELOG" "$MISSING")"
-fi
+# _cg_repo <dir> [<changelog-object-json>] — a repository carrying what the BIN reads: `VERSION`,
+# a `.release-pr.json` (with that `changelog` object, or none), `docs/CHANGELOG.md` with an empty
+# `[Unreleased]` above `[0.23.1]`, tagged `v0.23.1`, on `dev` with `main` at the same commit.
+_cg_repo() {
+    local d="$1" cl="${2:-null}"
+    mkdir -p "$d/docs"
+    g init -q "$d"
+    printf '0.23.1\n' > "$d/VERSION"
+    jq -n --argjson cl "$cl" '{main_branch: "main", dev_branch: "dev", version_file: "VERSION",
+        version_regex: "[0-9]+\\.[0-9]+\\.[0-9]+"} + (if $cl == null then {} else {changelog: $cl} end)' \
+        > "$d/.release-pr.json"
+    printf '# Changelog\n\n## [Unreleased]\n\n## [0.23.1] - 2026-07-27\n\n- **card#8000** — shipped in 0.23.1.\n' \
+        > "$d/docs/CHANGELOG.md"
+    g -C "$d" add -A && g -C "$d" commit -qm 'chore: the repository as released (#100)'
+    g -C "$d" tag v0.23.1
+    g -C "$d" branch main
+}
+# _cg_commit <dir> <path> <subject> — write a line into <path> (created if absent) and commit it.
+_cg_commit() {
+    mkdir -p "$(dirname "$1/$2")"
+    printf '%s\n' "$3" >> "$1/$2"
+    g -C "$1" add -A && g -C "$1" commit -qm "$3"
+}
+# _cg_entry <dir> <bullet> <subject> — file a bullet under `[Unreleased]` and commit it.
+_cg_entry() {
+    _prepend "$1/docs/CHANGELOG.md" "$2"
+    g -C "$1" commit -qam "$3"
+}
+# _cg_prmerge <dir> <base> <branch> — the merge ref `actions/checkout` leaves on a pull_request:
+# FIRST parent the base tip, SECOND the branch. Echoes git's rc.
+_cg_prmerge() {
+    local rc=0
+    g -C "$1" checkout -q -b "pr-${3//\//-}" "$2"
+    g -C "$1" merge -q --no-ff --no-edit "$3" >/dev/null 2>&1 || rc=$?
+    echo "$rc"
+}
+# _cg_run <dir> <GITHUB_BASE_REF> [args…] — the bin itself, from <dir>, with the runner variable
+# set to exactly what is passed ('' on a push run) — never inherited from this shell. Sets CG_RC
+# and CG_OUT (stdout and stderr together, as a CI log shows them).
+_cg_run() {
+    local d="$1" gbr="$2"; shift 2
+    CG_RC=0
+    CG_OUT="$(cd "$d" && GITHUB_BASE_REF="$gbr" "$GATE" "$@" 2>&1)" || CG_RC=$?
+}
+# _cg_members <list…> — a members file for `_obligation_units`.
+_cg_members() { printf '%s\n' "$@" > "$TMP/members"; echo "$TMP/members"; }
+: > "$TMP/no-members"
 
-echo "== no PR left a superseded [Unreleased] entry standing beside its replacement =="
-RECORDS="$TMP/added-live"
-# THE PR IS JUDGED ON WHAT WILL LAND (card#10338). On a pull_request run these are the base tip and
-# the merge commit, so this PR's records are the diff its SQUASHED commit will record on `dev` —
-# the same two revisions, against the same tree, that `dev`'s own push run will read afterwards.
-# Off any other checkout `_squash_ends` answers with nothing, both expansions are empty, and
-# `_added_bullets` falls back to the per-commit walk it always did (its docblock owns that residual).
-#
-# ⛔ THE PER-COMMIT RANGE STAYS `$LAST_TAG..HEAD` — reachability, not `_unreleased` — deliberately
-# (card#11034). This range gathers EVIDENCE, it decides no obligation: a released copy's original
-# contributes an add only if its bullet still STANDS in the region (`_stale_dupes`' presence test)
-# and a removal only if its parent revision carries the stop header (`_bullets_at`), so keeping it
-# can only report a duplicate a reader can actually see, never hide one.
-SQUASH_ENDS="$(_squash_ends "$ROOT" "$LAST_TAG")"
-_added_bullets "$ROOT" docs/CHANGELOG.md "$LAST_TAG..HEAD" "$LAST_VERSION" \
-    "${SQUASH_ENDS%% *}" "${SQUASH_ENDS##* }" "${PR_NUMBER:-(unsquashed)}" > "$RECORDS"
-# ⚠ THE LABELS ARE NARROWER THAN THEY LOOK, AND SAY SO (card#7303). Removals are region-scoped
-# in `_added_bullets`, so the second figure counts removals FROM THE REGION, not from the file;
-# and the third counts PRs that left a surviving RECORD, so a PR whose only contribution to this
-# file was an out-of-region removal is not among them. A counter whose label is wider than its
-# predicate is the defect this card exists to fix — this one is cited as evidence, so it gets the
-# same rule.
-printf '  ..   %s bullet(s) added · %s removed from the region · %s PR(s) with a record, since %s\n' \
-    "$(cut -f2 "$RECORDS" | grep -c '^+' || true)" \
-    "$(cut -f2 "$RECORDS" | grep -c '^-' || true)" \
-    "$(cut -f1 "$RECORDS" | LC_ALL=C sort -u | grep -c . || true)" "$LAST_TAG"
-# WHICH BASIS ANSWERED, printed rather than assumed: the two are not equally strong (card#10338),
-# and a run that silently fell back to the per-commit walk is the one whose green says less.
-if [[ -n "$SQUASH_ENDS" ]]; then
-    printf '  ..   this PR judged as its SQUASH DELTA %s · group %s\n' \
-        "$SQUASH_ENDS" "${PR_NUMBER:-(unsquashed)}"
-else
-    printf '  ..   NO squash delta — judged per COMMIT. Either this is not a pull_request merge ref,\n'
-    printf '  ..   or the delta would have covered commits its group cannot claim (already released,\n'
-    printf '  ..   or already carrying a (#N) of their own: a release PR or a back-merge sync PR).\n'
-fi
-eq "no card carries two surviving bullets from one PR under one ### heading" "" \
-   "$(_stale_dupes "$RECORDS" "$CHANGELOG" "$LAST_VERSION")"
+echo "== exempt_paths: a docs-only tokened commit already on dev owes nothing, on the PR run and after =="
+P3="$TMP/p3-docs-only"
+_cg_repo "$P3" '{"exempt_paths": ["docs/", "tests/"]}'
+_cg_commit "$P3" docs/guide.md 'docs: a guide (card#7200) (#101)'
+g -C "$P3" checkout -q -b feat
+_cg_commit "$P3" app/x.txt 'feat(x): an unrelated change (card#7201)'
+_cg_entry "$P3" '- **card#7201** — an unrelated change.' 'docs(changelog): its entry (card#7201)'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$P3" dev feat)"
+P3_HEAD="$(g -C "$P3" rev-parse feat)"
+P3_ENDS="$(cd "$P3" && GITHUB_BASE_REF=dev _squash_ends "$P3" v0.23.1)"
+eq "the docs-only commit on dev is judged on its own diff, and is exempt" "card#7200	1" \
+   "$( (cd "$P3" && _obligation_units "$P3" v0.23.1 "$(_cg_members docs/ tests/)" \
+        "${P3_ENDS%% *}" "${P3_ENDS##* }" 'feat(x): an unrelated change (card#7201)') |
+       awk -F'\t' '$1 == "card#7200" { print $1 "\t" $2 }')"
+eq "CONTROL: with no exempt_paths the same commit OBLIGES (the members are what exempt it)" "card#7200" \
+   "$( (cd "$P3" && _obligation_units "$P3" v0.23.1 "$TMP/no-members" "${P3_ENDS%% *}" "${P3_ENDS##* }" '') \
+       > "$TMP/p3-units"; _missing <(_obliged_cards "$TMP/p3-units") "$P3/docs/CHANGELOG.md" 0.23.1)"
+_cg_run "$P3" dev --base dev --head "$P3_HEAD" --title 'feat(x): an unrelated change (card#7201)'
+eq "END TO END: the PR run is GREEN" "0" "$CG_RC"
+eq "… and says one card was exempt" "true" "$(has '1 card(s) exempt by changelog.exempt_paths' "$CG_OUT")"
+g -C "$P3" checkout -q dev
+g -C "$P3" merge -q --squash feat >/dev/null 2>&1
+g -C "$P3" commit -qm 'feat(x): an unrelated change (card#7201) (#102)'
+_cg_run "$P3" ''
+eq "END TO END: the push run after the squash is GREEN too" "0" "$CG_RC"
+
+echo "== exempt_paths: a touch-then-revert branch, docs-only NET, is green on its PR run =="
+P3R="$TMP/p3-touch-revert"
+_cg_repo "$P3R" '{"exempt_paths": ["docs/"]}'
+g -C "$P3R" checkout -q -b feat
+mkdir -p "$P3R/app" && printf 'x\n' > "$P3R/app/x.txt"
+printf 'a guide\n' > "$P3R/docs/guide.md"
+g -C "$P3R" add -A && g -C "$P3R" commit -qm 'feat(x): try the change (card#7300)'
+g -C "$P3R" rm -q app/x.txt && g -C "$P3R" commit -qm 'revert the app half (card#7300)'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$P3R" dev feat)"
+P3R_ENDS="$(cd "$P3R" && GITHUB_BASE_REF=dev _squash_ends "$P3R" v0.23.1)"
+eq "the delta is admitted (witness: the PR run judges the squash unit)" "$(g -C "$P3R" rev-parse dev) $(g -C "$P3R" rev-parse HEAD)" "$P3R_ENDS"
+eq "on the delta the token is EXEMPT — the squash lands docs only" "" \
+   "$( (cd "$P3R" && _obligation_units "$P3R" v0.23.1 "$(_cg_members docs/)" "${P3R_ENDS%% *}" \
+        "${P3R_ENDS##* }" '') > "$TMP/p3r-units"; _obliged_cards "$TMP/p3r-units")"
+eq "CONTROL: judged per branch COMMIT the same token is obliged (the first commit touched app/)" "card#7300" \
+   "$( (cd "$P3R" && _obligation_units "$P3R" v0.23.1 "$(_cg_members docs/)" '' '' '') > "$TMP/p3r-units"
+       _obliged_cards "$TMP/p3r-units")"
+_cg_run "$P3R" dev --base dev --head "$(g -C "$P3R" rev-parse feat)" --title 'docs: a guide (card#7300)'
+eq "END TO END: the PR run is GREEN" "0" "$CG_RC"
+
+echo "== THE NAMED DIVERGENCE: the same branch landed as a MERGE COMMIT reds the push run =="
+g -C "$P3R" checkout -q dev
+g -C "$P3R" merge -q --no-ff --no-edit feat >/dev/null 2>&1
+_cg_run "$P3R" ''
+eq "END TO END: the push run on dev is RED — each commit landed, and is judged, on its own" "1" "$CG_RC"
+eq "… naming the token the PR run had passed" "true" "$(has 'card#7300 — add a line-initial' "$CG_OUT")"
+
+# ---------------------------------------------------------------------------
+# THE BIN END TO END. Every fixture below runs `bin/changelog-gate` itself, from inside a fixture
+# repository, with `GITHUB_BASE_REF` set per call exactly as a runner sets it — so the classifier
+# call, the config read and the exit code are the shipped ones.
+# ---------------------------------------------------------------------------
+echo "== the PR TITLE obliges on a PR run, through the bin's own unit derivation =="
+TT="$TMP/title-obligation"
+_cg_repo "$TT"
+g -C "$TT" checkout -q -b feat
+_cg_commit "$TT" app/t.txt 'feat: a change whose own commits carry no token'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$TT" dev feat)"
+_cg_run "$TT" dev --base dev --head "$(g -C "$TT" rev-parse feat)"
+eq "CONTROL: without the title, nothing in this PR obliges a bullet" "0" "$CG_RC"
+_cg_run "$TT" dev --base dev --head "$(g -C "$TT" rev-parse feat)" --title 'feat: a change (card#7202)'
+eq "with it, the card the title names is obliged — RED, naming it" "1 true" \
+   "$CG_RC $(has 'card#7202 — add a line-initial' "$CG_OUT")"
+
+echo "== announce_paths: a tokenless PR touching a member must change [Unreleased] =="
+AN="$TMP/announce"
+_cg_repo "$AN" '{"announce_paths": ["app/"], "announce_exempt_branches": ["dependabot/"]}'
+g -C "$AN" checkout -q -b chore-x
+_cg_commit "$AN" app/x.txt 'chore: an app change with no card'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$AN" dev chore-x)"
+_cg_run "$AN" dev --base dev --head "$(g -C "$AN" rev-parse chore-x)" --title 'chore: an app change with no card' --head-ref chore-x
+eq "a tokenless PR touching app/ with [Unreleased] unchanged is RED" "1" "$CG_RC"
+eq "… on the announce leg" "true" "$(has 'touches a changelog.announce_paths member and leaves the [Unreleased] section' "$CG_OUT")"
+_cg_run "$AN" dev --base dev --head "$(g -C "$AN" rev-parse chore-x)" --title 'chore: an app change with no card' --head-ref dependabot/npm/x
+eq "the same PR from a dependabot/ branch is skipped" "0 true" \
+   "$CG_RC $(has "skipped: head branch 'dependabot/npm/x' is under changelog.announce_exempt_branches" "$CG_OUT")"
+g -C "$AN" checkout -q chore-x
+_cg_entry "$AN" '- an app change with no card.' 'docs(changelog): announce it'
+g -C "$AN" checkout -q dev && g -C "$AN" branch -q -D pr-chore-x
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$AN" dev chore-x)"
+_cg_run "$AN" dev --base dev --head "$(g -C "$AN" rev-parse chore-x)" --title 'chore: an app change with no card' --head-ref chore-x
+eq "with an [Unreleased] change the same PR is GREEN" "0 true" \
+   "$CG_RC $(has 'no card token, and this PR changes the [Unreleased] section' "$CG_OUT")"
+
+echo "== announce_paths: a RELEASE PR and a SYNC PR are skipped by classification (F2) =="
+g -C "$AN" checkout -q dev
+g -C "$AN" merge -q --squash chore-x >/dev/null 2>&1
+g -C "$AN" commit -qm 'chore: an app change with no card (#103)'
+g -C "$AN" update-ref refs/remotes/origin/dev dev
+g -C "$AN" checkout -q -b release/v0.24.0 dev
+printf '0.24.0\n' > "$AN/VERSION"
+_pf_fold "$AN/docs" 0.24.0
+g -C "$AN" commit -qam 'release: v0.24.0'
+eq "the release PR's [Unreleased] section is unchanged at both ends (witness)" "true" \
+   "$([[ "$(g -C "$AN" show main:docs/CHANGELOG.md > "$TMP/an-a"; _unreleased_section "$TMP/an-a")" == \
+         "$(_unreleased_section "$AN/docs/CHANGELOG.md")" ]] && echo true || echo false)"
+eq "… and its delta touches app/ (witness)" "true" \
+   "$(has_line 'app/x.txt' "$(g -C "$AN" diff --name-only main release/v0.24.0)")"
+eq "the release PR merge is clean" "0" "$(_cg_prmerge "$AN" main release/v0.24.0)"
+_cg_run "$AN" main --base main --head "$(g -C "$AN" rev-parse release/v0.24.0)" --title 'release: v0.24.0' --head-ref release/v0.24.0
+eq "the tokenless release PR is GREEN, skipped on the announce leg by classification" "0 true" \
+   "$CG_RC $(has 'skipped: classified release 0.24.0' "$CG_OUT")"
+g -C "$AN" checkout -q main
+g -C "$AN" merge -q --no-ff --no-edit release/v0.24.0 >/dev/null 2>&1
+g -C "$AN" tag v0.24.0
+g -C "$AN" checkout -q -b sync/main-to-dev-post-v0.24.0 main
+eq "the sync PR merge is clean" "0" "$(_cg_prmerge "$AN" dev sync/main-to-dev-post-v0.24.0)"
+_cg_run "$AN" dev --base dev --head "$(g -C "$AN" rev-parse sync/main-to-dev-post-v0.24.0)" --title 'Sync main to dev after v0.24.0' --head-ref sync/main-to-dev-post-v0.24.0
+eq "the sync PR into dev classifies release and is skipped too" "0 true" \
+   "$CG_RC $(has 'skipped: classified release 0.24.0' "$CG_OUT")"
+
+echo "== the classifier: a refusal is a refusal, and a ::warning:: before its verdict is relayed =="
+_cg_run "$AN" dev --base dev --head "$(g -C "$AN" rev-parse sync/main-to-dev-post-v0.24.0)" --config nowhere.json
+eq "release-artifacts-check refusing (rc 2) is rc 2 here, never a pass" "2 true" \
+   "$CG_RC $(has 'could not classify' "$CG_OUT")"
+eq "… with the classifier's own words relayed" "true" "$(has 'no nowhere.json in this repo' "$CG_OUT")"
+WRN="$TMP/classifier-warning"
+_cg_repo "$WRN" '{"exempt_paths": ["tests/"]}'
+_cg_commit "$WRN" tests/a.txt 'test(a): tests only (card#7500) (#104)'
+g -C "$WRN" update-ref refs/remotes/origin/dev dev
+g -C "$WRN" checkout -q -b release/v0.24.0 dev
+printf '0.23.1\n0.24.0\n' > "$WRN/VERSION"
+_pf_fold "$WRN/docs" 0.24.0
+g -C "$WRN" commit -qam 'release: v0.24.0'
+eq "the release PR merge is clean" "0" "$(_cg_prmerge "$WRN" main release/v0.24.0)"
+_cg_run "$WRN" main --base main --head "$(g -C "$WRN" rev-parse release/v0.24.0)" --title 'release: v0.24.0'
+eq "a classifier ::warning:: printed BEFORE its verdict leaves the verdict read" "0 true" \
+   "$CG_RC $(has "changelog.* read at $(g -C "$WRN" rev-parse dev) (release 0.24.0:" "$CG_OUT")"
+eq "… and the warning itself reaches the log" "true" \
+   "$(has '::warning::release-artifacts-check:' "$CG_OUT")"
+
+echo "== the release-body size arm: bytes, the boundary, and the carve's two terminations =="
+# _cg_section <file> <bytes> — a `## [0.24.0]` section of EXACTLY <bytes> bytes, as the carve
+# measures it: the header line and one filler line.
+_cg_section() {
+    local hdr='## [0.24.0] - 2026-08-01'
+    printf '%s\n' "$hdr" > "$1"
+    head -c "$(( $2 - ${#hdr} - 2 ))" /dev/zero | tr '\0' x >> "$1"
+    printf '\n' >> "$1"
+}
+_cg_section "$TMP/sec-125000" 125000
+eq "the fixture section is 125 000 bytes on disk (witness)" "125000" "$(wc -c < "$TMP/sec-125000" | tr -d ' ')"
+{ cat "$TMP/sec-125000"; printf '## [0.23.1] - 2026-07-27\n\n- **card#8000** — shipped.\n'; } > "$TMP/sec-header-terminated"
+eq "a section ended by the next ## [ header measures its own bytes only" "125000" \
+   "$(_section_bytes "$TMP/sec-header-terminated" 0.24.0)"
+eq "the same section ended by EOF measures the same" "125000" "$(_section_bytes "$TMP/sec-125000" 0.24.0)"
+eq "an absent section measures 0 (the arm tells absence apart by _has_version_header)" "0" \
+   "$(_section_bytes "$TMP/sec-125000" 9.9.9)"
+# _cg_size_pr <dir> <bytes> — a release PR into main whose [0.24.0] section is <bytes> bytes.
+_cg_size_pr() {
+    _cg_repo "$1" '{"release_body_limit_bytes": 125000}'
+    g -C "$1" update-ref refs/remotes/origin/dev dev
+    g -C "$1" checkout -q -b release/v0.24.0 dev
+    printf '0.24.0\n' > "$1/VERSION"
+    _cg_section "$TMP/sec-$2" "$2"
+    { printf '# Changelog\n\n## [Unreleased]\n\n'; cat "$TMP/sec-$2"
+      printf '## [0.23.1] - 2026-07-27\n\n- **card#8000** — shipped in 0.23.1.\n'; } > "$1/docs/CHANGELOG.md"
+    g -C "$1" commit -qam 'release: v0.24.0'
+    _cg_prmerge "$1" main release/v0.24.0 >/dev/null
+    _cg_run "$1" main --base main --head "$(g -C "$1" rev-parse release/v0.24.0)" --title 'release: v0.24.0'
+}
+_cg_size_pr "$TMP/size-at" 125000
+eq "a 125 000-byte section passes a 125 000-byte limit" "0 true" \
+   "$CG_RC $(has 'is 125000 bytes, within 125000' "$CG_OUT")"
+_cg_size_pr "$TMP/size-over" 125001
+eq "a 125 001-byte section is RED" "1 true" \
+   "$CG_RC $(has 'is 125001 bytes, over changelog.release_body_limit_bytes (125000)' "$CG_OUT")"
+
+echo "== where changelog.* is read (predicate 5): the FIRST RELEASE AFTER ADOPTION =="
+# `main`'s config carries no `changelog` key — it cannot, before the release that brings one —
+# while `dev` adopted the gate with `exempt_paths: ["tests/"]` and then landed a tests-only
+# tokened commit with no bullet. The release PR's fork point is on `main`.
+P5="$TMP/p5-first-release"
+_cg_repo "$P5"
+jq '. + {changelog: {exempt_paths: ["tests/"]}}' "$P5/.release-pr.json" > "$P5/cfg.t" && mv "$P5/cfg.t" "$P5/.release-pr.json"
+g -C "$P5" commit -qam 'ci: adopt the changelog gate (#110)'
+_cg_commit "$P5" tests/a.txt 'test(x): tests only (card#7400) (#111)'
+P5_DEVCUT="$(g -C "$P5" rev-parse dev)"
+g -C "$P5" update-ref refs/remotes/origin/dev dev
+g -C "$P5" checkout -q -b release/v0.24.0 dev
+printf '0.24.0\n' > "$P5/VERSION"
+_pf_fold "$P5/docs" 0.24.0
+g -C "$P5" commit -qam 'release: v0.24.0'
+P5_REL="$(g -C "$P5" rev-parse release/v0.24.0)"
+eq "the release PR merge is clean" "0" "$(_cg_prmerge "$P5" main release/v0.24.0)"
+P5_FORK="$(g -C "$P5" merge-base main "$P5_REL")"
+eq "the fork point's config has NO changelog key (witness: the adoption is unreleased)" "null" \
+   "$(g -C "$P5" show "$P5_FORK:.release-pr.json" | jq -c .changelog)"
+_cg_run "$P5" main --base main --head "$P5_REL" --title 'release: v0.24.0'
+eq "END TO END: the release PR is GREEN — dev's exempt_paths apply" "0" "$CG_RC"
+eq "… read where the release was cut from dev" "true" \
+   "$(has "changelog.* read at $P5_DEVCUT (release 0.24.0: where it was cut from refs/remotes/origin/dev)" "$CG_OUT")"
+echo "== CONTROL: the same release judged with the FORK POINT's config is RED =="
+g -C "$P5" show "$P5_FORK:.release-pr.json" | jq -r '.changelog.exempt_paths // [] | .[]' > "$TMP/p5-fork-members"
+eq "the fork point exempts nothing (witness)" "" "$(cat "$TMP/p5-fork-members")"
+eq "so the fork-point reading obliges card#7400, which has no bullet" "card#7400" \
+   "$( (cd "$P5" && _obligation_units "$P5" v0.23.1 "$TMP/p5-fork-members" '' '' 'release: v0.24.0') \
+       > "$TMP/p5-units"; _missing <(_obliged_cards "$TMP/p5-units") "$P5/docs/CHANGELOG.md" 0.23.1)"
+
+echo "== CONTROL: a release branch cannot exempt its own release =="
+P5S="$TMP/p5-self-exemption"
+_cg_repo "$P5S" '{"exempt_paths": ["tests/"]}'
+_cg_commit "$P5S" app/a.txt 'feat(a): an app change (card#7401) (#112)'
+g -C "$P5S" update-ref refs/remotes/origin/dev dev
+g -C "$P5S" checkout -q -b release/v0.24.0 dev
+printf '0.24.0\n' > "$P5S/VERSION"
+_pf_fold "$P5S/docs" 0.24.0
+jq '.changelog.exempt_paths += ["app/"]' "$P5S/.release-pr.json" > "$P5S/cfg.t" && mv "$P5S/cfg.t" "$P5S/.release-pr.json"
+g -C "$P5S" commit -qam 'release: v0.24.0'
+eq "the release PR merge is clean" "0" "$(_cg_prmerge "$P5S" main release/v0.24.0)"
+_cg_run "$P5S" main --base main --head "$(g -C "$P5S" rev-parse release/v0.24.0)" --title 'release: v0.24.0'
+eq "the release branch's own widening is IGNORED — still RED" "1 true" \
+   "$CG_RC $(has 'card#7401 — add a line-initial' "$CG_OUT")"
+echo "== REFUSAL: no refs/remotes/origin/dev to find the release cut =="
+g -C "$P5S" update-ref -d refs/remotes/origin/dev
+_cg_run "$P5S" main --base main --head "$(g -C "$P5S" rev-parse release/v0.24.0)" --title 'release: v0.24.0'
+eq "rc 2, naming the ref" "2 true" "$CG_RC $(has "'refs/remotes/origin/dev' does not resolve" "$CG_OUT")"
+
+echo "== the config surface: an unknown changelog.* key warns; a non-default tag_format refuses =="
+UK="$TMP/unknown-key"
+_cg_repo "$UK" '{"exempt_paths": [], "bogus_key": true}'
+_cg_run "$UK" ''
+eq "an unknown key is a WARNING naming it and this pin, not a refusal" "0 true" \
+   "$CG_RC $(has "::warning::changelog-gate: changelog.bogus_key ignored by this pin (v$ABTK_TOOL_VERSION)" "$CG_OUT")"
+eq "… and a key this pin reads is not warned about (witness: the warning is per key)" "false" \
+   "$(has 'changelog.exempt_paths ignored' "$CG_OUT")"
+
+echo "== reading the config at a revision: present, ABSENT and UNREADABLE are three outcomes =="
+CA="$TMP/config-at"
+_cg_repo "$CA"
+g -C "$CA" checkout -q -b no-config
+g -C "$CA" rm -q .release-pr.json && g -C "$CA" commit -qm 'chore: a revision with no config'
+eq "a revision carrying the config yields it" "dev" \
+   "$(CG_ROOT="$CA" _config_at dev .release-pr.json | jq -r .dev_branch)"
+eq "a revision with no config yields {} — the adoption PR's own fork point" "{} 0" \
+   "$(rc=0; out="$(CG_ROOT="$CA" _config_at no-config .release-pr.json)" || rc=$?; echo "$out $rc")"
+eq "a revision this clone cannot read is a FAILURE, never {}" "1" \
+   "$(rc=0; CG_ROOT="$CA" _config_at 0123456789abcdef0123456789abcdef01234567 .release-pr.json >/dev/null 2>&1 || rc=$?; echo "$rc")"
+TF="$TMP/tag-format"
+_cg_repo "$TF"
+jq '. + {tag_format: "v{{version}}"}' "$TF/.release-pr.json" > "$TF/cfg.t" && mv "$TF/cfg.t" "$TF/.release-pr.json"
+g -C "$TF" commit -qam 'chore: spell the default tag_format out'
+_cg_run "$TF" ''
+eq "the DEFAULT tag_format, spelled out, runs" "0" "$CG_RC"
+jq '.tag_format = "{{version}}"' "$TF/.release-pr.json" > "$TF/cfg.t" && mv "$TF/cfg.t" "$TF/.release-pr.json"
+g -C "$TF" commit -qam 'chore: unprefixed tags'
+_cg_run "$TF" ''
+eq "any other tag_format is rc 2, naming the key" "2 true" \
+   "$CG_RC $(has '`tag_format` "{{version}}" is not supported; this gate reads `v*` tags only' "$CG_OUT")"
+MAL="$TMP/malformed-key"
+_cg_repo "$MAL"
+g -C "$MAL" checkout -q -b feat
+jq '. + {changelog: {exempt_paths: "docs/"}}' "$MAL/.release-pr.json" > "$MAL/cfg.t" && mv "$MAL/cfg.t" "$MAL/.release-pr.json"
+g -C "$MAL" commit -qam 'ci: a malformed key'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$MAL" dev feat)"
+_cg_run "$MAL" dev --base dev --head "$(g -C "$MAL" rev-parse feat)" --title 'ci: a malformed key'
+eq "a PR writing a malformed changelog.* key is refused ON THAT PR (rc 2), naming it" "2 true" \
+   "$CG_RC $(has 'changelog.exempt_paths must be an array of strings' "$CG_OUT")"
+
+# ---------------------------------------------------------------------------
+# REVIEW ROUND 1 on #458. Two fail-open shapes and three unfixtured config paths.
+# ---------------------------------------------------------------------------
+echo "== a RENAME out of a non-exempt path is not exempt: the PR run and the push run read one unit =="
+RN="$TMP/rename-token"
+_cg_repo "$RN" '{"exempt_paths": ["docs/"]}'
+_cg_commit "$RN" app/tool.sh 'feat: the tool (#105)'
+g -C "$RN" checkout -q -b feat
+mkdir -p "$RN/docs" && g -C "$RN" mv app/tool.sh docs/tool.sh
+g -C "$RN" commit -qm 'docs: move the tool (card#77)'
+eq "witness: porcelain diff, which detects renames, names ONLY the new path" "docs/tool.sh" \
+   "$(g -C "$RN" diff --name-only dev feat)"
+eq "_delta_paths names BOTH ends of the move" "app/tool.sh
+docs/tool.sh" "$(_delta_paths "$RN" dev feat)"
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$RN" dev feat)"
+_cg_run "$RN" dev --base dev --head "$(g -C "$RN" rev-parse feat)" --title 'docs: move the tool (card#77)'
+eq "the PR run is RED — the move touches app/ as well as docs/" "1 true" \
+   "$CG_RC $(has 'card#77 — add a line-initial' "$CG_OUT")"
+g -C "$RN" checkout -q dev
+g -C "$RN" merge -q --squash feat >/dev/null 2>&1
+g -C "$RN" commit -qm 'docs: move the tool (card#77) (#106)'
+_cg_run "$RN" ''
+eq "… and the push run after the squash agrees (both runs read one unit)" "1" "$CG_RC"
+
+echo "== a RENAME out of an announce_paths member is a touch of that member =="
+RNA="$TMP/rename-announce"
+_cg_repo "$RNA" '{"announce_paths": ["app/"]}'
+_cg_commit "$RNA" app/x 'chore: x (#107)'
+g -C "$RNA" checkout -q -b mv-x
+mkdir -p "$RNA/lib" && g -C "$RNA" mv app/x lib/x && g -C "$RNA" commit -qm 'chore: move x to lib'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$RNA" dev mv-x)"
+_cg_run "$RNA" dev --base dev --head "$(g -C "$RNA" rev-parse mv-x)" --title 'chore: move x to lib' --head-ref mv-x
+eq "a tokenless move app/x → lib/x with [Unreleased] unchanged is RED on the announce leg" "1 true" \
+   "$CG_RC $(has 'touches a changelog.announce_paths member and leaves the [Unreleased] section' "$CG_OUT")"
+
+echo "== the announce leg's 'tokenless' is the TITLE's, as the squash lands it =="
+TK="$TMP/announce-title-only"
+_cg_repo "$TK" '{"exempt_paths": ["docs/"], "announce_paths": ["app/"]}'
+g -C "$TK" checkout -q -b tweak
+_cg_commit "$TK" docs/note.md 'docs: a note (card#5)'
+_cg_commit "$TK" app/t.txt 'chore: tweak, follow-up to (#9)'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$TK" dev tweak)"
+_cg_run "$TK" dev --base dev --head "$(g -C "$TK" rev-parse tweak)" --title 'chore: tweak' --head-ref tweak
+eq "witness: the token leg obliges nothing (the docs commit is exempt, the delta refused by (#9))" "true" \
+   "$(has '0 obligation(s)' "$CG_OUT")"
+eq "a branch commit's token does NOT skip the announce leg — RED, with the title tokenless" "1 true" \
+   "$CG_RC $(has 'touches a changelog.announce_paths member and leaves the [Unreleased] section' "$CG_OUT")"
+
+echo "== the announce leg's 'carries a token' is the obligation grammar card#[0-9]+, digits required =="
+# A title naming `card#` with no digits after it is NOT tokened: the token leg obliges nothing for
+# it, so skipping the announce leg too would pass the PR on neither leg (real titles:
+# `feat(writeback): card#<task-id> correlation channel`, `(card#none toolkit-release)`).
+TG="$TMP/announce-token-grammar"
+_cg_repo "$TG" '{"announce_paths": ["app/"]}'
+g -C "$TG" checkout -q -b rework
+_cg_commit "$TG" app/x.txt 'chore: rework the parser'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$TG" dev rework)"
+TG_HEAD="$(g -C "$TG" rev-parse rework)"
+for tg_title in 'chore: rework the card#N parser' 'chore: rework the parser (card#none toolkit-release)' \
+    'feat(writeback): card#<x> correlation channel'; do
+    _cg_run "$TG" dev --base dev --head "$TG_HEAD" --title "$tg_title" --head-ref rework
+    eq "title '$tg_title' carries no card#[0-9]+ — RED on the announce leg" "1 true false" \
+       "$CG_RC $(has 'touches a changelog.announce_paths member and leaves the [Unreleased] section' "$CG_OUT") $(has 'skipped: the PR title carries a card token' "$CG_OUT")"
+    eq "… and the token leg obliges nothing for it" "true" "$(has '0 obligation(s)' "$CG_OUT")"
+done
+eq "_title_card answers nothing for a digitless card#" "" "$(_title_card 'chore: rework the card#N parser')"
+eq "_title_card answers the LEFTMOST real token, past a digitless one" "card#123" \
+   "$(_title_card 'chore: card#none, then card#123 and card#456')"
+g -C "$TG" checkout -q rework
+_cg_entry "$TG" '- **card#123** — rework the parser.' 'docs(changelog): its entry (card#123)'
+g -C "$TG" checkout -q dev && g -C "$TG" branch -q -D pr-rework
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$TG" dev rework)"
+_cg_run "$TG" dev --base dev --head "$(g -C "$TG" rev-parse rework)" --title 'chore: rework the parser (card#123)' --head-ref rework
+eq "CONTROL: a real card#123 title is GREEN, the announce leg skipped for the token leg" "0 true" \
+   "$CG_RC $(has 'skipped: the PR title carries a card token, so the token leg above owns it' "$CG_OUT")"
+
+echo "== an unusable changelog block at a MERGED revision: push refuses, a feature PR warns, a release PR refuses =="
+CM="$TMP/config-malformed-push"
+_cg_repo "$CM" '{"exempt_paths": "docs/"}'
+_cg_run "$CM" ''
+eq "a push run with a malformed changelog key at HEAD is rc 2, naming it" "2 true" \
+   "$CG_RC $(has 'changelog.exempt_paths must be an array of strings' "$CG_OUT")"
+CF="$TMP/config-malformed-fork"
+_cg_repo "$CF"
+jq '. + {changelog: {exempt_paths: ["docs/"], announce_paths: "app/"}}' "$CF/.release-pr.json" > "$CF/cfg.t" && mv "$CF/cfg.t" "$CF/.release-pr.json"
+g -C "$CF" commit -qam 'ci: a changelog block with one malformed key (#120)'
+_cg_commit "$CF" docs/note.md 'docs: a note (card#7600) (#121)'
+g -C "$CF" checkout -q -b repair
+jq '.changelog.announce_paths = ["app/"]' "$CF/.release-pr.json" > "$CF/cfg.t" && mv "$CF/cfg.t" "$CF/.release-pr.json"
+g -C "$CF" commit -qam 'ci: repair the changelog block'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$CF" dev repair)"
+_cg_run "$CF" dev --base dev --head "$(g -C "$CF" rev-parse repair)" --title 'ci: repair the changelog block'
+eq "the repairing feature PR is not refused: a ::warning:: names the fork point's malformed key" "true" \
+   "$(has '::warning::changelog-gate: .release-pr.json at '"$(g -C "$CF" rev-parse dev)"' declares a malformed changelog.* key' "$CG_OUT")"
+eq "… and EVERY key takes its default — the fork point's valid exempt_paths is NOT applied, so card#7600 reds" \
+   "1 true" "$CG_RC $(has 'card#7600 — add a line-initial' "$CG_OUT")"
+eq "… nor its announce_paths (the announce leg does not run)" "false" \
+   "$(has 'a tokenless PR touching changelog.announce_paths' "$CG_OUT")"
+CR="$TMP/config-malformed-release"
+_cg_repo "$CR"
+jq '. + {changelog: {release_body_limit_bytes: "125000"}}' "$CR/.release-pr.json" > "$CR/cfg.t" && mv "$CR/cfg.t" "$CR/.release-pr.json"
+g -C "$CR" commit -qam 'ci: a limit spelled as a string (#122)'
+g -C "$CR" update-ref refs/remotes/origin/dev dev
+g -C "$CR" checkout -q -b release/v0.24.0 dev
+printf '0.24.0\n' > "$CR/VERSION"
+_pf_fold "$CR/docs" 0.24.0
+jq '.changelog.release_body_limit_bytes = 125000' "$CR/.release-pr.json" > "$CR/cfg.t" && mv "$CR/cfg.t" "$CR/.release-pr.json"
+g -C "$CR" commit -qam 'release: v0.24.0'
+eq "the release PR merge is clean" "0" "$(_cg_prmerge "$CR" main release/v0.24.0)"
+_cg_run "$CR" main --base main --head "$(g -C "$CR" rev-parse release/v0.24.0)" --title 'release: v0.24.0'
+eq "a RELEASE PR whose dev-cut config is malformed is rc 2 — it is the size limit's only backstop" "2 true" \
+   "$CG_RC $(has 'a release PR is the last run that judges this window' "$CG_OUT")"
+
+echo "== a merged revision whose config is not valid JSON: a push run and a release PR refuse (rc 2) =="
+JP="$TMP/config-invalid-json-push"
+_cg_repo "$JP"
+printf '{"main_branch": "main", "dev_branch": "dev", "version_file": "VERSION",\n "version_regex": "[0-9]+\\\\.[0-9]+\\\\.[0-9]+",}\n' \
+    > "$JP/.release-pr.json"
+g -C "$JP" commit -qam 'ci: a trailing comma (#124)'
+eq "witness: the committed config is not valid JSON" "false" \
+   "$(jq -e . "$JP/.release-pr.json" >/dev/null 2>&1 && echo true || echo false)"
+_cg_run "$JP" ''
+eq "a push run with an invalid-JSON config at HEAD is rc 2, naming it" "2 true" \
+   "$CG_RC $(has '.release-pr.json at HEAD is not valid JSON' "$CG_OUT")"
+JR="$TMP/config-invalid-json-release"
+_cg_repo "$JR"
+cp "$JP/.release-pr.json" "$JR/.release-pr.json"
+g -C "$JR" commit -qam 'ci: a trailing comma (#125)'
+g -C "$JR" update-ref refs/remotes/origin/dev dev
+g -C "$JR" checkout -q -b release/v0.24.0 dev
+printf '0.24.0\n' > "$JR/VERSION"
+_pf_fold "$JR/docs" 0.24.0
+g -C "$JR" show main:.release-pr.json > "$JR/.release-pr.json"
+g -C "$JR" commit -qam 'release: v0.24.0'
+eq "the release PR merge is clean" "0" "$(_cg_prmerge "$JR" main release/v0.24.0)"
+_cg_run "$JR" main --base main --head "$(g -C "$JR" rev-parse release/v0.24.0)" --title 'release: v0.24.0'
+eq "a RELEASE PR whose dev-cut config is not valid JSON is rc 2, naming the window" "2 true" \
+   "$CG_RC $(has 'is not valid JSON — a release PR is the last run that judges this window' "$CG_OUT")"
+
+echo "== an EMPTY unit is never exempt =="
+eq "_path_match all over no paths at all is NOT a match" "1" \
+   "$(rc=0; printf '' | _path_match "$(_cg_members docs/)" all || rc=$?; echo "$rc")"
+EU="$TMP/empty-unit"
+_cg_repo "$EU" '{"exempt_paths": ["docs/"]}'
+g -C "$EU" commit -q --allow-empty -m 'chore: an empty commit (card#7700) (#123)'
+eq "an EMPTY tokened commit is obliged, not exempt" "card#7700	0" \
+   "$( (cd "$EU" && _obligation_units "$EU" v0.23.1 "$(_cg_members docs/)" '' '' '') |
+       awk -F'\t' '{ print $1 "\t" $2 }')"
 
 _summary "changelog-card-entry-selftest"

@@ -55,14 +55,14 @@
 # in `docs/CONSOLIDATION-PLAN.md` rather than smoothed over.
 #
 # VERSION-SPECIFIC HISTORY IS DELIBERATELY OUT OF THE POPULATION for leg 3 — `docs/UPGRADE.md`'s
-# version-specific section, `docs/CHANGELOG.md`'s RELEASED entries and `CLAUDE.md`'s
+# version-specific section, `docs/CHANGELOG.md`'s RELEASED entries and `docs/recent-changes.md`'s
 # release-snapshot table are append-only records of what was true AT a version, and a frozen
 # at-that-version list cannot rot. (The v0.8.2 entry names six bins and says in its own words that
-# the six is a fact about v0.8.2, pointing at §3 for the current set.) The two markdown files are
-# SPLIT at a heading located by its TEXT rather than carved out whole, so their LIVE heads —
-# UPGRADE's §1-§5 and the CHANGELOG's `[Unreleased]` — stay IN: neither is frozen, and
-# `[Unreleased]` is the section the release in flight is being written into. Leg 1 still covers
-# every byte of all three: history may not publish a derivation that does not work.
+# the six is a fact about v0.8.2, pointing at §3 for the current set.) All three are SPLIT at a
+# heading (the snapshot at its table header) located by its TEXT rather than carved out whole, so
+# their LIVE heads — UPGRADE's §1-§5, the CHANGELOG's `[Unreleased]` and the snapshot's preamble —
+# stay IN: none is frozen, and `[Unreleased]` is the section the release in flight is being
+# written into. Leg 1 still covers every byte of all three: history may not publish a derivation that does not work.
 #
 # ⛔ LEG 3'S UNIT IS THE LINE, AND THAT IS A STATED BOUND, not an oversight. In markdown a
 # paragraph IS a line, so every consumer instruction in a doc is scanned whole. In a
@@ -263,17 +263,16 @@ echo "== leg 3 — no surface anywhere in the repo enumerates the set in prose =
 #
 # TWO CARVE-OUTS, and they are different shapes on purpose:
 #
-#   (a) VERSION-SPECIFIC FROZEN HISTORY, carved out AT THE HEADING WHERE IT BEGINS. `docs/UPGRADE.md`
-#       and `docs/CHANGELOG.md` are each SPLIT by `_carve`: from the first version-specific heading
-#       down is out — append-only records of what was true AT a version, where a frozen
+#   (a) VERSION-SPECIFIC FROZEN HISTORY, carved out AT THE HEADING WHERE IT BEGINS. `docs/UPGRADE.md`,
+#       `docs/CHANGELOG.md` and `docs/recent-changes.md` are each SPLIT by `_carve`: from the
+#       first version-specific heading down is out — append-only records of what was true AT a version, where a frozen
 #       at-that-version list cannot rot and a per-line disposition would need a new entry at every
 #       release, i.e. exactly the hand-kept list this file exists to abolish — while the LIVE head
 #       above it stays IN. WHOLE-FILE WAS THE DEFECT ON THE CHANGELOG: `[Unreleased]` is not
 #       frozen, it is the section the release in flight is written into, and a regrown enumeration
-#       line under it passed at rc 0 (measured). `CLAUDE.md` IS carved whole, for a second and
-#       independent reason: it is this repo's own agent orientation and reaches no vendoring
-#       consumer at all. Leg 1 still covers all three — history may not publish a derivation that
-#       does not work.
+#       line under it passed at rc 0 (measured). The snapshot table lived in `CLAUDE.md`, carved
+#       whole, until card#11670 moved it out; `CLAUDE.md` is now IN like any other file. Leg 1
+#       still covers all three — history may not publish a derivation that does not work.
 #
 #   (b) DISPOSED LINES, carved out LINE-BY-LINE. The two predicates below cannot tell a vendoring
 #       instruction from prose that happens to name the same nouns, so a handful of real lines
@@ -300,7 +299,20 @@ eq "…and stops before the first released entry"    "false" \
 eq "…which IS in the frozen complement, so the cut landed on it" "true" \
    "$(_contains "$CHANGELOG_CUT_LINE" "$TMP/changelog-frozen.md")"
 
-LEG3_HISTORY=("CLAUDE.md")
+RELEASES="$ROOT/docs/recent-changes.md"
+# The table's own header row, by SHAPE: every row below it is a frozen at-that-version snapshot.
+RELEASES_CUT='^\| Version \| Date \|'
+_carve "$RELEASES" "$RELEASES_CUT" "$TMP/releases-live.md" "$TMP/releases-frozen.md"
+RELEASES_CUT_LINE="$(_headings "$RELEASES" "$RELEASES_CUT" | head -n 1 | cut -d: -f2-)"
+eq "docs/recent-changes.md carries the table header to split at" "1" \
+   "$(_headings "$RELEASES" "$RELEASES_CUT" | grep -c . || true)"
+eq "premise: the recent-changes live head is non-empty" "true" \
+   "$([ -s "$TMP/releases-live.md" ] && echo true || echo false)"
+eq "…and stops before the table header"            "false" \
+   "$(_contains "$RELEASES_CUT_LINE" "$TMP/releases-live.md")"
+eq "…which IS in the frozen complement, so the cut landed on it" "true" \
+   "$(_contains "$RELEASES_CUT_LINE" "$TMP/releases-frozen.md")"
+
 LEG3_DISPOSED=(
     # The tolerant-parse paragraph. It enumerates the paginator's CONSUMERS — a different set,
     # with its own gate (tests/fetch-board-cards-caller-claims-selftest.sh) — and instructs
@@ -324,19 +336,20 @@ LEG3_DISPOSED=(
 )
 
 # _leg3_scan <root> — every reported line in the tree under <root>, as `<relpath>: <line>`.
-# `docs/UPGRADE.md` and `docs/CHANGELOG.md` are scanned through their LIVE heads only, reusing the
-# `_carve` splits above — and ONLY under the real `$ROOT`, so a fixture tree that happened to carry
-# either path would be read as itself rather than silently answered from the repo's own live head.
+# `docs/UPGRADE.md`, `docs/CHANGELOG.md` and `docs/recent-changes.md` are scanned through their
+# LIVE heads only, reusing the `_carve` splits above — and ONLY under the real `$ROOT`, so a fixture
+# tree that happened to carry one of those paths would be read as itself rather than silently
+# answered from the repo's own live head.
 _leg3_scan() {
     local root="$1" f rel src hit
     while IFS= read -r f; do
         rel="${f#"$root"/}"
-        case " ${LEG3_HISTORY[*]} " in *" $rel "*) continue ;; esac
         src="$f"
         if [[ "$root" == "$ROOT" ]]; then
             case "$rel" in
                 docs/UPGRADE.md)   src="$TMP/upgrade-live.md" ;;
                 docs/CHANGELOG.md) src="$TMP/changelog-live.md" ;;
+                docs/recent-changes.md) src="$TMP/releases-live.md" ;;
             esac
         fi
         while IFS= read -r hit; do

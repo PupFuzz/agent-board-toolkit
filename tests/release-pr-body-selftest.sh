@@ -1637,6 +1637,20 @@ for _d in "${_rv_dirs[@]}"; do
 done
 eq "witness: the scrubbed PATH finds no coord-review-verify" "" "$(PATH="$RV_PATH" command -v coord-review-verify || true)"
 
+# THE PRELUDE'S FLOOR HOLDS. Every call in this file that does not deliberately remove the variable
+# (`env -u RELEASE_PR_REVIEW_VERIFIER`) runs the generator with the ambient environment, and a host with a real `coord-review-verify` on PATH would otherwise have it
+# call the real `gh api` once per bundled PR. So the floor is asserted from the call side: a
+# verifier IS on PATH here (the stub), and an ambient call must still not reach it. CI has no
+# verifier of its own, so this pair is what reds there if the floor is dropped.
+: > "$RV/log"
+( cd "$RVR" && PATH="$RVB:$PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" \
+    "$BIN" --version 0.2.0 --base v0.1.0 --head "$RV_MID" ) >/dev/null 2>&1 || true
+eq "an ambient call never runs a verifier on PATH (the suite floor)" "" "$(cat "$RV/log")"
+: > "$RV/log"
+( cd "$RVR" && env -u RELEASE_PR_REVIEW_VERIFIER PATH="$RVB:$PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" \
+    "$BIN" --version 0.2.0 --base v0.1.0 --head "$RV_MID" ) >/dev/null 2>&1 || true
+eq "control: without the floor the same call DOES run it" "true" "$(has 'acme/widget#11' "$(cat "$RV/log")")"
+
 # _rv <head> [VAR=value ...] — run the generator over v0.1.0..<head> under the scrubbed PATH with
 # the stub dir prepended, GITHUB_REPOSITORY=acme/widget, and the extra env given. Sets RV_RC,
 # RV_OUT (stdout), RV_ERR (stderr), RV_LINE (the line after the `## Bundled` heading) and RV_CALLS.
@@ -1715,7 +1729,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo $$ > "$RV_PG"' "trap ':' INT" '"$@"' '
 chmod +x "$RV/int-run"
 rm -f "$RV/pg" "$RV/rcf"
 RV_T0="$(date +%s)"
-( cd "$RVR" && RV_PG="$RV/pg" RV_RCF="$RV/rcf" setsid "$RV/int-run" env -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
+( cd "$RVR" && RV_PG="$RV/pg" RV_RCF="$RV/rcf" setsid "$RV/int-run" env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
     PATH="$RVB:$RV_PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" RV_SLOW=all RV_SLEEP=20 \
     "$BIN" --version 0.2.0 --base v0.1.0 --head "$RV_MID" >"$RV/out" 2>"$RV/err" & )
 for _i in $(seq 1 50); do [[ -s "$RV/pg" ]] && break; sleep 0.1; done
@@ -2033,7 +2047,7 @@ g -C "$RX" commit -q --amend -m "Reapply \"fix: y (card#4) (#22)\" (#25)" -m "Th
 RX_RZ="$(_rxr "$RX_Z")"
 echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$RX/.release-pr.json"
 _rxh() { g -C "$RX" rev-parse --short "$1"; }
-_rx() { (cd "$RX" && env -u RELEASE_PR_REVIEW_VERIFIER RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+_rx() { (cd "$RX" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 eq "fixture: R carries git's \`This reverts commit\` line naming O" "true" "$(has "This reverts commit $RX_O" "$(g -C "$RX" log -1 --format=%b "$RX_R")")"
 RX_RC=0; RX_OUT="$(_rx 2>"$T/rx-err")" || RX_RC=$?
 RX_ROWS="$(printf '%s\n' "$RX_OUT" | awk '/^## Bundled/ { p = 1; next } /^## / { p = 0 } p && /^- /')"
@@ -2083,7 +2097,7 @@ g -C "$MX" checkout -q main; echo 2 > "$MX/o"; g -C "$MX" add o; g -C "$MX" comm
 g -C "$MX" merge -q --no-ff m -m "Merge pull request #31 from acme/m"; MX_M="$(g -C "$MX" rev-parse HEAD)"
 g -C "$MX" revert --no-edit -m 1 "$MX_M" >/dev/null; MX_R="$(g -C "$MX" rev-parse HEAD)"
 echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$MX/.release-pr.json"
-_mx() { (cd "$MX" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+_mx() { (cd "$MX" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 eq "fixture: the merge's revert names the merge in its body line" "true" "$(has "This reverts commit $MX_M" "$(g -C "$MX" log -1 --format=%b "$MX_R")")"
 eq "a reverted merge: the card on its merged side is not shipped" "" "$(_mx --card-manifest 2>/dev/null)"
 eq "…nor its DL" "" "$(_mx --manifest 2>/dev/null)"
@@ -2105,7 +2119,7 @@ g -C "$QX" commit -qm "feat: new thing DL-77 (closes card#50) (#40)" -m "* wip
 
 This reverts commit $QX_W."; QX_S="$(g -C "$QX" rev-parse HEAD)"
 echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$QX/.release-pr.json"
-_qx() { (cd "$QX" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+_qx() { (cd "$QX" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 eq "a squash carrying a branch revert's body line still ships its own DL" "DL-77" "$(_qx --manifest 2>/dev/null | paste -sd' ' -)"
 eq "…and its own card" "50" "$(_qx --card-manifest 2>/dev/null | paste -sd' ' -)"
 eq "…and is credited its own PR" "true" "$(has_line "- **#40** (\`DL-77\`) feat: new thing DL-77 (closes card#50)" "$(_qx 2>/dev/null)")"
@@ -2126,7 +2140,7 @@ rm -rf "$T/sx"; g clone -q --depth 3 "file://$SX" "$T/sx" 2>/dev/null
 echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$T/sx/.release-pr.json"
 eq "fixture: the clone is shallow and cannot read T" \
    "true|false" "$(g -C "$T/sx" rev-parse --is-shallow-repository)|$(g -C "$T/sx" cat-file -e "$SX_T^{commit}" 2>/dev/null && echo true || echo false)"
-_sx() { (cd "$T/sx" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+_sx() { (cd "$T/sx" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 eq "shallow: the unmeasured revert's card is not shipped" "5" "$(_sx --card-manifest 2>/dev/null | paste -sd' ' -)"
 eq "shallow: nor its DL" "" "$(_sx --manifest 2>/dev/null)"
 SX_OUT="$(_sx 2>/dev/null)" || true
@@ -2157,7 +2171,7 @@ NX_MSG="$(g -C "$NX" log --reverse --format='* %s%n%n%b' main..br)"
 g -C "$NX" checkout -q main; g -C "$NX" merge -q --squash br >/dev/null
 g -C "$NX" commit -qm "feat: z DL-77 (closes card#12) (#40)" -m "$NX_MSG"; NX_S="$(g -C "$NX" rev-parse HEAD)"
 echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$NX/.release-pr.json"
-_nx() { (cd "$NX" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+_nx() { (cd "$NX" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 _nxcc() { (cd "$NX" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
 eq "fixture: the squash body carries W's revert line and the reapply's line naming the branch revert" \
    "true|true" "$(has "This reverts commit $NX_W" "$(g -C "$NX" log -1 --format=%b "$NX_S")")|$(has "This reverts commit $NX_B" "$(g -C "$NX" log -1 --format=%b "$NX_S")")"
@@ -2195,7 +2209,7 @@ eq "fixture: the squash body reverts W and a branch-only commit, and W is gone f
    "true|2|false" "$(has "This reverts commit $QB_W" "$(g -C "$QB" log -1 --format=%b)")|$(g -C "$QB" log -1 --format=%b | grep -c '^This reverts commit ')|$(test -f "$QB/w" && echo true || echo false)"
 eq "shape (b): the squash ships its own PR and title, and W is withheld as not measured" \
    "revert|41|$QB_W|feat: q DL-78 (closes card#13) (#41)+unmeasured||$QB_S|" "$(_qbcc "$QB_S")+$(_qbcc "$QB_W")"
-eq "…so the squash's card ships and W's does not" "13" "$(cd "$QB" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest 2>/dev/null | paste -sd' ' -)"
+eq "…so the squash's card ships and W's does not" "13" "$(cd "$QB" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest 2>/dev/null | paste -sd' ' -)"
 
 echo "== \`git revert -m 2\` of a merge takes back the MAINLINE side, which the kept parent names (card#11652) =="
 # THE DEFECT: the merge arm always took back `^1..merge`, the merged side. `git revert -m 2 M` keeps
@@ -2209,7 +2223,7 @@ g -C "$M2" checkout -q main; echo 2 > "$M2/m"; g -C "$M2" add m; g -C "$M2" comm
 g -C "$M2" merge -q --no-ff s -m "Merge pull request #32 from acme/s"; M2_M="$(g -C "$M2" rev-parse HEAD)"
 g -C "$M2" revert --no-edit -m 2 "$M2_M" >/dev/null; M2_R="$(g -C "$M2" rev-parse HEAD)"
 echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$M2/.release-pr.json"
-_m2() { (cd "$M2" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
+_m2() { (cd "$M2" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 _m2cc() { (cd "$M2" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
 eq "fixture: the merge kept parent 2, and git's body line names it" \
    "true|true" "$(has "changes made to $(g -C "$M2" rev-parse "$M2_M^2")" "$(g -C "$M2" log -1 --format=%b "$M2_R")")|$(test -f "$M2/s" && test ! -f "$M2/m" && echo true || echo false)"
@@ -2239,7 +2253,7 @@ g -C "$MB" checkout -q main; echo 2 > "$MB/m"; g -C "$MB" add m; g -C "$MB" comm
 g -C "$MB" merge -q --no-ff s -m "Merge pull request #32 from acme/s"; g -C "$MB" tag v0.1.0
 g -C "$MB" revert --no-edit -m 2 HEAD >/dev/null; MB_R="$(g -C "$MB" rev-parse --short HEAD)"
 echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$MB/.release-pr.json"
-MB_OUT="$(cd "$MB" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
+MB_OUT="$(cd "$MB" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
 eq "-m 2 from before the range: the body names the mainline #29 as reverted, not the kept side's #32" \
    "true|false" "$(has_line "Reverted by this range, shipped before it: #29 (DL-9, card#21), reverted by $MB_R." "$MB_OUT")|$(has "#32" "$(printf '%s\n' "$MB_OUT" | grep '^Reverted' || true)")"
 
@@ -2274,7 +2288,7 @@ echo "== a revert whose \`This reverts commit\` line names a commit a rebase or 
 # Every rewrite here is a real `git rebase` or `git cherry-pick`.
 _rwcfg() { echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$1/.release-pr.json"; }
 _rwcc() { (cd "$1" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$2" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
-_rwq() { local d="$1"; shift; (cd "$d" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@" 2>/dev/null) | sort | paste -sd' ' -; }
+_rwq() { local d="$1"; shift; (cd "$d" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@" 2>/dev/null) | sort | paste -sd' ' -; }
 _rwgone() { g -C "$1" reflog expire --expire=now --all; g -C "$1" gc -q --prune=now; }
 _rwreadable() { g -C "$1" cat-file -e "$2^{commit}" 2>/dev/null && echo true || echo false; }
 _rwanc() { g -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null && echo true || echo false; }
@@ -2302,7 +2316,7 @@ eq "…the revert is a revert of that copy, shipping no PR and no text" "revert|
 eq "…card#5 is withheld, K's card ships" "8" "$(_rwq "$RB" --card-manifest)"
 eq "…and DL-5 is withheld" "DL-6" "$(_rwq "$RB" --manifest)"
 eq "…the body names the copy as not measured, the revert that may take it back, and why" \
-   "true" "$(has "Not measured for a revert: $(_rwh "$RB" "$RB_A"), which $(_rwh "$RB" "$RB_R") may take back ($RW_WHY)" "$(cd "$RB" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)")"
+   "true" "$(has "Not measured for a revert: $(_rwh "$RB" "$RB_A"), which $(_rwh "$RB" "$RB_R") may take back ($RW_WHY)" "$(cd "$RB" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)")"
 
 # THE SAME HISTORY IN A SHALLOW CLONE: the revert's line is unreadable there, so the revert is not
 # measured (it may name an ancestor the clone cut off) — and its copy is still searched for, so the
@@ -2316,7 +2330,7 @@ eq "fixture (rebase, shallow): the clone is shallow, holds the copy of x, and ca
    "true|true|false" "$(g -C "$T/rw-rebase-shal" rev-parse --is-shallow-repository)|$(_rwreadable "$T/rw-rebase-shal" "$RB_A")|$(_rwreadable "$T/rw-rebase-shal" "$RB_A0")"
 eq "rebase, shallow: the revert is not measured, and the copy of x is not measured beside it — never shipped" \
    "unmeasured|||+unmeasured||$RB_R|" "$(_rwscc "$RB_R")+$(_rwscc "$RB_A")"
-eq "…card#5 is withheld" "8" "$(cd "$T/rw-rebase-shal" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base "$RBS_BASE" --head HEAD --card-manifest 2>/dev/null | sort | paste -sd' ' -)"
+eq "…card#5 is withheld" "8" "$(cd "$T/rw-rebase-shal" && "$BIN" --version 0.2.0 --base "$RBS_BASE" --head HEAD --card-manifest 2>/dev/null | sort | paste -sd' ' -)"
 
 # A CLASSIFICATION THAT CANNOT SEARCH FAILS, IT DOES NOT SHIP: with the range the copies are searched
 # in unset, the run must stop rather than read "no copy" and ship the copy. Driven on a copy of the
@@ -2409,7 +2423,7 @@ eq "…card#5 is withheld" "8" "$(_rwq "$RP" --card-manifest)"
 mkdir -p "$T/rw-norange-body"
 sed 's/^COMMIT_ROWS="\$(commit_rows "\$RANGE")"$/COMMIT_ROWS="$(unset RANGE; commit_rows "${BASE:+$BASE..}$HEAD_REF")"/' "$BIN" > "$T/rw-norange-body/release-pr-body"; chmod +x "$T/rw-norange-body/release-pr-body"
 eq "fixture: the body-path copy differs from the tool by exactly that line" "1" "$(diff "$BIN" "$T/rw-norange-body/release-pr-body" | grep -c '^<')"
-RW_NB_RC=0; RW_NB_OUT="$(cd "$RB" && RELEASE_PR_REVIEW_VERIFIER=off "$T/rw-norange-body/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$T/rw-nb-err")" || RW_NB_RC=$?
+RW_NB_RC=0; RW_NB_OUT="$(cd "$RB" && "$T/rw-norange-body/release-pr-body" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$T/rw-nb-err")" || RW_NB_RC=$?
 eq "RANGE unset: the BODY path exits 2, names why, and prints no body" \
    "2|true|" "$RW_NB_RC|$(has "revert_scan needs RANGE" "$(cat "$T/rw-nb-err")")|$RW_NB_OUT"
 
@@ -2435,9 +2449,9 @@ eq "fixture (partial clone): every commit reads, a blob is missing, and the prom
 PC_RC=0; PC_OUT="$(cd "$T/pc" && "$BIN" --classify-commits --base v0.1.0 --head HEAD 2>"$T/pc-err")" || PC_RC=$?
 eq "partial clone, promisor down: --classify-commits exits 2 and classifies nothing as shipped" \
    "2|false" "$PC_RC|$(has "shipped"$'\037'"$PC_A" "$PC_OUT")"
-PC_RC=0; PC_OUT="$(cd "$T/pc" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$T/pc-err")" || PC_RC=$?
+PC_RC=0; PC_OUT="$(cd "$T/pc" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>"$T/pc-err")" || PC_RC=$?
 eq "partial clone, promisor down: the BODY path exits 2 and prints no body" "2|" "$PC_RC|$PC_OUT"
-PC_RC=0; PC_OUT="$(cd "$T/pc" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest 2>/dev/null)" || PC_RC=$?
+PC_RC=0; PC_OUT="$(cd "$T/pc" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD --card-manifest 2>/dev/null)" || PC_RC=$?
 eq "partial clone, promisor down: --card-manifest exits 2 and prints no card" "2|" "$PC_RC|$PC_OUT"
 # CONTROL: the same clone with the promisor reachable again reads the blobs and withholds the copy.
 g -C "$T/pc" config remote.origin.url "file://$PC"
@@ -2466,7 +2480,7 @@ eq "fixture (two reasons): the squash body names W (an ancestor) and the unreada
    "true|true|false" "$(has "This reverts commit $TR_W" "$(g -C "$TR" log -1 --format=%b)")|$(has "This reverts commit $TR_C0" "$(g -C "$TR" log -1 --format=%b)")|$(_rwreadable "$TR" "$TR_C0")"
 eq "two reasons: C and W are both not measured, possibly taken back by the squash" \
    "unmeasured||$TR_S|+unmeasured||$TR_S|" "$(_rwcc "$TR" "$TR_C")+$(_rwcc "$TR" "$TR_W")"
-TR_OUT="$(cd "$TR" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
+TR_OUT="$(cd "$TR" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
 eq "…the body gives C the rewrite reason and W the squash reason" \
    "true|true" "$(has "$(_rwh "$TR" "$TR_C"), which $(_rwh "$TR" "$TR_S") may take back ($RW_WHY)" "$TR_OUT")|$(has "#30, which $(_rwh "$TR" "$TR_S") may take back (its body also reverts a commit only its PR branch had" "$TR_OUT")"
 
@@ -2487,7 +2501,7 @@ g -C "$LO" branch -qD topic; _rwgone "$LO"
 _rwcfg "$LO"
 eq "fixture (nothing matches): the picked revert's target is unreadable" "false" "$(_rwreadable "$LO" "$LO_C0")"
 eq "nothing in the range matches: the revert is not measured, and credits no PR" "unmeasured|||" "$(_rwcc "$LO" "$LO_R")"
-LO_OUT="$(cd "$LO" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
+LO_OUT="$(cd "$LO" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
 eq "…and the body names it as not measured, and why" \
    "true" "$(has "Not measured for a revert: $(_rwh "$LO" "$LO_R") (its \`This reverts commit\` line names $(g -C "$LO" log -1 --format=%b "$LO_R" | sed -nE 's/^This reverts commit ([0-9a-f]{7}).*/\1/p'), which is not in its history (a rebase or a cherry-pick rewrote it), and no commit before it in this range has the subject it quotes or the change it undoes)" "$LO_OUT")"
 
@@ -2503,7 +2517,7 @@ g -C "$M1" checkout -q main; echo 2 > "$M1/m"; g -C "$M1" add m; g -C "$M1" comm
 g -C "$M1" merge -q --no-ff s -m "Merge pull request #32 from acme/s"; g -C "$M1" tag v0.1.0
 g -C "$M1" revert --no-edit -m 1 HEAD >/dev/null; M1_R="$(g -C "$M1" rev-parse --short HEAD)"
 _rwcfg "$M1"
-M1_OUT="$(cd "$M1" && RELEASE_PR_REVIEW_VERIFIER=off "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
+M1_OUT="$(cd "$M1" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
 eq "-m 1 from before the range: the body names the merge's PR #32 with its side's refs, not each side commit" \
    "Reverted by this range, shipped before it: #32 (DL-8, card#20, card#22), reverted by $M1_R." "$(printf '%s\n' "$M1_OUT" | grep '^Reverted' || true)"
 eq "…and -m 2 (another parent kept) still lists the commit it took back, never the merge's PR" \
@@ -2524,8 +2538,8 @@ chmod +x "$FS/git"; REAL_GIT="$(command -v git)"; export REAL_GIT
 _fault() { # <label> <fixture> <classify|body> <fault substring>
   local lab="$1" fx="$2" mode="$3" flt="$4" a ok="" bad="" rc_ok=0 rc_bad=0
   if [ "$mode" = classify ]; then a=(--classify-commits --base v0.1.0 --head HEAD); else a=(--version 0.2.0 --base v0.1.0 --head HEAD); fi
-  ok="$(cd "$fx" && RELEASE_PR_REVIEW_VERIFIER=off PATH="$FS:$PATH" FAULT="" "$BIN" "${a[@]}" 2>/dev/null)" || rc_ok=$?
-  bad="$(cd "$fx" && RELEASE_PR_REVIEW_VERIFIER=off PATH="$FS:$PATH" FAULT="$flt" "$BIN" "${a[@]}" 2>/dev/null)" || rc_bad=$?
+  ok="$(cd "$fx" && PATH="$FS:$PATH" FAULT="" "$BIN" "${a[@]}" 2>/dev/null)" || rc_ok=$?
+  bad="$(cd "$fx" && PATH="$FS:$PATH" FAULT="$flt" "$BIN" "${a[@]}" 2>/dev/null)" || rc_bad=$?
   eq "$lab" "0|true|2|" "$rc_ok|$([ -n "$ok" ] && echo true || echo false)|$rc_bad|$bad"
 }
 _fault "fault: the commit stream of commit_rows (git log --topo-order)"           "$RB" classify "--topo-order"

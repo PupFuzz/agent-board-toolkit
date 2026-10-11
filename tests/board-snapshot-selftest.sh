@@ -217,6 +217,36 @@ expected="── Dev board snapshot — boards are the source of truth (memory i
 eq "CONTROL rc 0: the complete-read render is byte-identical" "$expected" "$out"
 eq "CONTROL rc 0: exits 0"                                    "0" "$SNAP_RC"
 
+# --- the roster file's location: the lib's default when unset, the override when set (card#11714) ---
+# Each arm reads a roster whose label only that arm's file carries, so a resolver that read the
+# other path — or neither, falling back to the hardcoded pair — renders a different first line.
+printf 'bstest:Other\n' > "$TMP/other-roster"
+unset KANBAN_SNAPSHOT_BOARDS
+eq "unset: the roster at ~/.kanban-snapshot-boards is read" "• T: in-flight 1" \
+   "$(snap complete | sed -n 2p)"
+KANBAN_SNAPSHOT_BOARDS="$TMP/other-roster"; export KANBAN_SNAPSHOT_BOARDS
+eq "set: the override wins over ~/.kanban-snapshot-boards" "• Other: in-flight 1" \
+   "$(snap complete | sed -n 2p)"
+KANBAN_SNAPSHOT_BOARDS=""; export KANBAN_SNAPSHOT_BOARDS
+eq "set but empty: the roster at ~/.kanban-snapshot-boards is read" "• T: in-flight 1" \
+   "$(snap complete | sed -n 2p)"
+export KANBAN_SNAPSHOT_BOARDS="$HOME/.kanban-snapshot-boards"
+
+# --- beside a lib that predates kb_snapshot_boards_file: a SKIPPED line on stdout (card#11714) ---
+# Without the guard the roster read fails on stderr only, and stdout renders the two hardcoded
+# default boards as though that were this box's roster. The old lib is the current one with the
+# function removed after sourcing, so the copy differs from a real old lib in that one respect.
+oldlib_dir="$TMP/oldlib"; mkdir -p "$oldlib_dir"
+cp "$BIN" "$oldlib_dir/board-snapshot"
+{ cat "$HERE/../bin/_kb-board-lib.sh"; echo 'unset -f kb_snapshot_boards_file'; } > "$oldlib_dir/_kb-board-lib.sh"
+export KB_STUB_SCENARIO=complete SNAPSHOT_PAGE_CAP=25
+kb_stub_reset
+out="$(bash "$oldlib_dir/board-snapshot" 2>/dev/null)"; old_rc=$?
+eq "old lib: STDOUT is the one SKIPPED line naming the missing function" \
+   "── Dev board snapshot — SKIPPED: the _kb-board-lib.sh beside this script predates kb_snapshot_boards_file — re-vendor it together with board-snapshot (INSTALL.md §6b) ──" \
+   "$out"
+eq "old lib: fail-soft — exits 0" "0" "$old_rc"
+
 # --- positive 1: the page cap (rc 3) ---------------------------------------
 out="$(snap cap 1)"
 eq "rc 3: the in-flight COUNT itself is marked as a floor" "true" "$(has 'in-flight ≥200' "$out")"

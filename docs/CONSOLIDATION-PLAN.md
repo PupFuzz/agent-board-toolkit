@@ -1871,6 +1871,9 @@ finding with no owner is abandoned, not filed.
   file, not its release-snapshot table) is deliberately out
   of its population and the check says
   why: a frozen at-that-version list cannot rot, and the v0.8.2 entry now says so in its own words.
+  *(Superseded by card#11670: the release-snapshot table moved out of `CLAUDE.md` into
+  `docs/recent-changes.md`, which is split at its table header like the other members.
+  `LEG3_HISTORY` is gone, and `CLAUDE.md` is now inside leg 3's population.)*
 
   ⛔ **THE SECOND CLOSURE WAS ALSO WEAKER THAN ITS WORDING, and by the same mechanism — which is
   why this bullet now names three attempts.** The gate above shipped with leg 3 stated as *"**No**
