@@ -20,6 +20,9 @@ KB_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_kb-board
 [ -r "$KB_LIB" ] || { echo "$(basename "${BASH_SOURCE[0]}"): shared lib _kb-board-lib.sh not found next to this script — reinstall per INSTALL.md §3 (symlink all of bin/), or vendor _kb-board-lib.sh alongside this tool." >&2; exit 1; }
 # shellcheck source=bin/_kb-board-lib.sh
 source "$KB_LIB"
+# Asked by definedness, on stdout at rc 0 like the SKIPPED lines below: beside an older lib the
+# roster read would fail on stderr only and silently render the hardcoded default boards.
+declare -F kb_snapshot_boards_file >/dev/null || { echo "── Dev board snapshot — SKIPPED: the _kb-board-lib.sh beside this script predates kb_snapshot_boards_file — re-vendor it together with board-snapshot (INSTALL.md §6b) ──"; exit 0; }
 kb_load_host_env   # cannot fail (reads no token)
 # NO BAKED FALLBACK. This used to default to `https://YOUR-KANBAN-HOST/api/v3`, and that
 # placeholder is the literal KBCARD_API in examples/kanban-host.env.example — so on a box with
@@ -340,7 +343,7 @@ fi
 
 # Board roster is config-driven (BR-1), mirroring kbcard's `--board <name>` model
 # so a PM-project adopter drives its OWN boards (not kanban-dev's hardcoded two).
-# `~/.kanban-snapshot-boards` (override via KANBAN_SNAPSHOT_BOARDS): one
+# The roster file is the lib's kb_snapshot_boards_file: one
 # `<name>:<label>` per line (`#` comments / blanks skipped); `<name>` resolves to
 # `~/.kanban-<name>-board.env`, `<label>` is the display string (defaults to the
 # name if no `:`). Absent/empty ⇒ the kanban-dev default below — back-compatible.

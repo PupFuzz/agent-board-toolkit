@@ -657,8 +657,9 @@ kb_snapshot_boards_file() {
 
 # kb_board_roster: the boards this box knows about, one `<name><TAB><label>` line per board,
 # in roster order. The roster file is kb_snapshot_boards_file's: one `<name>:<label>` per
-# line, `#` comments and blank lines skipped, a line with no `:` taking its name as its label. Whitespace inside a NAME is
-# stripped (it resolves to a filename); a label is taken verbatim after the first `:`.
+# line, `#` comments and blank lines skipped, a line with no `:` taking its name as its
+# label. Whitespace inside a NAME is stripped (it resolves to a filename); a label is taken
+# verbatim after the first `:`.
 #
 # When the roster file is absent, unreadable, or holds no usable line, it falls back to
 # DISCOVERY — every ~/.kanban-<name>-board.env present, label = name — so a box that never

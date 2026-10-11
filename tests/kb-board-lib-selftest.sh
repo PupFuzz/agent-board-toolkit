@@ -934,6 +934,8 @@ echo "== kb_snapshot_boards_file — the roster path: override, else the HOME de
 unset KANBAN_SNAPSHOT_BOARDS
 eq "unset ⇒ ~/.kanban-snapshot-boards" "$HOME/.kanban-snapshot-boards" "$(kb_snapshot_boards_file)"
 eq "set ⇒ the override" "$TMP/elsewhere" "$(KANBAN_SNAPSHOT_BOARDS="$TMP/elsewhere" kb_snapshot_boards_file)"
+eq "set but empty ⇒ ~/.kanban-snapshot-boards" "$HOME/.kanban-snapshot-boards" \
+   "$(KANBAN_SNAPSHOT_BOARDS="" kb_snapshot_boards_file)"
 
 # ---------------------------------------------------------------------------
 echo "== kb_board_roster — the roster file, then DISCOVERY as the fallback =="
