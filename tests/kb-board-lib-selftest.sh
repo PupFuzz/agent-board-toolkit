@@ -930,6 +930,14 @@ eq "does not leak the board env's KB_BOARD_ID into the caller" \
    "SENTINEL-OWNED-BY-THE-CALLER" "${KB_BOARD_ID:-}"
 
 # ---------------------------------------------------------------------------
+echo "== kb_snapshot_boards_file — the roster path: override, else the HOME default =="
+unset KANBAN_SNAPSHOT_BOARDS
+eq "unset ⇒ ~/.kanban-snapshot-boards" "$HOME/.kanban-snapshot-boards" "$(kb_snapshot_boards_file)"
+eq "set ⇒ the override" "$TMP/elsewhere" "$(KANBAN_SNAPSHOT_BOARDS="$TMP/elsewhere" kb_snapshot_boards_file)"
+eq "set but empty ⇒ ~/.kanban-snapshot-boards" "$HOME/.kanban-snapshot-boards" \
+   "$(KANBAN_SNAPSHOT_BOARDS="" kb_snapshot_boards_file)"
+
+# ---------------------------------------------------------------------------
 echo "== kb_board_roster — the roster file, then DISCOVERY as the fallback =="
 # The parser half is board-snapshot's inline block hoisted for its second caller; the fallback
 # half is new, and it is the one that can fail SILENTLY — a box with no roster file must
