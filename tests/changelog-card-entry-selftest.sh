@@ -1418,6 +1418,34 @@ eq "witness: the token leg obliges nothing (the docs commit is exempt, the delta
 eq "a branch commit's token does NOT skip the announce leg — RED, with the title tokenless" "1 true" \
    "$CG_RC $(has 'touches a changelog.announce_paths member and leaves the [Unreleased] section' "$CG_OUT")"
 
+echo "== the announce leg's 'carries a token' is the obligation grammar card#[0-9]+, digits required =="
+# A title naming `card#` with no digits after it is NOT tokened: the token leg obliges nothing for
+# it, so skipping the announce leg too would pass the PR on neither leg (real titles:
+# `feat(writeback): card#<task-id> correlation channel`, `(card#none toolkit-release)`).
+TG="$TMP/announce-token-grammar"
+_cg_repo "$TG" '{"announce_paths": ["app/"]}'
+g -C "$TG" checkout -q -b rework
+_cg_commit "$TG" app/x.txt 'chore: rework the parser'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$TG" dev rework)"
+TG_HEAD="$(g -C "$TG" rev-parse rework)"
+for tg_title in 'chore: rework the card#N parser' 'chore: rework the parser (card#none toolkit-release)' \
+    'feat(writeback): card#<x> correlation channel'; do
+    _cg_run "$TG" dev --base dev --head "$TG_HEAD" --title "$tg_title" --head-ref rework
+    eq "title '$tg_title' carries no card#[0-9]+ — RED on the announce leg" "1 true false" \
+       "$CG_RC $(has 'touches a changelog.announce_paths member and leaves the [Unreleased] section' "$CG_OUT") $(has 'skipped: the PR title carries a card token' "$CG_OUT")"
+    eq "… and the token leg obliges nothing for it" "true" "$(has '0 obligation(s)' "$CG_OUT")"
+done
+eq "_title_card answers nothing for a digitless card#" "" "$(_title_card 'chore: rework the card#N parser')"
+eq "_title_card answers the LEFTMOST real token, past a digitless one" "card#123" \
+   "$(_title_card 'chore: card#none, then card#123 and card#456')"
+g -C "$TG" checkout -q rework
+_cg_entry "$TG" '- **card#123** — rework the parser.' 'docs(changelog): its entry (card#123)'
+g -C "$TG" checkout -q dev && g -C "$TG" branch -q -D pr-rework
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$TG" dev rework)"
+_cg_run "$TG" dev --base dev --head "$(g -C "$TG" rev-parse rework)" --title 'chore: rework the parser (card#123)' --head-ref rework
+eq "CONTROL: a real card#123 title is GREEN, the announce leg skipped for the token leg" "0 true" \
+   "$CG_RC $(has 'skipped: the PR title carries a card token, so the token leg above owns it' "$CG_OUT")"
+
 echo "== an unusable changelog block at a MERGED revision: push refuses, a feature PR warns, a release PR refuses =="
 CM="$TMP/config-malformed-push"
 _cg_repo "$CM" '{"exempt_paths": "docs/"}'
@@ -1454,6 +1482,32 @@ eq "the release PR merge is clean" "0" "$(_cg_prmerge "$CR" main release/v0.24.0
 _cg_run "$CR" main --base main --head "$(g -C "$CR" rev-parse release/v0.24.0)" --title 'release: v0.24.0'
 eq "a RELEASE PR whose dev-cut config is malformed is rc 2 — it is the size limit's only backstop" "2 true" \
    "$CG_RC $(has 'a release PR is the last run that judges this window' "$CG_OUT")"
+
+echo "== a merged revision whose config is not valid JSON: a push run and a release PR refuse (rc 2) =="
+JP="$TMP/config-invalid-json-push"
+_cg_repo "$JP"
+printf '{"main_branch": "main", "dev_branch": "dev", "version_file": "VERSION",\n "version_regex": "[0-9]+\\\\.[0-9]+\\\\.[0-9]+",}\n' \
+    > "$JP/.release-pr.json"
+g -C "$JP" commit -qam 'ci: a trailing comma (#124)'
+eq "witness: the committed config is not valid JSON" "false" \
+   "$(jq -e . "$JP/.release-pr.json" >/dev/null 2>&1 && echo true || echo false)"
+_cg_run "$JP" ''
+eq "a push run with an invalid-JSON config at HEAD is rc 2, naming it" "2 true" \
+   "$CG_RC $(has '.release-pr.json at HEAD is not valid JSON' "$CG_OUT")"
+JR="$TMP/config-invalid-json-release"
+_cg_repo "$JR"
+cp "$JP/.release-pr.json" "$JR/.release-pr.json"
+g -C "$JR" commit -qam 'ci: a trailing comma (#125)'
+g -C "$JR" update-ref refs/remotes/origin/dev dev
+g -C "$JR" checkout -q -b release/v0.24.0 dev
+printf '0.24.0\n' > "$JR/VERSION"
+_pf_fold "$JR/docs" 0.24.0
+g -C "$JR" show main:.release-pr.json > "$JR/.release-pr.json"
+g -C "$JR" commit -qam 'release: v0.24.0'
+eq "the release PR merge is clean" "0" "$(_cg_prmerge "$JR" main release/v0.24.0)"
+_cg_run "$JR" main --base main --head "$(g -C "$JR" rev-parse release/v0.24.0)" --title 'release: v0.24.0'
+eq "a RELEASE PR whose dev-cut config is not valid JSON is rc 2, naming the window" "2 true" \
+   "$CG_RC $(has 'is not valid JSON — a release PR is the last run that judges this window' "$CG_OUT")"
 
 echo "== an EMPTY unit is never exempt =="
 eq "_path_match all over no paths at all is NOT a match" "1" \

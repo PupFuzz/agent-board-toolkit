@@ -52,13 +52,14 @@
 # every later run until a bullet lands or the release closes the window. A squash-only `dev`
 # cannot reach it; the remedy is one bullet.
 #
-# `changelog.announce_paths` (optional; PR runs only) — a PR whose TITLE carries no `card#` token
-# (the title is what a squash lands on `dev`; a token only in a branch commit does not survive it)
-# whose merge delta touches a listed path must change the
-# `## [Unreleased]` section. Skipped when `release-artifacts-check --classify-only` classifies the
-# PR `release` (a release PR and a back-merge sync PR CONSUME `[Unreleased]` rather than add to
-# it), and when `--head-ref` is under a member of `changelog.announce_exempt_branches`. Not
-# evaluated on a push run: its exemption is a branch-name property a push does not carry.
+# `changelog.announce_paths` (optional; PR runs only) — a PR whose TITLE carries no `card#N` token
+# (`_leftmost_card`'s grammar, digits required: `card#none` is no token) and whose merge delta
+# touches a listed path must change the `## [Unreleased]` section. Only the title counts: it is what
+# a squash lands on `dev`, and a token only in a branch commit does not survive it. Skipped when
+# `release-artifacts-check --classify-only` classifies the PR `release` (a release PR and a
+# back-merge sync PR CONSUME `[Unreleased]` rather than add to it), and when `--head-ref` is under
+# a member of `changelog.announce_exempt_branches`. Not evaluated on a push run: its exemption is a
+# branch-name property a push does not carry.
 #
 # `changelog.release_body_limit_bytes` (optional; PR runs classified `release <V>` only) — the
 # `## [<V>]` section must be at most this many BYTES. The carve is `_section_bytes`'. Absent = off.
@@ -75,11 +76,15 @@
 #     `refs/remotes/origin/<dev_branch>` must resolve (`fetch-depth: 0` fetches every branch).
 # On a PR run head's `changelog.*` shape is ALSO validated, so a malformed key reds on the PR that
 # writes it rather than on `dev` after the merge. On a feature PR run, a selected revision whose
-# `changelog` block is unusable is a `::warning::` and every key's default — that revision is a
-# merged commit, and refusing would also refuse the PR repairing it; on a push run (HEAD), and on
-# a release-classified PR (the window's last run, and the size limit's only backstop), it is rc 2. A revision this clone cannot READ is rc 2 on every run. An unknown `changelog.*` key is a
-# `::warning::` naming it. ⛔ `tag_format` (another tool's key): any value but `v{{version}}` is rc 2 — this gate
-# reads `v*` tags only (`git describe --match 'v*'`, `${LAST_TAG#v}`).
+# `changelog` block is unusable is a `::warning::` and EVERY key's default, `path` included — that
+# revision is a merged commit, and refusing would also refuse the PR repairing it. ⛔ That holds
+# only where the default `docs/CHANGELOG.md` is the repo's CHANGELOG: elsewhere the run reads that
+# default path, the repairing PR stops at rc 2 when no file stands there, and the repair needs a
+# direct fix. On a push run (HEAD), and on a release-classified PR (the window's last run, and the
+# size limit's only backstop), an unusable block is rc 2. A revision this clone cannot READ is
+# rc 2 on every run. An unknown `changelog.*` key is a `::warning::` naming it. ⛔ `tag_format`
+# (another tool's key): any value but `v{{version}}` is rc 2 — this gate reads `v*` tags only
+# (`git describe --match 'v*'`, `${LAST_TAG#v}`).
 #
 # WHAT A GREEN RUN PROVES — the weakest property the assertions support: every leftmost
 # `card#N` of an unreleased, non-exempt unit (and of the PR title) names some bullet's lead in the
@@ -155,11 +160,26 @@ _lines_naming() {
     }'
 }
 
-# _obliged <subjects-file> — the LEFTMOST `card#N` of each line, C-collated and de-duplicated.
+# _leftmost_card — a FILTER: for each stdin line, its LEFTMOST `card#N`, or an EMPTY line when it
+# carries none — one output line per input line, so a caller can pair the answer with its line.
+# THE ONE place an OBLIGATING token is extracted (`_bullet_id` reads the same `card#[0-9]+` on
+# the discharge side): commit subjects, the PR title and the announce leg's "does the title carry
+# a token" all read it. The digits are required — `card#N`, `card#none` or `card#<task-id>` is NOT
+# a token, and obliges nothing.
 # Leftmost and not every token (card#11684 Q2): a subject citing a second card in passing
 # ("… (card#5766) — supersedes card#1234") obliges the card it is about.
+_leftmost_card() {
+    awk '{ print (match($0, /card#[0-9]+/) ? substr($0, RSTART, RLENGTH) : "") }'
+}
+
+# _title_card <title> — the title's leftmost `card#N` (`_leftmost_card`'s), or nothing.
+_title_card() {
+    printf '%s\n' "$1" | _leftmost_card | awk 'NF && !seen { print; seen = 1 }'
+}
+
+# _obliged <subjects-file> — the leftmost `card#N` of each line, C-collated and de-duplicated.
 _obliged() {
-    awk 'match($0, /card#[0-9]+/) { print substr($0, RSTART, RLENGTH) }' "$1" | LC_ALL=C sort -u
+    _leftmost_card < "$1" | { grep . || true; } | LC_ALL=C sort -u
 }
 
 # _region <changelog> <version> — the scanned region: the file from its `## [Unreleased]` header
@@ -596,9 +616,11 @@ _obligation_units() {
     : > "$units"
     if [[ -n "$shas" ]]; then
         # shellcheck disable=SC2086 # one sha per word, by construction
-        git -C "$repo" log --no-walk=unsorted --format='%H %s' $shas |
-            awk 'match($0, /card#[0-9]+/) { print $1 "\t" substr($0, RSTART, RLENGTH) }' > "$units" ||
-            return 1
+        git -C "$repo" log --no-walk=unsorted --format='%H %s' $shas > "$units.log" || return 1
+        # A sha is hex, so the line's leftmost token IS its subject's.
+        paste <(cut -d' ' -f1 "$units.log") <(_leftmost_card < "$units.log") |
+            awk -F'\t' '$2 != ""' > "$units" || return 1
+        rm -f "$units.log"
     fi
     while IFS=$'\t' read -r sha tok; do
         ex=0
@@ -612,7 +634,7 @@ _obligation_units() {
         printf '%s\t%s\t%s\n' "$tok" "$ex" "$sha"
     done < "$units"
     rm -f "$units"
-    tok="$(printf '%s\n' "$title" | awk 'match($0, /card#[0-9]+/) { print substr($0, RSTART, RLENGTH) }')"
+    tok="$(_title_card "$title")"
     if [[ -n "$tok" ]]; then
         ex=0
         [[ -n "$sbase" && -n "$shead" ]] && ex="$delta_ex"
@@ -942,7 +964,7 @@ _cg_main() {
             _say "  ..   skipped: classified release $RELEASE_V (a release or back-merge PR consumes [Unreleased])"
         elif [[ -n "$HEAD_REF" ]] && printf '%s\n' "$HEAD_REF" | _path_match "$BMEM" any; then
             _say "  ..   skipped: head branch '$HEAD_REF' is under changelog.announce_exempt_branches"
-        elif [[ "$TITLE" == *card#* ]]; then
+        elif [[ -n "$(_title_card "$TITLE")" ]]; then
             _say "  ..   skipped: the PR title carries a card token, so the token leg above owns it"
         elif ! _delta_paths "$CG_ROOT" "$dbase" "$dhead" | _path_match "$AMEM" any; then
             _say "  ok   this PR's merge delta touches no changelog.announce_paths member"
