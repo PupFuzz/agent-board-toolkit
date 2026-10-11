@@ -6,6 +6,11 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#11719** — **`bin/changelog-gate`'s "move the entry back to `[Unreleased]`" remedy now says to merge the PR's base branch into the branch first.** On a pre-fold or sync branch that has not merged the base yet, the entry sitting under the released `## [X]` heading exists only in the PR's merge result, so an author who followed the old sentence found nothing to move on their branch. Both sentences now name the merge as the first step (the carried-entry one: if the base is not already merged in); the verdict is unchanged.
+  - **No upgrade action.** A repo that vendors `bin/changelog-gate` gets the new sentence when it next re-vendors; a repo that uses the `changelog-gate` action gets it when it bumps the pinned SHA.
+
 ## [0.46.0] - 2026-10-11
 
 **Minor — new `bin/changelog-gate` and `changelog-gate/` composite action, the CHANGELOG `[Unreleased]` gate as one tool a repo can adopt (card#11698); `board-snapshot` reads its roster-file default from the lib (card#11714).** The PRs in `v0.45.0..v0.46.0` that carry a change are #455–#458, enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.45.0..v0.46.0` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **minor** for new surface (a new `bin/` tool and a new composite action); **no narrowings**: no input that succeeded before now fails for a consumer (this repo's own gate accepts more than it did). Upgrade actions: `docs/UPGRADE.md` §6 v0.46.0.

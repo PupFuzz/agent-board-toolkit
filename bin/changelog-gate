@@ -390,13 +390,13 @@ _missing_remedy() {
         heading="$(_prefold_heading "$repo" "$path" "$base" "$head" "$merged" "$card")" || heading=''
         if [[ -n "$heading" ]]; then
             folded=1
-            printf '%s — your entry landed under `[%s]` after the fold; move it back to `[Unreleased]`.\n' \
+            printf '%s — your entry landed under `[%s]` after the fold; merge the PR'"'"'s base branch into this branch first (until then the entry exists only in the PR'"'"'s merge result), then move it back to `[Unreleased]`.\n' \
                 "$card" "$heading"
             continue
         fi
         carried="$(_carried_heading "$merged" "$stop" "$card")" || carried=''
         if [[ -n "$carried" ]]; then
-            printf '%s — a bullet for it already stands under `## [%s]`, below the scanned region. If a merge carried this card'"'"'s entry there after the fold, move the WHOLE entry — the bullet and every indented line under it — back under `## [Unreleased]`; otherwise add a new bullet under `## [Unreleased]` for the work that landed after v%s. The gate cannot tell which; where `[%s]` holds more than one entry for the card, judge each.\n' \
+            printf '%s — a bullet for it already stands under `## [%s]`, below the scanned region. If a merge carried this card'"'"'s entry there after the fold, merge the PR'"'"'s base branch into this branch first if it is not already merged in (until it is, the entry exists only in the PR'"'"'s merge result), then move the WHOLE entry — the bullet and every indented line under it — back under `## [Unreleased]`; otherwise add a new bullet under `## [Unreleased]` for the work that landed after v%s. The gate cannot tell which; where `[%s]` holds more than one entry for the card, judge each.\n' \
                 "$card" "$carried" "$stop" "$carried"
         else
             printf '%s — add a line-initial `- **%s**` bullet under `## [Unreleased]` in %s.\n' \
