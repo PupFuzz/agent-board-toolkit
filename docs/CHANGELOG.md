@@ -8,8 +8,8 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ### Fixed
 
-- **card#11719** — **`bin/changelog-gate`'s "move the entry back to `[Unreleased]`" remedy now says to merge the PR's base branch into the branch first.** On a back-merge sync PR (and on a pre-fold branch), the entry sitting under the released `## [X]` heading exists only in the PR's merge result, so an author who followed the old sentence found nothing to move on their branch. Both the carried-entry and the fold sentences now name the merge as the first step; the verdict is unchanged.
-  - **No upgrade action.** A repo that vendors `bin/changelog-gate` gets the new sentence when it next re-vendors.
+- **card#11719** — **`bin/changelog-gate`'s "move the entry back to `[Unreleased]`" remedy now says to merge the PR's base branch into the branch first.** On a pre-fold branch, and on a sync PR whose branch has not merged the base yet, the entry sitting under the released `## [X]` heading exists only in the PR's merge result, so an author who followed the old sentence found nothing to move on their branch. Both sentences now name the merge as the first step (the carried-entry one: if the base is not already merged in); the verdict is unchanged.
+  - **No upgrade action.** A repo that vendors `bin/changelog-gate` gets the new sentence when it next re-vendors; a repo that uses the `changelog-gate` action gets it when it bumps the pinned SHA.
 
 ## [0.46.0] - 2026-10-11
 
