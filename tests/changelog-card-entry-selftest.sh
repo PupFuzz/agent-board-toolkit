@@ -363,11 +363,11 @@ _pf_label() {
 
 # Spelled out per card rather than built by a helper: an expectation formatted by the same rule the
 # implementation uses would agree with it whatever that rule became.
-PF_FOLD_9100='card#9100 — your entry landed under `[0.24.0]` after the fold; move it back to `[Unreleased]`.'
+PF_FOLD_9100='card#9100 — your entry landed under `[0.24.0]` after the fold; merge the PR'"'"'s base branch into this branch first (until then the entry exists only in the PR'"'"'s merge result), then move it back to `[Unreleased]`.'
 PF_GEN_9100='card#9100 — add a line-initial `- **card#9100**` bullet under `## [Unreleased]` in CHANGELOG.md.'
 PF_GEN_9200='card#9200 — add a line-initial `- **card#9200**` bullet under `## [Unreleased]` in CHANGELOG.md.'
-PF_CAR_8902='card#8902 — a bullet for it already stands under `## [0.24.0]`, below the scanned region. If a merge carried this card'"'"'s entry there after the fold, move the WHOLE entry — the bullet and every indented line under it — back under `## [Unreleased]`; otherwise add a new bullet under `## [Unreleased]` for the work that landed after v0.24.0. The gate cannot tell which; where `[0.24.0]` holds more than one entry for the card, judge each.'
-PF_CAR_9100='card#9100 — a bullet for it already stands under `## [0.24.0]`, below the scanned region. If a merge carried this card'"'"'s entry there after the fold, move the WHOLE entry — the bullet and every indented line under it — back under `## [Unreleased]`; otherwise add a new bullet under `## [Unreleased]` for the work that landed after v0.24.0. The gate cannot tell which; where `[0.24.0]` holds more than one entry for the card, judge each.'
+PF_CAR_8902='card#8902 — a bullet for it already stands under `## [0.24.0]`, below the scanned region. If a merge carried this card'"'"'s entry there after the fold, merge the PR'"'"'s base branch into this branch first (until then the entry exists only in the PR'"'"'s merge result), then move the WHOLE entry — the bullet and every indented line under it — back under `## [Unreleased]`; otherwise add a new bullet under `## [Unreleased]` for the work that landed after v0.24.0. The gate cannot tell which; where `[0.24.0]` holds more than one entry for the card, judge each.'
+PF_CAR_9100='card#9100 — a bullet for it already stands under `## [0.24.0]`, below the scanned region. If a merge carried this card'"'"'s entry there after the fold, merge the PR'"'"'s base branch into this branch first (until then the entry exists only in the PR'"'"'s merge result), then move the WHOLE entry — the bullet and every indented line under it — back under `## [Unreleased]`; otherwise add a new bullet under `## [Unreleased]` for the work that landed after v0.24.0. The gate cannot tell which; where `[0.24.0]` holds more than one entry for the card, judge each.'
 printf 'fix(x): the branch entry (card#9100)\n' > "$TMP/prefold-subjects"
 
 echo "== prove-it-can-fail: a PRE-FOLD branch's entry is folded under [0.24.0] and NAMED =="
@@ -395,6 +395,10 @@ eq "the three legs establish the fold and name the heading" "0.24.0" "$(_pf_head
 # nothing in this file reaches for a pipeline it does not need.
 PF_OUT="$(_pf_remedy "$PFF" card#9100 0.24.0)"
 eq "so the remedy names the MOVE, not a second entry" "$PF_FOLD_9100" "${PF_OUT%%$'\n'*}"
+# card#11719: leg 3 means this branch has not merged the folded base, so on the branch the entry
+# still sits under `[Unreleased]` — the move is only possible after merging the base in.
+eq "… and names merging the base branch in BEFORE the move" "true" \
+   "$(has 'merge the PR'"'"'s base branch into this branch first' "${PF_OUT%%$'\n'*}")"
 eq "and it says so out loud (witness: the generic arm is NOT what printed for it)" "false" \
    "$(has_line "$PF_GEN_9100" "$PF_OUT")"
 # The instruction this whole card exists to deliver, asserted as a LINE rather than left to the
@@ -427,7 +431,7 @@ eq "but 0.24.0 already stood at the merge-base, so no fold is established" "" \
 # and STILL never the MOVE verdict leg 3 refuses.
 PF_STALE="$(_pf_remedy "$PFS" card#8902 0.24.0)"
 eq "the remedy names where the shipped bullet stands, with both options" "$PF_CAR_8902" "$PF_STALE"
-eq "… and it is never the MOVE text" "false" "$(has 'after the fold; move it back' "$PF_STALE")"
+eq "… and it is never the MOVE text" "false" "$(has 'your entry landed under' "$PF_STALE")"
 
 echo "== CONTROL: a branch that CUTS the section itself is not told somebody else cut it =="
 # The second shape, and the only fixture LEG 2 decides: the release PR adds `## [0.24.0]` and
@@ -517,7 +521,7 @@ eq "and the undocumented card is told to ADD one — not to withhold it" "true" 
 # The two witnesses that make the pair about SCOPING rather than about ordering: neither card
 # receives the other's arm.
 eq "the undocumented card does NOT get the fold sentence" "false" \
-   "$(has_line "card#9200 — your entry landed under \`[0.24.0]\` after the fold; move it back to \`[Unreleased]\`." \
+   "$(has_line "card#9200 — your entry landed under \`[0.24.0]\` after the fold; merge the PR's base branch into this branch first (until then the entry exists only in the PR's merge result), then move it back to \`[Unreleased]\`." \
        "$PF_MULTI")"
 eq "the folded card does NOT get the generic add" "false" "$(has_line "$PF_GEN_9100" "$PF_MULTI")"
 eq "and the shared paragraph scopes itself to the cards named as folded" "true" \
@@ -951,7 +955,7 @@ eq "the merge is clean" "0" "$(_pf_prmerge "$PFW" feat)"
 eq "the three legs establish the fold for the ⚠ bullet" "0.24.0" "$(_pf_heading "$PFW" card#9101)"
 PFW_OUT="$(_pf_remedy "$PFW" card#9101 0.24.0)"
 eq "and the remedy names the MOVE" \
-   'card#9101 — your entry landed under `[0.24.0]` after the fold; move it back to `[Unreleased]`.' \
+   'card#9101 — your entry landed under `[0.24.0]` after the fold; merge the PR'"'"'s base branch into this branch first (until then the entry exists only in the PR'"'"'s merge result), then move it back to `[Unreleased]`.' \
    "${PFW_OUT%%$'\n'*}"
 
 # _p6_file_entry <dir> <lines-file> — file a multi-line ENTRY (a bullet and its indented lines)
@@ -1000,6 +1004,10 @@ eq "… says WHOLE entry and every indented line" "true" \
 eq "… prints the other option too" "true" \
    "$(has 'otherwise add a new bullet under `## [Unreleased]` for the work that landed after v0.24.0' "$P6A_9300")"
 eq "… and decides neither" "true" "$(has 'The gate cannot tell which' "$P6A_9300")"
+# card#11719: the carried entry is in the PR's MERGE RESULT, not on the sync branch, so "move it"
+# alone sends the author to a file with nothing to move — the base must be merged in first.
+eq "… and names merging the base branch in BEFORE the move" "true" \
+   "$(has 'merge the PR'"'"'s base branch into this branch first (until then the entry exists only in the PR'"'"'s merge result), then move the WHOLE entry' "$P6A_9300")"
 echo "== predicate 6 (c) CONTROL: a card with no bullet anywhere gets the GENERIC sentence =="
 eq "card#9500 gets the generic arm (the carried arm is keyed on a found bullet)" \
    'card#9500 — add a line-initial `- **card#9500**` bullet under `## [Unreleased]` in CHANGELOG.md.' \
