@@ -1,0 +1,93 @@
+name: 'changelog-gate'
+description: >-
+  Assert that every card shipped since the last release tag owns a bullet in
+  the CHANGELOG's `[Unreleased]` region. Thin composite wrapper around
+  bin/changelog-gate — all logic stays in the script, whose `--help` header
+  owns the rule (host installs and vendoring consumers run it directly).
+  Consume this action SHA-pinned
+  (uses: <owner>/agent-board-toolkit/changelog-gate@<full-SHA>  # vX.Y.Z)
+  so dependabot's github-actions ecosystem tracks and bumps it.
+  RUN IT ON BOTH EVENTS: `pull_request: [opened, edited, reopened,
+  synchronize]` — `edited`, because the PR TITLE is an obligation source and a
+  title edit fires nothing else — and `push` to your integration and release
+  branches, where the same rule is asserted on what actually landed. On a push
+  event the PR inputs are empty and the script runs as a push run.
+  PRECONDITIONS in the calling job:
+  (1) check out the consumer repo with fetch-depth: 0 and the DEFAULT ref — the
+  obligation set is every commit since the newest `v*` tag reachable from
+  HEAD, a shallow clone is refused, and on a pull_request event the default ref
+  is the merge commit whose first parent is the base tip: the squash delta the
+  `exempt_paths` leg judges, and the merge the fold diagnosis reads. fetch-depth
+  0 also fetches every branch, and a release-classified PR reads its
+  `changelog.*` config where it was cut from `refs/remotes/origin/<dev_branch>`
+  — refused at rc 2, by name, when that ref does not resolve;
+  (2) a .release-pr.json (or whatever `config` names) committed at the
+  workspace root, carrying version_file/version_regex — the release
+  classification is delegated to the sibling `release-artifacts-check
+  --classify-only` — and optionally a `changelog` object: `path`,
+  `exempt_paths`, `announce_paths`, `announce_exempt_branches`,
+  `release_body_limit_bytes` (agent-board-toolkit docs/INSTALL.md §6e). A key
+  this version does not read is a ::warning:: naming it. A `tag_format` other
+  than `v{{version}}` is refused at rc 2: this gate reads `v*` tags only;
+  (3) `GITHUB_BASE_REF` must reach this step — the runner exports it to every
+  step of a pull_request job, which is what lets the script read a two-parent
+  HEAD as the PR merge ref. Do not clear it;
+  (4) `contents: read` is sufficient.
+  NOTE: composite-action `required:` is not runner-enforced, and every input
+  here is optional by design — a blank PR input is translated to an ABSENT
+  flag, which is what makes a push run a push run.
+
+inputs:
+  base-sha:
+    description: >-
+      The PR's base commit (pass github.event.pull_request.base.sha). Blank on a
+      push run. Must be given together with head-sha.
+    required: false
+    default: ''
+  head-sha:
+    description: "The PR's head commit (pass github.event.pull_request.head.sha). Blank on a push run."
+    required: false
+    default: ''
+  pr-title:
+    description: >-
+      The PR title (pass github.event.pull_request.title) — under squash-merge
+      it is the coming commit subject, so its card token is obliged before the
+      merge rather than on the integration branch after it.
+    required: false
+    default: ''
+  head-ref:
+    description: >-
+      The PR head BRANCH NAME (pass github.event.pull_request.head.ref), read
+      only by `changelog.announce_exempt_branches`. A push event carries none.
+    required: false
+    default: ''
+  config:
+    description: 'Per-repo release config, relative to the workspace root.'
+    required: false
+    default: '.release-pr.json'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Every card shipped since the last tag owns a CHANGELOG bullet
+      shell: bash
+      # Passed through the environment, never interpolated into the run: body — a
+      # `${{ }}` expansion inside a run: script is textual substitution into the shell
+      # source, i.e. the Actions script-injection class. The PR title is author-controlled.
+      env:
+        BASE: ${{ inputs.base-sha }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        PR_TITLE: ${{ inputs.pr-title }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        # Each PR input is translated to an ABSENT flag when blank — never to a flag carrying an
+        # empty value, which the script REJECTS. Blank base and head make this a push run.
+        # --config is passed unconditionally: it has a meaningful default declared above, so a
+        # blank one is a wiring error (an unset repo variable), and the script fails closed on it.
+        args=()
+        [ -n "$BASE" ] && args+=(--base "$BASE")
+        [ -n "$HEAD_SHA" ] && args+=(--head "$HEAD_SHA")
+        [ -n "$PR_TITLE" ] && args+=(--title "$PR_TITLE")
+        [ -n "$HEAD_REF" ] && args+=(--head-ref "$HEAD_REF")
+        "$GITHUB_ACTION_PATH/../bin/changelog-gate" --config "$CONFIG" "${args[@]}"
