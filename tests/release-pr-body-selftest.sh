@@ -1637,8 +1637,8 @@ for _d in "${_rv_dirs[@]}"; do
 done
 eq "witness: the scrubbed PATH finds no coord-review-verify" "" "$(PATH="$RV_PATH" command -v coord-review-verify || true)"
 
-# THE PRELUDE'S FLOOR HOLDS. Every call in this file outside `_rv` runs the generator with the
-# ambient environment, and a host with a real `coord-review-verify` on PATH would otherwise have it
+# THE PRELUDE'S FLOOR HOLDS. Every call in this file that does not deliberately remove the variable
+# (`env -u RELEASE_PR_REVIEW_VERIFIER`) runs the generator with the ambient environment, and a host with a real `coord-review-verify` on PATH would otherwise have it
 # call the real `gh api` once per bundled PR. So the floor is asserted from the call side: a
 # verifier IS on PATH here (the stub), and an ambient call must still not reach it. CI has no
 # verifier of its own, so this pair is what reds there if the floor is dropped.
