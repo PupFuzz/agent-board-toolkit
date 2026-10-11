@@ -1370,4 +1370,99 @@ _cg_run "$MAL" dev --base dev --head "$(g -C "$MAL" rev-parse feat)" --title 'ci
 eq "a PR writing a malformed changelog.* key is refused ON THAT PR (rc 2), naming it" "2 true" \
    "$CG_RC $(has 'changelog.exempt_paths must be an array of strings' "$CG_OUT")"
 
+# ---------------------------------------------------------------------------
+# REVIEW ROUND 1 on #458. Two fail-open shapes and three unfixtured config paths.
+# ---------------------------------------------------------------------------
+echo "== a RENAME out of a non-exempt path is not exempt: the PR run and the push run read one unit =="
+RN="$TMP/rename-token"
+_cg_repo "$RN" '{"exempt_paths": ["docs/"]}'
+_cg_commit "$RN" app/tool.sh 'feat: the tool (#105)'
+g -C "$RN" checkout -q -b feat
+mkdir -p "$RN/docs" && g -C "$RN" mv app/tool.sh docs/tool.sh
+g -C "$RN" commit -qm 'docs: move the tool (card#77)'
+eq "witness: porcelain diff, which detects renames, names ONLY the new path" "docs/tool.sh" \
+   "$(g -C "$RN" diff --name-only dev feat)"
+eq "_delta_paths names BOTH ends of the move" "app/tool.sh
+docs/tool.sh" "$(_delta_paths "$RN" dev feat)"
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$RN" dev feat)"
+_cg_run "$RN" dev --base dev --head "$(g -C "$RN" rev-parse feat)" --title 'docs: move the tool (card#77)'
+eq "the PR run is RED — the move touches app/ as well as docs/" "1 true" \
+   "$CG_RC $(has 'card#77 — add a line-initial' "$CG_OUT")"
+g -C "$RN" checkout -q dev
+g -C "$RN" merge -q --squash feat >/dev/null 2>&1
+g -C "$RN" commit -qm 'docs: move the tool (card#77) (#106)'
+_cg_run "$RN" ''
+eq "… and the push run after the squash agrees (both runs read one unit)" "1" "$CG_RC"
+
+echo "== a RENAME out of an announce_paths member is a touch of that member =="
+RNA="$TMP/rename-announce"
+_cg_repo "$RNA" '{"announce_paths": ["app/"]}'
+_cg_commit "$RNA" app/x 'chore: x (#107)'
+g -C "$RNA" checkout -q -b mv-x
+mkdir -p "$RNA/lib" && g -C "$RNA" mv app/x lib/x && g -C "$RNA" commit -qm 'chore: move x to lib'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$RNA" dev mv-x)"
+_cg_run "$RNA" dev --base dev --head "$(g -C "$RNA" rev-parse mv-x)" --title 'chore: move x to lib' --head-ref mv-x
+eq "a tokenless move app/x → lib/x with [Unreleased] unchanged is RED on the announce leg" "1 true" \
+   "$CG_RC $(has 'touches a changelog.announce_paths member and leaves the [Unreleased] section' "$CG_OUT")"
+
+echo "== the announce leg's 'tokenless' is the TITLE's, as the squash lands it =="
+TK="$TMP/announce-title-only"
+_cg_repo "$TK" '{"exempt_paths": ["docs/"], "announce_paths": ["app/"]}'
+g -C "$TK" checkout -q -b tweak
+_cg_commit "$TK" docs/note.md 'docs: a note (card#5)'
+_cg_commit "$TK" app/t.txt 'chore: tweak, follow-up to (#9)'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$TK" dev tweak)"
+_cg_run "$TK" dev --base dev --head "$(g -C "$TK" rev-parse tweak)" --title 'chore: tweak' --head-ref tweak
+eq "witness: the token leg obliges nothing (the docs commit is exempt, the delta refused by (#9))" "true" \
+   "$(has '0 obligation(s)' "$CG_OUT")"
+eq "a branch commit's token does NOT skip the announce leg — RED, with the title tokenless" "1 true" \
+   "$CG_RC $(has 'touches a changelog.announce_paths member and leaves the [Unreleased] section' "$CG_OUT")"
+
+echo "== an unusable changelog block at a MERGED revision: push refuses, a feature PR warns, a release PR refuses =="
+CM="$TMP/config-malformed-push"
+_cg_repo "$CM" '{"exempt_paths": "docs/"}'
+_cg_run "$CM" ''
+eq "a push run with a malformed changelog key at HEAD is rc 2, naming it" "2 true" \
+   "$CG_RC $(has 'changelog.exempt_paths must be an array of strings' "$CG_OUT")"
+CF="$TMP/config-malformed-fork"
+_cg_repo "$CF"
+jq '. + {changelog: {exempt_paths: ["docs/"], announce_paths: "app/"}}' "$CF/.release-pr.json" > "$CF/cfg.t" && mv "$CF/cfg.t" "$CF/.release-pr.json"
+g -C "$CF" commit -qam 'ci: a changelog block with one malformed key (#120)'
+_cg_commit "$CF" docs/note.md 'docs: a note (card#7600) (#121)'
+g -C "$CF" checkout -q -b repair
+jq '.changelog.announce_paths = ["app/"]' "$CF/.release-pr.json" > "$CF/cfg.t" && mv "$CF/cfg.t" "$CF/.release-pr.json"
+g -C "$CF" commit -qam 'ci: repair the changelog block'
+eq "the PR merge is clean" "0" "$(_cg_prmerge "$CF" dev repair)"
+_cg_run "$CF" dev --base dev --head "$(g -C "$CF" rev-parse repair)" --title 'ci: repair the changelog block'
+eq "the repairing feature PR is not refused: a ::warning:: names the fork point's malformed key" "true" \
+   "$(has '::warning::changelog-gate: .release-pr.json at '"$(g -C "$CF" rev-parse dev)"' declares a malformed changelog.* key' "$CG_OUT")"
+eq "… and EVERY key takes its default — the fork point's valid exempt_paths is NOT applied, so card#7600 reds" \
+   "1 true" "$CG_RC $(has 'card#7600 — add a line-initial' "$CG_OUT")"
+eq "… nor its announce_paths (the announce leg does not run)" "false" \
+   "$(has 'a tokenless PR touching changelog.announce_paths' "$CG_OUT")"
+CR="$TMP/config-malformed-release"
+_cg_repo "$CR"
+jq '. + {changelog: {release_body_limit_bytes: "125000"}}' "$CR/.release-pr.json" > "$CR/cfg.t" && mv "$CR/cfg.t" "$CR/.release-pr.json"
+g -C "$CR" commit -qam 'ci: a limit spelled as a string (#122)'
+g -C "$CR" update-ref refs/remotes/origin/dev dev
+g -C "$CR" checkout -q -b release/v0.24.0 dev
+printf '0.24.0\n' > "$CR/VERSION"
+_pf_fold "$CR/docs" 0.24.0
+jq '.changelog.release_body_limit_bytes = 125000' "$CR/.release-pr.json" > "$CR/cfg.t" && mv "$CR/cfg.t" "$CR/.release-pr.json"
+g -C "$CR" commit -qam 'release: v0.24.0'
+eq "the release PR merge is clean" "0" "$(_cg_prmerge "$CR" main release/v0.24.0)"
+_cg_run "$CR" main --base main --head "$(g -C "$CR" rev-parse release/v0.24.0)" --title 'release: v0.24.0'
+eq "a RELEASE PR whose dev-cut config is malformed is rc 2 — it is the size limit's only backstop" "2 true" \
+   "$CG_RC $(has 'a release PR is the last run that judges this window' "$CG_OUT")"
+
+echo "== an EMPTY unit is never exempt =="
+eq "_path_match all over no paths at all is NOT a match" "1" \
+   "$(rc=0; printf '' | _path_match "$(_cg_members docs/)" all || rc=$?; echo "$rc")"
+EU="$TMP/empty-unit"
+_cg_repo "$EU" '{"exempt_paths": ["docs/"]}'
+g -C "$EU" commit -q --allow-empty -m 'chore: an empty commit (card#7700) (#123)'
+eq "an EMPTY tokened commit is obliged, not exempt" "card#7700	0" \
+   "$( (cd "$EU" && _obligation_units "$EU" v0.23.1 "$(_cg_members docs/)" '' '' '') |
+       awk -F'\t' '{ print $1 "\t" $2 }')"
+
 _summary "changelog-card-entry-selftest"

@@ -52,8 +52,9 @@
 # every later run until a bullet lands or the release closes the window. A squash-only `dev`
 # cannot reach it; the remedy is one bullet.
 #
-# `changelog.announce_paths` (optional; PR runs only) — a PR carrying NO `card#` token (not in
-# its title, not in its own commits) whose merge delta touches a listed path must change the
+# `changelog.announce_paths` (optional; PR runs only) — a PR whose TITLE carries no `card#` token
+# (the title is what a squash lands on `dev`; a token only in a branch commit does not survive it)
+# whose merge delta touches a listed path must change the
 # `## [Unreleased]` section. Skipped when `release-artifacts-check --classify-only` classifies the
 # PR `release` (a release PR and a back-merge sync PR CONSUME `[Unreleased]` rather than add to
 # it), and when `--head-ref` is under a member of `changelog.announce_exempt_branches`. Not
@@ -73,10 +74,10 @@
 #     commits, so a release-branch edit of `changelog.*` cannot exempt its own release.
 #     `refs/remotes/origin/<dev_branch>` must resolve (`fetch-depth: 0` fetches every branch).
 # On a PR run head's `changelog.*` shape is ALSO validated, so a malformed key reds on the PR that
-# writes it rather than on `dev` after the merge. On a PR run, a selected revision whose
+# writes it rather than on `dev` after the merge. On a feature PR run, a selected revision whose
 # `changelog` block is unusable is a `::warning::` and every key's default — that revision is a
-# merged commit, and refusing would also refuse the PR repairing it; on a push run (HEAD) it is
-# rc 2. A revision this clone cannot READ is rc 2 on every run. An unknown `changelog.*` key is a
+# merged commit, and refusing would also refuse the PR repairing it; on a push run (HEAD), and on
+# a release-classified PR (the window's last run, and the size limit's only backstop), it is rc 2. A revision this clone cannot READ is rc 2 on every run. An unknown `changelog.*` key is a
 # `::warning::` naming it. ⛔ `tag_format` (another tool's key): any value but `v{{version}}` is rc 2 — this gate
 # reads `v*` tags only (`git describe --match 'v*'`, `${LAST_TAG#v}`).
 #
@@ -559,8 +560,18 @@ _path_match() {
 # against the empty tree). `core.quotepath=false`: git C-quotes a non-ASCII path with a leading
 # `"`, which would make a prefix member miss it.
 _unit_paths() {
-    git -C "$1" -c core.quotepath=false diff-tree --no-commit-id --name-only -r -m --first-parent \
-        --root "$2"
+    git -C "$1" -c core.quotepath=false diff-tree --no-renames --no-commit-id --name-only -r -m \
+        --first-parent --root "$2"
+}
+
+# _delta_paths <repo> <base> <head> — the paths the tree delta <base>..<head> changes: the unit a
+# squash lands, and the announce leg's merge delta. THE SAME PLUMBING AS `_unit_paths`, rename
+# detection OFF, and that is load-bearing: porcelain `git diff --name-only` detects renames, so a
+# moved file printed only its NEW path — `app/tool.sh` → `docs/tool.sh` read as docs-only and was
+# exempt on the PR run, while the push run (`_unit_paths` on the squashed commit) saw the deleted
+# `app/tool.sh`, obliged the card, and kept `dev` red for every later PR. A move touches both.
+_delta_paths() {
+    git -C "$1" -c core.quotepath=false diff-tree --no-renames --name-only -r "$2" "$3"
 }
 
 # _obligation_units <repo> <tag> <exempt-members-file> <squash-base> <squash-head> <title> — one
@@ -578,8 +589,7 @@ _obligation_units() {
     if [[ -n "$sbase" && -n "$shead" ]]; then
         covered="$(git -C "$repo" rev-list "$sbase..$shead")" || return 1
         if [[ -s "$members" ]] &&
-            git -C "$repo" -c core.quotepath=false diff --name-only "$sbase" "$shead" |
-                _path_match "$members" all; then
+            _delta_paths "$repo" "$sbase" "$shead" | _path_match "$members" all; then
             delta_ex=1
         fi
     fi
@@ -830,6 +840,8 @@ _cg_main() {
         die "cannot read $CONFIG_ROOTREL at $CFG_REV in this clone — the revision this run's changelog.* is read from"
     if ! scan="$(_config_scan "$cfg" 2>&1)"; then
         [[ "$PR_RUN" -eq 1 ]] || die "$CONFIG_ROOTREL at HEAD is not valid JSON"
+        [[ "$CLASS" != release ]] ||
+            die "$CONFIG_ROOTREL at $CFG_REV ($CFG_WHY) is not valid JSON — a release PR is the last run that judges this window, so it refuses rather than run on defaults"
         _say "::warning::changelog-gate: $CONFIG_ROOTREL at $CFG_REV is not valid JSON — every changelog.* key takes its default for this run"
         scan=''
     fi
@@ -842,6 +854,10 @@ _cg_main() {
             for line in "${ERRS[@]}"; do _say "::error::changelog-gate: $CONFIG_ROOTREL at HEAD: $line"; done
             die "$CONFIG_ROOTREL at HEAD declares a malformed changelog.* key (above)"
         }
+        if [[ "$CLASS" == release ]]; then
+            for line in "${ERRS[@]}"; do _say "::error::changelog-gate: $CONFIG_ROOTREL at $CFG_REV: $line"; done
+            die "$CONFIG_ROOTREL at $CFG_REV ($CFG_WHY) declares a malformed changelog.* key (above) — a release PR is the last run that judges this window and the size limit's only backstop, so it refuses rather than run on defaults"
+        fi
         _say "::warning::changelog-gate: $CONFIG_ROOTREL at $CFG_REV declares a malformed changelog.* key (${ERRS[0]}) — every changelog.* key takes its default for this run"
         scan="$(grep -E $'^TAGFMT\t' <<< "$scan" || true)"
     fi
@@ -911,11 +927,9 @@ _cg_main() {
     # --- the announce leg (PR runs only) ---------------------------------------------------------
     if [[ "$PR_RUN" -eq 1 && "${#ANNOUNCE[@]}" -gt 0 ]]; then
         _say "== a tokenless PR touching changelog.announce_paths changes [Unreleased] =="
-        local AMEM="$TMP/announce-members" BMEM="$TMP/announce-branches" dbase dhead own_tok refs
+        local AMEM="$TMP/announce-members" BMEM="$TMP/announce-branches" dbase dhead refs
         printf '%s\n' "${ANNOUNCE[@]}" > "$AMEM"
         printf '%s\n' "${ANNOUNCE_EXEMPT[@]+"${ANNOUNCE_EXEMPT[@]}"}" | { grep . || true; } > "$BMEM"
-        own_tok="$(git -C "$CG_ROOT" log --format=%s "$(git -C "$CG_ROOT" merge-base "$BASE" "$HEAD_SHA")..$HEAD_SHA" |
-            { grep -oE 'card#[0-9]+' || true; })"
         # THE DELTA IS THE MERGE'S OWN: on a pull_request merge ref, `HEAD^1..HEAD`, whose two ends
         # are one snapshot (bridge card#8527 — a base tip paired with the branch tip reads the
         # base's post-fork work as this PR's). Off a merge ref, the PR's own range.
@@ -928,10 +942,9 @@ _cg_main() {
             _say "  ..   skipped: classified release $RELEASE_V (a release or back-merge PR consumes [Unreleased])"
         elif [[ -n "$HEAD_REF" ]] && printf '%s\n' "$HEAD_REF" | _path_match "$BMEM" any; then
             _say "  ..   skipped: head branch '$HEAD_REF' is under changelog.announce_exempt_branches"
-        elif [[ "$TITLE" == *card#* || -n "$own_tok" ]]; then
-            _say "  ..   skipped: this PR carries a card token, so the token leg above owns it"
-        elif ! git -C "$CG_ROOT" -c core.quotepath=false diff --name-only "$dbase" "$dhead" |
-                _path_match "$AMEM" any; then
+        elif [[ "$TITLE" == *card#* ]]; then
+            _say "  ..   skipped: the PR title carries a card token, so the token leg above owns it"
+        elif ! _delta_paths "$CG_ROOT" "$dbase" "$dhead" | _path_match "$AMEM" any; then
             _say "  ok   this PR's merge delta touches no changelog.announce_paths member"
         elif [[ "$(_unreleased_section "$TMP/a-base")" != "$(_unreleased_section "$TMP/a-head")" ]]; then
             _say "  ok   no card token, and this PR changes the [Unreleased] section"
