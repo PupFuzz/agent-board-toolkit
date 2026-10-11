@@ -217,6 +217,18 @@ expected="── Dev board snapshot — boards are the source of truth (memory i
 eq "CONTROL rc 0: the complete-read render is byte-identical" "$expected" "$out"
 eq "CONTROL rc 0: exits 0"                                    "0" "$SNAP_RC"
 
+# --- the roster file's location: the lib's default when unset, the override when set (card#11714) ---
+# Each arm reads a roster whose label only that arm's file carries, so a resolver that read the
+# other path — or neither, falling back to the hardcoded pair — renders a different first line.
+printf 'bstest:Other\n' > "$TMP/other-roster"
+unset KANBAN_SNAPSHOT_BOARDS
+eq "unset: the roster at ~/.kanban-snapshot-boards is read" "• T: in-flight 1" \
+   "$(snap complete | sed -n 2p)"
+KANBAN_SNAPSHOT_BOARDS="$TMP/other-roster"; export KANBAN_SNAPSHOT_BOARDS
+eq "set: the override wins over ~/.kanban-snapshot-boards" "• Other: in-flight 1" \
+   "$(snap complete | sed -n 2p)"
+export KANBAN_SNAPSHOT_BOARDS="$HOME/.kanban-snapshot-boards"
+
 # --- positive 1: the page cap (rc 3) ---------------------------------------
 out="$(snap cap 1)"
 eq "rc 3: the in-flight COUNT itself is marked as a floor" "true" "$(has 'in-flight ≥200' "$out")"

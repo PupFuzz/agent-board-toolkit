@@ -344,7 +344,7 @@ fi
 # `<name>:<label>` per line (`#` comments / blanks skipped); `<name>` resolves to
 # `~/.kanban-<name>-board.env`, `<label>` is the display string (defaults to the
 # name if no `:`). Absent/empty ⇒ the kanban-dev default below — back-compatible.
-SNAPSHOT_BOARDS="${KANBAN_SNAPSHOT_BOARDS:-$HOME/.kanban-snapshot-boards}"
+SNAPSHOT_BOARDS="$(kb_snapshot_boards_file)"
 roster=()   # each entry: "<envfile>\t<label>"
 if [[ -r "$SNAPSHOT_BOARDS" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
