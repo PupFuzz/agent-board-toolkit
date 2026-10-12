@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-12
+
+**Minor — `kbcard create-card` now enforces the filing bar by default: a new card's description must state an `IMPACT:` line, or the call is refused at `rc 2` before any request (card#11742).** The PRs in `v0.46.1..v0.47.0` that carry a change are #464 and #465, enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.46.1..v0.47.0` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **minor**: an acceptance narrowing (a `create-card` that succeeded at `rc 0` without an `IMPACT:` line now fails) and a new board-env key, `KB_MINT_BAR`. Upgrade actions: `docs/UPGRADE.md` §6 v0.47.0.
+
 ### Changed
 
 - **card#11742** — ⚠ **Acceptance narrowing, default ON (a minor at minimum, per [`../VERSIONING.md`](../VERSIONING.md) § Bump sizing): `kbcard create-card` now enforces the filing bar.** Operator-approved default-on narrowing (2026-10-12). A new card's description must carry an `IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR` line; `REQUESTED` also needs a non-empty `REQUESTED BY:` line and `BELOW-BAR` a non-empty `BELOW-BAR REASON:` line. A card that fails is refused at `rc 2` before any request, with a message naming what is missing. The check reads the resolved description, `--description` or `--description-file` alike. It used to be a PreToolUse hook installed on individual machines, so it applied only where that hook was installed; now it applies on every seat that runs `kbcard`. [`../README.md`](../README.md) § `kbcard create-card` — the filing bar has the full rule.
