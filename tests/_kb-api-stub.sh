@@ -102,8 +102,15 @@ kb_stub_board_config() {
         printf 'export KANBAN_EXPECTED_HOST="%s"\n' "$KB_STUB_HOST"
         printf 'export KBCARD_TOKEN_FILE="%s"\n' "$KB_STUB_TOKEN_FILE"
     } > "$KANBAN_HOST_ENV"
+    # KB_MINT_BAR defaults to `off` HERE, and only here: the filing bar refuses every
+    # `create-card` whose description carries no IMPACT line, and the legs that create a card to
+    # test something else (a stage echo, a payload key, a swimlane) are not about that. A leg that
+    # IS about the bar sets KB_STUB_MINT_BAR — empty for a board env that declares no KB_MINT_BAR
+    # (the product default, ON), any other value to write that value verbatim.
+    local mint_bar="${KB_STUB_MINT_BAR-off}"
     {
         printf 'export KB_BOARD_ID=%s\n' "$board_id"
+        [[ -z "$mint_bar" ]] || printf 'export KB_MINT_BAR=%s\n' "$mint_bar"
         [[ $# -gt 0 ]] && printf '%s\n' "$@"
     } > "$HOME/.kanban-${name}-board.env"
     printf 'stub-token\n' > "$KB_STUB_TOKEN_FILE"
