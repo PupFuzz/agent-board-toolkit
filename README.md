@@ -101,6 +101,29 @@ The `kbcard` flags that carry **prose** — text long enough that someone other 
 - **`kbcard patch --clear <field>[,<field>…]`** is how the payload text fields above are **removed**, each named by its setter flag's spelling — and `pr`, which clears `pr_number`, so `--clear pr,pr-url` unlinks a card from a pull request (added with the `pr_number`/`pr_url` rule above, whose refusal otherwise left no unlink short of a decline; operator-approved 2026-09-27, and a widening of what `--clear` accepts). The clearable set is declared once, in `_kbc_clearable` in `bin/kbcard`; any other name is `rc 2` before any request, and that refusal prints the accepted set (`kbcard patch --task <id> --clear '?'` shows it). Each named field goes out as an explicit JSON `null` for its payload key (`version` → `version_target`), which the board's per-key payload merge **removes**. For `pr-url` / `issue-url` that **can** drop the card's by-ref `source`: the board re-derives it from what remains — `payload.repo` OUTRANKS every URL when it is a string containing `/`, so on such a card clearing a URL cannot drop the source at all; otherwise the other URL keys, then a GitHub `external_link`. Several fields are **one comma list** (`--clear origin,version`), the spelling `--tags` uses — a second `--clear` is `rc 2` rather than a silent last-wins that would drop a clear — and members are matched exactly (no trimming; an empty member is an unknown field). Naming a field **and** its setter (`--pr-url X --clear pr-url`) is `rc 2` before any request. The write echo shows each cleared key raw under `payload`, so a removed one reads `null`. On a board with no `version_target` field, `--clear version` is ignored with the warning `--version` gets. Beside `--column wont_do` a clear composes with the decline nulls and, like an explicit ref flag, wins over `--keep-refs`, whose notice then leaves the cleared key out of what it retained. `create-card` has no such flag. It exists because `card#9338`'s refusal closed the only deliberate route that used to clear these fields — a `wont_do` decline also nulls `pr_url`, as a side effect of declining (`card#9420`).
 - **`kbcard patch --clear-description`** is how a description is **removed**. It writes an explicit JSON `null` — the API merges per key, so an omitted key leaves the field alone and a `null` clears it — and is **mutually exclusive with both halves of the `--description` pair** (`rc 2` before any request), exactly as `--unblock` is with `--block-reason`. It exists because the refusal above closed the only route that used to clear the field, and that route was a clear **inferred** from a value that means nothing, delivered by *another repo's* middleware; this one is **said**. The write echo prints the raw `description` on such a call, so the caller sees the `null` without re-reading the card. `create-card` has no such flag — there is nothing to clear at birth.
 
+## `kbcard create-card` — the filing bar
+
+A new card states, **on the card**, why it clears the filing bar: a card is for a defect that affects operation or security, or for a capability someone asked for; anything else is filed only with a stated reason. `create-card` checks that the claim is **present** — never that it is true — so it can be audited later from the card itself.
+
+The card's description (`--description`, or the file `--description-file` names, after the same CRLF and trailing-newline normalisation every file flag gets) must carry a line:
+
+```
+IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR
+```
+
+| Kind | Use it for | Also required |
+|---|---|---|
+| `RUNTIME` | wrong data, wrong behaviour, data loss, a wrong answer served | — |
+| `SECURITY` | credential exposure, a widened trust boundary, an authn/authz gap | — |
+| `REQUESTED` | a capability someone asked for | a `REQUESTED BY: <who, when, the ask>` line |
+| `BELOW-BAR` | anything else, filed anyway | a `BELOW-BAR REASON: <why it is filed anyway>` line |
+
+- The label sits at the **start of a line**, after any whitespace and markdown prefix (`*`, `_`, `>`, `#`, `-`), and may be emphasised: `**IMPACT:** RUNTIME`, `> - impact: security` and `**REQUESTED BY:** …` all count. Case is ignored. A label mid-sentence, a kind outside the four, and a `REQUESTED BY:` / `BELOW-BAR REASON:` line with nothing after it do not count. The first `IMPACT:` line decides the kind.
+- Only the description is read. An `IMPACT:` line in `--name` does not count, and a card with no description is refused.
+- A card that fails the bar is **`rc 2` before any request**, and the message names what is missing. `kbcard search 'BELOW-BAR'` finds the cards whose text says `BELOW-BAR`, which includes every card filed below the bar through `create-card`.
+- **Default ON.** A board opts out with `export KB_MINT_BAR=off` in its board env ([`examples/kanban-board.env.example`](examples/kanban-board.env.example)). Only the exact value `off` opts out. Unset or `on` leaves the bar on; any other value also leaves it on and prints a warning on every `create-card`. `KB_MINT_BAR` is a board-env key ([`docs/INSTALL.md`](docs/INSTALL.md) §3), so a value exported in the calling shell is cleared before the board env is read and cannot switch the bar off.
+- Only `kbcard create-card` enforces the bar. A card created any other way (the board UI, a direct API call) is not checked, and neither is `patch --description`.
+
 ## `kbcard field` — custom-field schema
 
 Per-board custom fields define which keys a card's `tasks.payload` may carry (an unregistered key 422s on a task write). The `field` verb reads that schema, reconciles enum option sets, and owns the definition lifecycle (create / delete / re-type). Board selection uses the global `--board` flag, like every other `kbcard` verb.
