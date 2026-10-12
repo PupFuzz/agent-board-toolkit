@@ -81,6 +81,10 @@
 #     rc 2 before any request.
 #                      [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--tags "tag1,tag2"] [--external-id 12345] \
 #                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--issue 42] [--issue-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested] [--triaged]
+#     THE FILING BAR (default ON): the description must carry a line
+#     `IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR` (REQUESTED also a `REQUESTED BY:`
+#     line, BELOW-BAR a `BELOW-BAR REASON:` line), or the call is rc 2 before any request.
+#     README.md § kbcard create-card — the filing bar owns the rule and the board-env opt-out.
 #     --triaged tags the card `triaged` at birth (symmetric with `patch --triaged`)
 #     so a plain PM-minted card isn't a false-positive untriaged next session.
 #     --swimlane births the card directly ON a lane (symmetric with `patch --swimlane`,
@@ -1512,6 +1516,40 @@ _kbc_require_ext_id() {
     return 2
 }
 
+# _kbc_mint_bar <description>: the filing bar (README.md § kbcard create-card — the filing bar, which
+# owns the rule). rc 0 when the board env opts out (KB_MINT_BAR=off) or the RESOLVED description
+# carries an `IMPACT: <kind>` line, plus the line its kind requires; rc 2 with the refusal otherwise.
+# It checks that the claim is STATED on the card, never that it is true. Lines are matched one at a
+# time because a bash ERE has no multi-line anchor; the case fold and the label's leading markdown
+# (`*_>#-`, whitespace) are matched under LC_ALL=C (kb_ere_match), so `[[:space:]]` is ASCII.
+# KB_MINT_BAR is a board key (kb_board_keys_unset), so only the board env can switch the bar off.
+_kbc_mint_bar() {
+    case "${KB_MINT_BAR:-}" in
+        off) return 0 ;;
+        ""|on) ;;
+        *) echo "kbcard: create-card: ⚠ KB_MINT_BAR='$KB_MINT_BAR' in ${KB_BOARD_ENV:-the board env} is not 'off', the only value that opts out — the filing bar stays ON" >&2 ;;
+    esac
+    # C locale for the case fold as well as the match: `${line^^}` is locale-aware, and under a
+    # Turkish locale `impact` folds to `İMPACT`, which no ASCII label matches.
+    local LC_ALL=C lead='^[[:space:]*_>#-]*' val='[*_]*:[[:space:]*_]*[^[:space:]*_]'
+    local line up kind="" by="" reason=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        up="${line^^}"
+        if [[ -z "$kind" ]] && kb_ere_match "$up" "${lead}IMPACT[*_]*:[[:space:]*_]*(RUNTIME|SECURITY|REQUESTED|BELOW-BAR)([^A-Z0-9_]|\$)"; then
+            kind="${BASH_REMATCH[1]}"
+        fi
+        kb_ere_match "$up" "${lead}REQUESTED[[:space:]]+BY${val}" && by=1
+        kb_ere_match "$up" "${lead}BELOW-BAR[[:space:]]+REASON${val}" && reason=1
+    done <<<"$1"
+    local need="the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR a 'BELOW-BAR REASON: <why it is filed anyway>' line. Nothing was sent."
+    case "$kind" in
+        "") echo "kbcard: create-card: the card's description states no IMPACT line — $need" >&2; return 2 ;;
+        REQUESTED) [[ -n "$by" ]] || { echo "kbcard: create-card: IMPACT is REQUESTED and no non-empty 'REQUESTED BY:' line names the ask — $need" >&2; return 2; } ;;
+        BELOW-BAR) [[ -n "$reason" ]] || { echo "kbcard: create-card: IMPACT is BELOW-BAR and no non-empty 'BELOW-BAR REASON:' line says why it is filed anyway — $need" >&2; return 2; } ;;
+    esac
+    return 0
+}
+
 # _kbc_require_ref_int <flag> <value>: a correlation value (--pr / --issue) must name ONE
 # POSITIVE integer, optionally decorated. The SHAPE half is the board's OWN rule for deriving a
 # card's by-ref key (kanban DL-251: `^\D*(\d+)\D*$` after trimming), applied here at the
@@ -1855,6 +1893,8 @@ cmd_create_card() {
     [[ -z "$type" ]] && { echo "kbcard: --type required" >&2; return 2; }
     _kbc_require_type_alias "$type" || return 2
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
+    # Read on the RESOLVED description, so --description and --description-file are one text.
+    _kbc_mint_bar "$desc" || return 2
 
     local stage type_id
     stage="$(stage_id "$column")"

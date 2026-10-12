@@ -6,6 +6,12 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **card#11742** — ⚠ **Acceptance narrowing, default ON (a minor at minimum, per [`../VERSIONING.md`](../VERSIONING.md) § Bump sizing): `kbcard create-card` now enforces the filing bar.** Operator-approved default-on narrowing (2026-10-12). A new card's description must carry an `IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR` line; `REQUESTED` also needs a non-empty `REQUESTED BY:` line and `BELOW-BAR` a non-empty `BELOW-BAR REASON:` line. A card that fails is refused at `rc 2` before any request, with a message naming what is missing. The check reads the resolved description, `--description` or `--description-file` alike. It used to be a PreToolUse hook installed on individual machines, so it applied only where that hook was installed; now it applies on every seat that runs `kbcard`. [`../README.md`](../README.md) § `kbcard create-card` — the filing bar has the full rule.
+  - **[host] ⚠ Narrowed:** a `create-card` with no description, or a description without a qualifying `IMPACT:` line, used to be written at `rc 0` and is now `rc 2` with nothing sent. **Opt-out:** `export KB_MINT_BAR=off` in the board env. Only the exact value `off` opts out. Unset or `on` leaves the bar on; any other value also leaves it on, with a warning. `KB_MINT_BAR` is a board-env key (`kb_board_keys_unset`), so exporting it in the calling shell does not opt out. The key is listed, commented out, in `examples/kanban-board.env.example`. No `create-card` caller in this repo's `bin/` is affected.
+  - **[vendor]** `bin/kbcard` and `bin/_kb-board-lib.sh` both changed; re-vendor them together. Beside an older lib, a `KB_MINT_BAR` exported in the calling shell is not cleared and can switch the bar off.
+
 ## [0.46.1] - 2026-10-11
 
 **Patch — `bin/changelog-gate`'s "move the entry back to `[Unreleased]`" remedy sentences now say to merge the PR's base branch first (card#11719).** The only PR in `v0.46.0..v0.46.1` that carries a change is #461, enumerated below and in the release PR's generated `## Bundled` table. Per `VERSIONING.md` § Bump sizing this is a **patch**: only the wording of two remedy sentences changes; no new surface, and no narrowings this release — every input the gate accepted it still accepts, and the verdict (red or green, `rc 1`) is unchanged.

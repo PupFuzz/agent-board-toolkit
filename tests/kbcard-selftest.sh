@@ -435,6 +435,10 @@ eval "_kbc_write_echo_orig() $(declare -f _kbc_write_echo | tail -n +2)"
 kb_api() { printf '%s' "$3"; }
 _kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48
+# These sourced-function legs load no board env, so the filing bar would refuse every
+# cmd_create_card below; they test other flags. The bar's own legs run as a process near the end,
+# where kb_board_keys_unset clears this export before each board env is sourced.
+export KB_MINT_BAR=off
 
 # has_tag <body-json> <tag> → membership of the created card's flat .tags array.
 has_tag() { jq -e --arg t "$2" '((.tags // []) | index($t)) != null' <<<"$1" >/dev/null && echo true || echo false; }
@@ -7584,5 +7588,105 @@ kb_stub_reset; rc=0; out="$("$BIN" move --task 505 --column backlog 2>"$TMP/e" <
 eq "control: the same move answered 2xx → rc 0, and no refusal line" "0|false" "$rc|$(has 'answered HTTP' "$err")"
 unset -f kb_stub_route sw_leg
 unset SW_TOKEN SW_CARD SW_REFUSAL SW_SHOWN SW_LOG
+
+# ---------------------------------------------------------------------------
+echo "== create-card: the filing bar — the description states its IMPACT (README.md § kbcard create-card — the filing bar) =="
+# DEFAULT ON: the `dev` board env below declares NO KB_MINT_BAR (KB_STUB_MINT_BAR empty), which
+# is the state every board env written before the bar existed is in. Every refusal is asserted
+# with ZERO requests, and the mutant control at the end is what attributes that to the bar.
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+KB_STUB_MINT_BAR='' kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48'
+kb_stub_board_config offbar 43 'export KB_STAGE_BACKLOG=48'                       # KB_MINT_BAR=off
+KB_STUB_MINT_BAR=Off kb_stub_board_config oddbar 44 'export KB_STAGE_BACKLOG=48'  # not exactly `off`
+KB_STUB_MINT_BAR=on kb_stub_board_config onbar 45 'export KB_STAGE_BACKLOG=48'    # the explicit ON
+kb_stub_install
+MB_CARD='{"data":{"id":606,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":[]}}'
+export MB_CARD
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/tasks.json) printf '201\n%s' "$MB_CARD" ;;
+    esac
+}
+export -f kb_stub_route
+# mbar <label> <want-rc> <args…> — one create-card, and the request count its rc implies: a pass
+# is exactly one POST, a refusal is NO request at all.
+mbar() {
+    local label="$1" want="$2"; shift 2
+    kbc "$@"
+    if [[ "$want" == 0 ]]; then
+        eq "$label → rc 0, one POST" "0|1" "$rc|$(kb_stub_count POST /tasks.json)"
+    else
+        eq "$label → rc 2, NO request" "2|0" "$rc|$(kb_stub_total)"
+    fi
+}
+MB=(create-card --type fr --name probe)
+
+echo "-- each of the four kinds passes --"
+mbar "IMPACT: RUNTIME"   0 "${MB[@]}" --description $'what broke\n\nIMPACT: RUNTIME'
+mbar "IMPACT: SECURITY"  0 "${MB[@]}" --description $'IMPACT: SECURITY\nthe token leaks'
+mbar "IMPACT: REQUESTED + REQUESTED BY" 0 "${MB[@]}" \
+     --description $'IMPACT: REQUESTED\nREQUESTED BY: operator 2026-10-11, "add a --foo flag"'
+mbar "IMPACT: BELOW-BAR + BELOW-BAR REASON" 0 "${MB[@]}" \
+     --description $'IMPACT: BELOW-BAR\nBELOW-BAR REASON: a peer committed to it in the thread'
+eq "  …and the description goes on the wire unchanged" '"IMPACT: BELOW-BAR\nBELOW-BAR REASON: a peer committed to it in the thread"' \
+   "$(kb_stub_bodies POST /tasks.json | jq -c .description)"
+
+echo "-- spellings the bar accepts --"
+mbar "markdown emphasis: **IMPACT:** RUNTIME" 0 "${MB[@]}" --description $'body\n**IMPACT:** RUNTIME'
+mbar "lower case, a list/quote prefix: > - **impact:** security" 0 "${MB[@]}" --description '> - **impact:** security'
+mbar "emphasis on both labels: **IMPACT:** REQUESTED / **REQUESTED BY:** …" 0 "${MB[@]}" \
+     --description $'**IMPACT:** REQUESTED\n**REQUESTED BY:** operator, 2026-10-11'
+printf '# title\r\n\r\n**IMPACT:** BELOW-BAR\r\n**BELOW-BAR REASON:** paid-for analysis\r\n' > "$TMP/mb-crlf.md"
+mbar "--description-file (a CRLF file, through the same reader)" 0 "${MB[@]}" --description-file "$TMP/mb-crlf.md"
+
+echo "-- refusals: rc 2, before any request --"
+mbar "no description at all" 2 "${MB[@]}"
+eq "  …names the missing IMPACT line"           "true" "$(has 'states no IMPACT line' "$err")"
+eq "  …lists the vocabulary"                    "true" "$(has 'IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR' "$err")"
+eq "  …and points at the doc that owns the bar" "true" "$(has 'README.md § kbcard create-card — the filing bar' "$err")"
+mbar "a description with no IMPACT line" 2 "${MB[@]}" --description 'just a body'
+mbar "an IMPACT label that is not at line start" 2 "${MB[@]}" --description 'see IMPACT: RUNTIME below'
+mbar "an IMPACT kind outside the vocabulary" 2 "${MB[@]}" --description 'IMPACT: COSMETIC'
+mbar "an IMPACT label with no kind" 2 "${MB[@]}" --description 'IMPACT:'
+mbar "IMPACT: REQUESTED without REQUESTED BY" 2 "${MB[@]}" --description 'IMPACT: REQUESTED'
+eq "  …names the missing REQUESTED BY line" "true" "$(has 'REQUESTED BY:' "$err")"
+mbar "IMPACT: REQUESTED with an EMPTY REQUESTED BY (emphasis only)" 2 "${MB[@]}" \
+     --description $'**IMPACT:** REQUESTED\n**REQUESTED BY:**'
+mbar "IMPACT: BELOW-BAR without BELOW-BAR REASON" 2 "${MB[@]}" --description 'IMPACT: BELOW-BAR'
+eq "  …names the missing BELOW-BAR REASON line" "true" "$(has 'BELOW-BAR REASON:' "$err")"
+mbar "IMPACT: BELOW-BAR with an EMPTY reason" 2 "${MB[@]}" --description $'IMPACT: BELOW-BAR\nBELOW-BAR REASON:   '
+printf 'no impact here\n' > "$TMP/mb-none.md"
+mbar "--description-file with no IMPACT line" 2 "${MB[@]}" --description-file "$TMP/mb-none.md"
+mbar "the IMPACT line in --name, not the description" 2 create-card --type fr --name 'IMPACT: RUNTIME'
+
+echo "-- the opt-out is the board env's, exactly 'off' --"
+mbar "KB_MINT_BAR=off in the board env: an IMPACT-less card passes" 0 --board offbar "${MB[@]}" --description 'just a body'
+mbar "KB_MINT_BAR=off: no description at all passes too" 0 --board offbar "${MB[@]}"
+mbar "KB_MINT_BAR=Off (not exactly 'off') stays ON" 2 --board oddbar "${MB[@]}" --description 'just a body'
+eq "  …and WARNS that the value is not the opt-out" "true" "$(has "KB_MINT_BAR='Off'" "$err")"
+mbar "KB_MINT_BAR=Off: a card that clears the bar still passes" 0 --board oddbar "${MB[@]}" --description 'IMPACT: RUNTIME'
+eq "  …still warning" "true" "$(has "KB_MINT_BAR='Off'" "$err")"
+mbar "KB_MINT_BAR=on is ON" 2 --board onbar "${MB[@]}" --description 'just a body'
+eq "  …and is not warned about" "false" "$(has "KB_MINT_BAR=" "$err")"
+# A board key, so the CALLING shell cannot switch it off (card#10858's one-source rule): an
+# exported KB_MINT_BAR=off — e.g. left behind by sourcing the offbar env — does not reach `dev`.
+export KB_MINT_BAR=off
+mbar "an exported KB_MINT_BAR=off does not opt a board out" 2 "${MB[@]}" --description 'just a body'
+# …and that is kb_board_keys_unset's doing: with KB_MINT_BAR dropped from the lib's unset, the
+# exported value survives the board env (which declares none) and the same call is POSTed.
+_rmut mint-bar-leak '' MB_LEAK 's/^    unset KB_BOARD_ID KB_WORKFLOW_ID KB_TYPING_MODE KB_MINT_BAR \\$/    unset KB_BOARD_ID KB_WORKFLOW_ID KB_TYPING_MODE \\/'
+kb_stub_reset; rc=0; "$MB_LEAK" "${MB[@]}" --description 'just a body' </dev/null >/dev/null 2>&1 || rc=$?
+eq "  control: WITHOUT the unset, the exported off leaks and the call is POSTed" "0|1" "$rc|$(kb_stub_count POST /tasks.json)"
+unset KB_MINT_BAR
+
+# THE CONTROL: with the bar's `return 2` removed, the same IMPACT-less call must REACH the wire —
+# so the zero-request refusals above are the bar's, not a call that could never have been sent.
+_rmut mint-bar 's/^    _kbc_mint_bar "\$desc" || return 2$/    _kbc_mint_bar "$desc" || :/' MB_MUT
+kb_stub_reset; rc=0; "$MB_MUT" "${MB[@]}" --description 'just a body' </dev/null >/dev/null 2>&1 || rc=$?
+eq "  control: WITHOUT the bar's return, the same call is POSTed" "0|1" "$rc|$(kb_stub_count POST /tasks.json)"
+unset -f kb_stub_route mbar
+unset MB_CARD MB MB_MUT MB_LEAK
 
 _summary "kbcard-selftest"
