@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#11790** — **The refusal selftests now drive the kanban server's terminal-stage refusal body as captured live, and no longer say that refusal is not live.** `tests/kbcard-selftest.sh` and `tests/promote-refusal-detail-selftest.sh` fed a made-up `{error, open_legs}` 422 and said the server's refusal of a terminal move on a parent with unfinished legs was not live and its body unpublished. It has been live since kanban-board v0.49.0. Both now feed its real `{message, errors}` body, with one added `debug.authorization` field carrying the bearer token so the masking rows still have a token to mask, and a new control row asserts the fed body carries it. `tests/board-card-start-selftest.sh` drops the same "unpublished" remark. Tests only; no bin changes.
+
 ## [0.47.0] - 2026-10-12
 
 **Minor — `kbcard create-card` now enforces the filing bar by default: a new card's description must state an `IMPACT:` line, or the call is refused at `rc 2` before any request (card#11742).** The PRs in `v0.46.1..v0.47.0` that carry a change are #464 and #465, enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.46.1..v0.47.0` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **minor**: an acceptance narrowing (a `create-card` that succeeded at `rc 0` without an `IMPACT:` line now fails) and a new board-env key, `KB_MINT_BAR`. Upgrade actions: `docs/UPGRADE.md` §6 v0.47.0.
