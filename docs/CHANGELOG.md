@@ -12,7 +12,7 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ### Fixed
 
-- **card#11790** — **The refusal selftests now drive the kanban server's terminal-stage refusal body as captured live, and no longer say that refusal is not live.** `tests/kbcard-selftest.sh` and `tests/promote-refusal-detail-selftest.sh` fed a made-up `{error, open_legs}` 422 and said the server's refusal of a terminal move on a parent with unfinished legs was not live and its body unpublished. It has been live since kanban-board v0.49.0. Both now feed its real `{message, errors}` body, with one added `debug.authorization` field carrying the bearer token so the masking rows still have a token to mask, and a new control row asserts the fed body carries it. `tests/board-card-start-selftest.sh` drops the same "unpublished" remark. Tests only; no bin changes.
+- **card#11790** — **The refusal selftests now drive the kanban server's terminal-stage refusal body as captured live, and no longer say that refusal is not live.** `tests/kbcard-selftest.sh` and `tests/promote-refusal-detail-selftest.sh` fed a made-up `{error, open_legs}` 422 and said the server's refusal of a terminal move on a parent with unfinished legs was not live and its body unpublished. It has been live since kanban-board v0.49.0. Both now feed its real `{message, errors}` body, with one added `debug.authorization` field carrying the bearer token so the masking rows still have a token to mask, and a new control row asserts the fed body carries it. `tests/board-card-start-selftest.sh` drops the same "unpublished" remark. Tests only; the one `bin/` change is a comment in `bin/_kb-board-lib.sh`.
 
 ## [0.47.0] - 2026-10-12
 
