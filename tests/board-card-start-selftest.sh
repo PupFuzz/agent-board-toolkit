@@ -1089,7 +1089,7 @@ if command -v git >/dev/null 2>&1; then
     # ⭐ A REFUSED MOVE SAYS WHY (card#9777). The move is the lib's kb_stage_write, so the durable
     # log — the only surface the installed hook has — carries the status AND the server's own
     # explanation, with the bearer token masked; it used to carry `(HTTP 422)` and nothing else.
-    # The body is made up (branch A's real refusal is unpublished); what is proven is the render.
+    # The body is made up; what is proven is the render.
     _otok="$(cat "$KB_STUB_TOKEN_FILE")"
     KB_STUB_MOVE=422 KB_STUB_MOVE_BODY="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $_otok\"}}" \
         KB_STUB_TAGS='["fr"]' _own_run builder
