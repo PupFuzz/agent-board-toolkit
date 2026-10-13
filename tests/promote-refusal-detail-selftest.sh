@@ -116,13 +116,20 @@ eq "four different refusals render four DIFFERENT lines" "4" "$distinct"
 # (card#9777). This tool cannot call the lib's kb_stage_write — it may not source the lib — so the
 # same shape is held by two things: this leg, which drives the render through the real move loop,
 # and tests/mirror-pair-parity-selftest.sh § 8, which holds resp_detail byte-equal to the lib's
-# kb_render_refusal. The body is MADE UP — the kanban server's refusal of a terminal move on a
-# parent with open legs is not live and its body is unpublished — and carries the token a
-# header-echoing server would echo back, which must not survive.
-STUB_PATCH_STATUS=422 STUB_PATCH_BODY="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $TOKEN_VALUE\"}}" run_promote
+# kb_render_refusal. The body is the kanban server's terminal-stage refusal as captured live on a
+# production board (card#11790) — `message` and `errors` verbatim — plus an ADDED
+# `debug.authorization` field carrying the token a header-echoing server would echo back, which
+# must not survive. The real refusal carries no token.
+IFS= read -r OL_SHOWN_BODY <<'JSON'
+{"message":"This write would leave a card in a terminal column with unfinished legs.","errors":{"workflow_stage_id":["Can't move #9451 to 'Shipped to dev': 1 unfinished leg (#11789)…"]},"debug":{"authorization":"Bearer ***"}}
+JSON
+OL_BODY="${OL_SHOWN_BODY/'Bearer ***'/"Bearer $TOKEN_VALUE"}"
+eq "control: the open-legs body really carries the token" "true" "$(has "$TOKEN_VALUE" "$OL_BODY")"
+STUB_PATCH_STATUS=422 STUB_PATCH_BODY="$OL_BODY" run_promote
 eq "open-legs 422: the refusal line carries the status and the server's words, token masked" "true" \
-   "$(has '✗ DL-100 (#1): move failed (left in place) — HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}' "$err")"
+   "$(has "✗ DL-100 (#1): move failed (left in place) — HTTP 422, server said: $OL_SHOWN_BODY" "$err")"
 eq "open-legs 422: …and the token appears nowhere in the run's output" "false" "$(has "$TOKEN_VALUE" "$err$out")"
+unset OL_SHOWN_BODY OL_BODY
 
 # ⛔ NEGATIVE CONTROL — the detector must NOT fire on a success. Without this every assertion
 # above is satisfiable by a tool that appends `HTTP …` to every line it prints.

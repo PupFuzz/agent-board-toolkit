@@ -117,7 +117,7 @@
 # refusal — none of these is ever read as a pass.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.47.0'
+ABTK_TOOL_VERSION='0.47.1'
 
 # ⚠ THE ONE BULLET GRAMMAR. Awk consumers read it through ENVIRON, never `-v`: awk processes
 # backslash escapes in a `-v` assignment, so `\*` would arrive as a bare `*`.

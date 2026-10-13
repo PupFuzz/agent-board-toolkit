@@ -7524,10 +7524,10 @@ echo "== a REFUSED stage write says why, with the token masked — kb_stage_writ
 # body under KB_API_ERRBODY=1: a header-echoing server's copy of `Bearer <token>` went to stderr
 # and to ~/.kbcard-failures.log verbatim.
 #
-# ⚠ WHAT THIS DOES NOT PROVE. The 422 body below is made up — plausible, not captured: the kanban
-# server's refusal of a terminal move on a parent with open legs ("branch A") is not live and its
-# body is unpublished. What is proven is that WHATEVER body the board sends is rendered, masked
-# and bounded at every one of these sites; the first real refusal is card#9781's check.
+# THE BODY is the kanban server's terminal-stage refusal (a move into a terminal column on a parent
+# with unfinished legs) as captured live on a production board (card#11790): its `message` and
+# `errors` are verbatim. The `debug.authorization` field is ADDED — the real refusal carries no
+# token — standing for a header-echoing server, so the mask has something to act on.
 rm -rf "$TMP"
 _mktmp_scratch --home
 kb_stub_scrub_env
@@ -7539,7 +7539,11 @@ kb_stub_board_config tgt 77 'export KB_STAGE_BACKLOG=880' 'export KB_TYPE_FEATUR
 kb_stub_install
 SW_TOKEN="$(cat "$KB_STUB_TOKEN_FILE")"
 SW_CARD='{"data":{"id":505,"name":"probe","board_id":42,"workflow_stage_id":48,"card_type_id":7,"payload":null}}'
-SW_REFUSAL="{\"error\":\"parent has open legs\",\"open_legs\":[123,456],\"debug\":{\"authorization\":\"Bearer $SW_TOKEN\"}}"
+IFS= read -r SW_SHOWN_BODY <<'JSON'
+{"message":"This write would leave a card in a terminal column with unfinished legs.","errors":{"workflow_stage_id":["Can't move #9451 to 'Shipped to dev': 1 unfinished leg (#11789)…"]},"debug":{"authorization":"Bearer ***"}}
+JSON
+SW_REFUSAL="${SW_SHOWN_BODY/'Bearer ***'/"Bearer $SW_TOKEN"}"
+eq "control: the refusal body really carries the token" "true" "$(has "$SW_TOKEN" "$SW_REFUSAL")"
 export SW_CARD SW_REFUSAL
 kb_stub_route() {
     case "$1 $2" in
@@ -7550,7 +7554,7 @@ kb_stub_route() {
     esac
 }
 export -f kb_stub_route
-SW_SHOWN='HTTP 422, server said: {"error":"parent has open legs","open_legs":[123,456],"debug":{"authorization":"Bearer ***"}}'
+SW_SHOWN="HTTP 422, server said: $SW_SHOWN_BODY"
 SW_LOG="$HOME/.kbcard-failures.log"
 # sw_leg <label> <method> <path> <verb-args…> — one refused write, and everything it must say.
 sw_leg() {
@@ -7564,11 +7568,11 @@ sw_leg() {
     eq "$label: …the bearer token is on NEITHER stderr nor the failure log" "false|false" \
        "$(has "$SW_TOKEN" "$err")|$(has "$SW_TOKEN" "$(cat "$SW_LOG")")"
     eq "$label: …the failure log still records the refusal, masked" "true" \
-       "$(has "HTTP-422 {\"error\":\"parent has open legs\"" "$(cat "$SW_LOG")")"
+       "$(has 'HTTP-422 {"message":"This write would leave a card in a terminal column with unfinished legs."' "$(cat "$SW_LOG")")"
     # KB_API_ERRBODY=1 is kbcard's global; kb_stage_write owns the render for its one call, so the
     # body must appear ONCE — a second, raw copy is the leak this card closes.
     eq "$label: …and the body is rendered ONCE, not echoed a second time raw" "1" \
-       "$(/usr/bin/grep -c 'parent has open legs' <<<"$err" || true)"
+       "$(/usr/bin/grep -c 'unfinished leg (#11789)' <<<"$err" || true)"
     eq "$label: …and nothing on stdout" "" "$out"
 }
 sw_leg "move"          PATCH /tasks/505.json      move --task 505 --column shipped_to_dev
@@ -7587,7 +7591,7 @@ export -f kb_stub_route
 kb_stub_reset; rc=0; out="$("$BIN" move --task 505 --column backlog 2>"$TMP/e" </dev/null)" || rc=$?; err="$(cat "$TMP/e")"
 eq "control: the same move answered 2xx → rc 0, and no refusal line" "0|false" "$rc|$(has 'answered HTTP' "$err")"
 unset -f kb_stub_route sw_leg
-unset SW_TOKEN SW_CARD SW_REFUSAL SW_SHOWN SW_LOG
+unset SW_TOKEN SW_CARD SW_REFUSAL SW_SHOWN_BODY SW_SHOWN SW_LOG
 
 # ---------------------------------------------------------------------------
 echo "== create-card: the filing bar — the description states its IMPACT (README.md § kbcard create-card — the filing bar) =="

@@ -1493,8 +1493,8 @@ kb_render_refusal() {
 # routing through it.
 #
 # WHY IT EXISTS. A stage write the board refuses has to say WHY, and the reason is in the body:
-# a 403 (the token's role), a 422 (a stage id that is not this board's), and — once the kanban
-# server refuses terminal moves on a parent card whose legs are still open — that refusal too.
+# a 403 (the token's role), a 422 (a stage id that is not this board's), and the kanban server's
+# 422 refusing a terminal move on a parent card whose legs are still open.
 # Before this, each mover rendered its refusal its own way or not at all: kbcard echoed the RAW
 # body (bearer token included, if the server echoed it), board-card-start logged a bare status,
 # dl-a1-register-field said "non-2xx or curl error". One primitive means a server-side refusal
