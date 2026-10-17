@@ -7734,6 +7734,24 @@ done < <(jq -r '(.title.rules[].checks[] | select(.kind == "prefix") | .values[]
                 (.tags.refused_on_native_type_boards[].prefix)' "$RULES")
 eq "README § Plain-language card text names every closed-list value the rule file holds" "" "$_rd_miss"
 eq "  control: that section was found at all" "true" "$(has 'Technical notes (for agents)' "$_rd_sec")"
+# README § kbcard create-card — the filing bar keeps a table of the IMPACT kinds for a human reader
+# (what each is for); its kinds and required lines must EQUAL the rule file's, in order.
+_rd_kinds() {   # <readme> — `KIND|REQUIRED LINE: <text>` per table row
+    awk '/^## `kbcard create-card` — the filing bar/{f=1; next} f && /^## /{exit} f' "$1" \
+        | sed -nE 's/^\| `([A-Z0-9-]+)` \|[^|]*\| (a `([^`]*)` line|—) \|$/\1|\3/p'
+}
+_fb_kinds() {   # <rules>
+    jq -r '.description.filing_bar.kinds[] | "\(.kind)|\(if .requires_line then "\(.requires_line): \(.requires_text)" else "" end)"' "$1"
+}
+eq "README's filing-bar kind table equals the rule file's kinds and required lines" "$(_fb_kinds "$RULES")" "$(_rd_kinds "$HERE/../README.md")"
+eq "  control: the table was read at all" "true" "$(has 'REQUESTED|REQUESTED BY: <who, when, the ask>' "$(_rd_kinds "$HERE/../README.md")")"
+jq '.description.filing_bar.kinds += [{"kind": "PLANTED"}]' "$RULES" > "$TMP/fb-planted.json"
+eq "  control: a kind added to the rule file alone makes the two differ" "false" \
+   "$([[ "$(_fb_kinds "$TMP/fb-planted.json")" == "$(_rd_kinds "$HERE/../README.md")" ]] && echo true || echo false)"
+sed 's/^| `BELOW-BAR` |.*$//' "$HERE/../README.md" > "$TMP/fb-readme.md"
+eq "  control: a kind dropped from README's table alone makes the two differ" "false" \
+   "$([[ "$(_fb_kinds "$RULES")" == "$(_rd_kinds "$TMP/fb-readme.md")" ]] && echo true || echo false)"
+unset -f _rd_kinds _fb_kinds
 
 echo "-- the rule file's patterns are portable: a PCRE reader following README's algorithm agrees with kbcard --"
 # README.md § The rule file's schema claims the patterns carry no backslash inside a bracket
@@ -7882,6 +7900,11 @@ OPERATOR-DIRECTED: and/or plain words, e.g. a 50/50 split, my-tool.sh foo.bar.md
    padded    with	tabs   and Built: v0.47.0
 Speed up render() and a.b::c() calls, snake_case_word, read-only mode
 Pick x\y from the list
+flag --x-
+--x--
+--flag-
+CLASS: CLASS: x
+SECURITY: CLASS: x
 CORPUS
 printf '%s\n' "$(printf 'a%.0s' {1..81})" "$(printf '\xc3\xa9%.0s' {1..81})" >> "$TMP/ctr-titles.txt"
 _pt="$(perl "$TMP/ctr-reader.pl" titles "$RULES" "$TMP/ctr-titles.txt" 2>&1)"
@@ -7897,6 +7920,16 @@ eq "  control: with a planted x[\\.]y the bracket check flags it" "1" \
    "$(perl "$TMP/ctr-reader.pl" brackets "$(jq -r '.title.rules[] | select(.id == "T3") | .checks[-1].ere' "$TMP/ctr-planted.json")")"
 eq "  control: …and the two readers DISAGREE on it" "false" \
    "$([[ "$(perl "$TMP/ctr-reader.pl" titles "$TMP/ctr-planted.json" "$TMP/ctr-titles.txt" 2>&1)" == "$(_kbc_titles "$TMP/ctr-planted.json" "$TMP/ctr-titles.txt" 2>&1)" ]] && echo true || echo false)"
+# A flag token ending in `-` at the end of the title keeps its `-`: a word boundary that is end of
+# text must not let the shorter token, followed by its own last `-`, win the match.
+_tt() { printf '%s\n' "$1" > "$TMP/ctr-one.txt"; _kbc_titles "$RULES" "$TMP/ctr-one.txt" 2>&1 | sed 1d | tr '\t\n' ' |'; }
+eq "the flag in 'flag --x-' is --x-, and the rewrite keeps no -" "F T3 --x-|R flag|" "$(_tt 'flag --x-')"
+eq "the flag in '--x--' is --x--, and nothing is left" "F T3 --x--|R |" "$(_tt '--x--')"
+eq "the flag in '--flag-' is --flag-, and nothing is left" "F T3 --flag-|R |" "$(_tt '--flag-')"
+eq "  control: mid-title, the same flag was already whole" "F T3 --x-|R a b|" "$(_tt 'a --x- b')"
+eq "a listed WORD: prefix is cut once: CLASS: CLASS: x keeps one" "F T6 CLASS:|R CLASS: x|" "$(_tt 'CLASS: CLASS: x')"
+eq "  …and one a later cut exposes stays: SECURITY: CLASS: x keeps CLASS:" "F T6 SECURITY:|R CLASS: x|" "$(_tt 'SECURITY: CLASS: x')"
+unset -f _tt
 
 mkdir -p "$TMP/ctr-desc"
 _cd() { printf '%s' "$2" > "$TMP/ctr-desc/$1"; }
@@ -7912,11 +7945,29 @@ _cd 09 $'Summary.\nTechnical notes (for agents)\nthe IMPACT: RUNTIME is mid-sent
 _cd 10 $'Summary.\nTechnical notes (for agents)\nIMPACT: RUNTIMES'
 _cd 11 $'Summary.\r\nTechnical notes (for agents)\r\nIMPACT: SECURITY\r\n'
 _cd 12 $'Summary.\nTechnical notes (for agents) extra\nIMPACT: RUNTIME'
+_cd 13 $'Summary.\nTechnical notes (for agents)\n\\IMPACT: RUNTIME'
+_cd 14 $'Summary.\nTechnical notes (for agents)\nIMPACT: RUNTIME\nTechnical notes (for agents)'
+_cd 15 $'\nTechnical notes (for agents)\nIMPACT: RUNTIME\nSummary.\nTechnical notes (for agents)'
+_cd 16 $'\v\f \t\r\nTechnical notes (for agents)\nIMPACT: RUNTIME'
+_cd 17 $'\xc2\xa0\nTechnical notes (for agents)\nIMPACT: RUNTIME'
+_cd 18 $'Summary.\rTechnical notes (for agents)\rIMPACT: RUNTIME'
 _pd="$(perl "$TMP/ctr-reader.pl" descriptions "$RULES" "$TMP"/ctr-desc/* 2>&1)"
 _bd="$(_kbc_descs "$RULES" "$TMP"/ctr-desc/* 2>&1)"
 eq "descriptions: the PCRE reader's filing-bar and D1 verdicts equal kbcard's" "$_bd" "$_pd"
 eq "  control: the corpus reaches every verdict" "above noabove nodiv noimpact noreq ok" \
    "$(printf '%s\n' "$_bd" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
+# README.md § The rule file's schema states how a description is read; each statement has a case
+# above whose verdict would differ were it false.
+eq "the reading rules: a backslash is no lead, the first divider wins, blank is the six ASCII blanks, lines split on LF only" \
+   "13:noimpact 14:ok 15:noabove 16:noabove 17:ok 18:noimpact" \
+   "$(printf '%s\n' "$_bd" | awk 'NR >= 13 {printf "%s%d:%s", (NR > 13 ? " " : ""), NR, $0}')"
+# The planted control: a [\\.] in the line lead means "backslash or dot" to kbcard's POSIX engine and
+# "dot" to PCRE, and case 13's `\IMPACT:` line tells them apart — so this comparison can fail.
+jq '.description.line_lead_ere = "^[[:space:]*_>#\\.-]*"' "$RULES" > "$TMP/ctr-dplanted.json"
+eq "  control: with a planted [\\.] in the line lead the bracket check flags it" "1" \
+   "$(perl "$TMP/ctr-reader.pl" brackets "$(jq -r '.description.line_lead_ere' "$TMP/ctr-dplanted.json")")"
+eq "  control: …and the two readers DISAGREE on the descriptions" "false" \
+   "$([[ "$(perl "$TMP/ctr-reader.pl" descriptions "$TMP/ctr-dplanted.json" "$TMP"/ctr-desc/* 2>&1)" == "$(_kbc_descs "$TMP/ctr-dplanted.json" "$TMP"/ctr-desc/* 2>&1)" ]] && echo true || echo false)"
 unset -f _ere_all _kbc_titles _kbc_descs _cd
 unset _bs_hit _pt _bt _pd _bd
 
