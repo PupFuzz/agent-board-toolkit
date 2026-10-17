@@ -47,7 +47,7 @@
 #
 # ─────────────────────────── THE PREDICATE, STATED ───────────────────────────
 #
-# POPULATION — `find bin hooks -maxdepth 1 -type f ! -name '*.py'` (the `bin`/`hooks` half of
+# POPULATION — `find bin hooks -maxdepth 1 -type f ! -name '*.py' ! -name '*.json'` (the `bin`/`hooks` half of
 # `.github/workflows/ci.yml`'s shellcheck expression) PLUS `tests/*.sh`, re-derived on every
 # invocation. No file list is stored here, so a bin or a selftest added tomorrow is scanned that
 # day.
@@ -143,7 +143,7 @@ _pmg_awk='
 
 # _pmg_files <root> — the population, re-derived from the tree with CI's own expression.
 _pmg_files() {
-    ( cd "$1" && { find bin hooks -maxdepth 1 -type f ! -name '*.py' 2>/dev/null
+    ( cd "$1" && { find bin hooks -maxdepth 1 -type f ! -name '*.py' ! -name '*.json' 2>/dev/null
                    find tests -maxdepth 1 -type f -name '*.sh' 2>/dev/null; } | LC_ALL=C sort )
 }
 
