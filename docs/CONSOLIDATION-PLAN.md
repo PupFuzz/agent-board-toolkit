@@ -812,7 +812,7 @@ finding with no owner is abandoned, not filed.
   exclusion is not a fudge: the lib itself holds that literal on purpose, as the needle
   `_ci_shellcheck_drift` compares against `ci.yml`, so the owner always prints.
   `.github/workflows/ci.yml` names the population once
-  (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus `find tests -maxdepth 1 -type f -name
+  (`find bin hooks -maxdepth 1 -type f ! -name '*.py' ! -name '*.json'` plus `find tests -maxdepth 1 -type f -name
   '*.sh'`), and by the time this was noticed the expression had been re-typed into
   `read-outcome-collapse-selftest.sh` (card#7210), `piped-match-gate-selftest.sh` (card#7175) and
   `verdict-through-truncating-reader-selftest.sh` (card#6911) — the third caller, one past canon
@@ -2014,7 +2014,7 @@ finding with no owner is abandoned, not filed.
   while **two copies survived the audit** — this document's own § Corrections carried forward had
   already ruled that *a copy that survives an audit of its own class is the argument FOR the gate
   that audit declined*, and Stage B's card#5740 section had ruled it once before that. It derives
-  its population from the tree every run (`find bin hooks -maxdepth 1 -type f ! -name '*.py'` plus
+  its population from the tree every run (`find bin hooks -maxdepth 1 -type f ! -name '*.py' ! -name '*.json'` plus
   `tests/*.sh` — **ALL of `tests/` is IN**, where `read-outcome-collapse-selftest.sh` takes only
   `tests/*-check.sh`, because this class minted its red inside the
   harness), keys members on `<file>` carrying an **occurrence count** so

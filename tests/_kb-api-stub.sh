@@ -107,10 +107,13 @@ kb_stub_board_config() {
     # test something else (a stage echo, a payload key, a swimlane) are not about that. A leg that
     # IS about the bar sets KB_STUB_MINT_BAR — empty for a board env that declares no KB_MINT_BAR
     # (the product default, ON), any other value to write that value verbatim.
-    local mint_bar="${KB_STUB_MINT_BAR-off}"
+    # KB_TITLE_BAR (the plain-language title rules) defaults to `off` here for the same reason, and
+    # KB_STUB_TITLE_BAR is its switch, on the same terms.
+    local mint_bar="${KB_STUB_MINT_BAR-off}" title_bar="${KB_STUB_TITLE_BAR-off}"
     {
         printf 'export KB_BOARD_ID=%s\n' "$board_id"
         [[ -z "$mint_bar" ]] || printf 'export KB_MINT_BAR=%s\n' "$mint_bar"
+        [[ -z "$title_bar" ]] || printf 'export KB_TITLE_BAR=%s\n' "$title_bar"
         [[ $# -gt 0 ]] && printf '%s\n' "$@"
     } > "$HOME/.kanban-${name}-board.env"
     printf 'stub-token\n' > "$KB_STUB_TOKEN_FILE"

@@ -6,6 +6,20 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **card#11986** — **`kbcard` checks that card text is written in plain language, from one declared rule file, `bin/_card-text-rules.json`.** The file holds the title rules T1–T6, the description layout D1 with the filing bar's `IMPACT:` vocabulary, and the tag prefixes kept out of the tag list, as data: limits, closed lists, patterns and rule ids. `kbcard` reads it and restates none of it, and the bridge's board tools are to read the same file (the bridge's own card). `README.md` § Plain-language card text owns the rules, the schema note and the matching algorithm. New surface: `kbcard title-check --name|--name-file` and `kbcard description-check --description|--description-file` run the same checks as a dry run with no request and no token; `--component a,b` / `--risk x` on `create-card` and `patch` write the payload keys `component` / `risk`, each value checked against the option set the board defines (one `field list` read); and the board-env key `KB_TITLE_BAR=off` opts a board out of T1–T6 (for boards that mirror external titles). `KB_TITLE_BAR` is a board key, cleared by `kb_board_keys_unset` like `KB_MINT_BAR`. Requested for the framework, and approved by the kanban operator on 2026-10-17 with the checks on by default.
+  - **[vendor]** `bin/kbcard`, `bin/_kb-board-lib.sh` and the new `bin/_card-text-rules.json` change together; vendor the rule file beside `kbcard`. Without it, every check that needs the rules is `rc 2` with nothing sent. Beside an older lib, a `KB_TITLE_BAR` exported in the calling shell is not cleared and can switch the title rules off.
+  - CI's shellcheck population (`.github/workflows/ci.yml`, mirrored in `tests/_shipped-shell-lib.sh` and `tests/piped-match-gate-selftest.sh`) now excludes `bin/*.json`, since the rule file is data, not shell.
+
+### Changed
+
+- ⚠ **Acceptance narrowing (a minor at minimum, per [`../VERSIONING.md`](../VERSIONING.md) § Bump sizing): `kbcard` refuses card text that breaks the plain-language rules (card#11986).** Each of these used to be written at `rc 0` and is now `rc 2` before any request, unless noted:
+  - **[host]** `create-card --name` and `patch --name` (and their `--name-file` twins) refuse a title over the length limit (80 characters at this release), or one carrying a file path, a code identifier, a card / PR / DL number, a leading `[…]`, a listed `WORD:` prefix (`Security:` is allowed) or process jargon. The refusal names each rule and token and suggests a rewrite. **Opt-out:** `export KB_TITLE_BAR=off` in the board env.
+  - **[host]** the filing bar now includes D1: a `create-card` description needs a plain-language summary, then a `Technical notes (for agents)` line, with the `IMPACT:` line below it. **`patch --description` / `--description-file` is now held to the whole filing bar, D1 included**; before, it was not checked at all. **Opt-out:** `KB_MINT_BAR=off`, which already switched the bar off.
+  - **[host]** `--tags` (on `create-card` and `patch`) and `patch --add-tags` refuse the data tags `owner:`, `related:`, `created-by:`, `idem:` and `design:`, and `type:` on a board whose env maps a native card type. There is no opt-out; `--remove-tags` is unaffected.
+  - A `patch` that writes none of these values (`patch --column` on an old card, for one) is not checked, so old card text never blocks a move. No `create-card` caller in this repo's `bin/` is affected.
+
 ## [0.47.1] - 2026-10-12
 
 **Patch — the refusal selftests drive the kanban server's terminal-stage refusal body as captured live (card#11790).** The only PR in `v0.47.0..v0.47.1` that carries a change is #468, enumerated below and in the release PR's generated `## Bundled` table. Per `VERSIONING.md` § Bump sizing this is a **patch**: tests and one comment in `bin/_kb-board-lib.sh` change; no tool's behaviour changes, there is no new surface, and no narrowings this release. Upgrade actions: `docs/UPGRADE.md` §6 v0.47.1 (none).
