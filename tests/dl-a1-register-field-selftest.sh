@@ -77,8 +77,38 @@ kb_stub_route() {
             # pre-existing dl_number definition is the string-typed one this toolkit writes.
             # KB_STUB_FIELDS_HTTP fails the read; KB_STUB_FIELD_TYPE selects the declared type,
             # and the literal `none` stands for an index carrying no dl_number at all.
+            #
+            # ⛔ KB_STUB_FIELDS_SHAPE answers this read with a body that is NOT a field index, at
+            # a 2xx — the state `none` above must not be confused with, and was (card#11984):
+            # `kb_parse_resp` yields the same empty type for both, so the tool's `""` arm
+            # reported "the board's custom-field index carries NO dl_number definition", a
+            # positive claim about a board it never read. The shapes are enumerated rather than
+            # represented by one, for the reason the by-ref route below gives: they do not share
+            # a path. `readable2` is the one READABLE shape here — the control the others are
+            # measured against (a dl_number row that is not the first row).
             http="${KB_STUB_FIELDS_HTTP:-200}"
-            if [[ "$http" != 2* ]]; then
+            if [[ -n "${KB_STUB_FIELDS_SHAPE:-}" ]]; then
+                case "$KB_STUB_FIELDS_SHAPE" in
+                    html)    printf '%s\n%s' "$http" '<html><body>502 Bad Gateway</body></html>' ;;
+                    trunc)   printf '%s\n%s' "$http" '{"data":[{"id":9,"key":"dl_num' ;;
+                    jsonerr) printf '%s\n%s' "$http" '{"message":"your session has expired"}' ;;
+                    nobody)  printf '%s\n%s' "$http" '' ;;
+                    # Valid JSON whose `.data` is not a row ARRAY — the shape a `.data[]?`
+                    # projection silently yields nothing over, with no jq fault at all.
+                    dataobj) printf '%s\n%s' "$http" '{"data":{"key":"dl_number","type":"string"}}' ;;
+                    # A complete index FOLLOWED by more bytes: jq streams, so a tolerant parse
+                    # answers the first text's rows before faulting on the rest.
+                    trailing) printf '%s\n%s' "$http" '{"data":[{"id":9,"key":"dl_number","type":"string"}]}<html>502</html>' ;;
+                    # A row that is not an object: `.key` faults on it, and a tolerant parse
+                    # turns the fault into the empty "no dl_number" answer.
+                    badrow)  printf '%s\n%s' "$http" '{"data":["x",{"id":9,"key":"dl_number","type":"string"}]}' ;;
+                    # A gateway page ECHOING the request's bearer — $BEARER is the stub's parse of
+                    # the `-H @-` header (card#9777) — so the printed body must mask it.
+                    echo)    printf '%s\n%s' "$http" "<html><pre>Authorization: Bearer $BEARER</pre></html>" ;;
+                    readable2) printf '%s\n%s' "$http" '{"data":[{"id":8,"key":"pr_number","type":"number"},{"id":9,"key":"dl_number","type":"string"}]}' ;;
+                    *)       printf '%s\n%s' 599 '{"message":"unknown KB_STUB_FIELDS_SHAPE token"}' ;;
+                esac
+            elif [[ "$http" != 2* ]]; then
                 printf '%s\n%s' "$http" '{"message":"nope"}'
             elif [[ "${KB_STUB_FIELD_TYPE:-string}" == none ]]; then
                 printf '%s\n%s' "$http" '{"data":[{"id":8,"key":"pr_number","type":"number"}]}'
@@ -303,6 +333,60 @@ eq "…the body was echoed, the token masked" "true" \
    "$(has 'The response body was: {"message":"the dl_number field already exists","authorization":"Bearer ***"}' "$err")"
 eq "…and the token is NOT on stderr" "false" "$(has 'stub-token' "$err")"
 
+# ⛔ AN INDEX THAT ANSWERED 2xx WITH SOMETHING THAT IS NOT A FIELD INDEX IS THE SAME CLASS OF
+# DEFECT AS THE BY-REF READS BELOW, ONE STEP EARLIER AND ON A DIFFERENT ENDPOINT (card#11984).
+# `kb_parse_resp` hands back an empty type for an undecodable body and for a readable index with
+# no dl_number ALIKE, and the `""` arm turned the first into the second's positive
+# claim — "the board's custom-field index carries NO dl_number definition — so the refusal was
+# not 'already registered'" — while printing the REGISTRATION body, which says the field DOES
+# exist. Measured against the shipped bin before the fix: byte-identical stderr to the `none`
+# row above, at the same rc, i.e. a wrong-but-specific cause that sends the operator to
+# re-register a field that is already there.
+#
+# The DISCRIMINATING PAIR is what makes each row a measurement: the `none` row above is the
+# readable answer to the same question and must keep its own wording, so a fix that simply
+# reworded both would red there.
+for shape in html trunc jsonerr nobody dataobj trailing badrow echo; do
+    KB_STUB_REGISTER_HTTP=409 KB_STUB_FIELDS_SHAPE=$shape run_a1
+    eq "[$shape] an index answering 2xx with a non-index body → rc 1" "1" "$rc"
+    eq "[$shape] …the refusal says NOTHING was read, not that the board defines no dl_number" "true" \
+       "$(has 'could not read as a field set' "$err")"
+    eq "[$shape] …and never makes the absent-definition claim" "false" \
+       "$(has 'carries NO dl_number definition' "$err")"
+    eq "[$shape] …it says the existing declaration's type is UNKNOWN" "true" \
+       "$(has "the EXISTING declaration's type is unknown" "$err")"
+    # THE BODY IT PRINTS IS THE READ THAT PRODUCED NOTHING — the index — not the POST that was
+    # refused. The old arm printed $reg_body, so the evidence beside the claim contradicted it.
+    eq "[$shape] …and prints the INDEX read's body as the evidence" "true" \
+       "$(has "The index read's body, first 300 bytes:" "$err")"
+    eq "[$shape] …never the registration POST's body" "false" \
+       "$(has 'the dl_number field already exists' "$err")"
+    eq "[$shape] …no throwaway is created over a board this run could not read" "0" \
+       "$(kb_stub_count "${CREATE[@]}")"
+    eq "[$shape] …witness: the registration AND the index read both happened" "2" \
+       "$(( $(kb_stub_count "${REGISTER[@]}") + $(kb_stub_count GET /custom_fields.json) ))"
+done
+# The body the refusal prints went out under the board's token, so an echoed bearer is masked.
+# Positive controls: the index GET really carried the token, and the echoed line was printed.
+KB_STUB_REGISTER_HTTP=409 KB_STUB_FIELDS_SHAPE=echo run_a1
+eq "[echo] control: the index GET carried the token the body echoes" "stub-token" \
+   "$(kb_stub_bearers GET /custom_fields.json)"
+eq "[echo] …the index body was printed with the bearer masked" "true" \
+   "$(has 'Authorization: Bearer ***' "$err")"
+eq "[echo] …and the token is NOT on stderr" "false" "$(has 'stub-token' "$err")"
+# The control for every row above: a READABLE index whose dl_number is not its first row still
+# reads as the string-typed definition — the refusal is for an unreadable index, not a reworded
+# arm that refuses every index.
+KB_STUB_REGISTER_HTTP=409 KB_STUB_FIELDS_SHAPE=readable2 run_a1
+eq "[readable2] a readable index with dl_number among other rows → rc 0" "0" "$rc"
+eq "[readable2] …reported as already-registered, STRING-typed" "true" \
+   "$(has 'dl_number already registered, STRING-typed (HTTP 409) — idempotent OK' "$out")"
+eq "[readable2] …and no unreadable-index refusal" "false" "$(has 'could not read as a field set' "$err")"
+# The 422 spelling of the same arm — the two statuses are separate literals in the bin.
+KB_STUB_REGISTER_HTTP=422 KB_STUB_FIELDS_SHAPE=html run_a1
+eq "a 422 over an unreadable index → rc 1, same refusal" "1" "$rc"
+eq "…naming the status it was refused with" "true" "$(has 'HTTP 422' "$err")"
+
 echo "== a registration failure that is NOT 409/422 is fatal, and creates nothing =="
 KB_STUB_REGISTER_HTTP=500 run_a1
 eq "500 on register → rc 1"               "1" "$rc"
@@ -368,6 +452,15 @@ for shape in html trunc jsonerr nobody trailing http500; do
     eq "[$shape] …and never claims the route is verified" "false" \
        "$(has 'OK (field registered' "$out")"
     eq "[$shape] …the throwaway is still cleared and deleted" "2" "$(kb_stub_count "${TEARDOWN[@]}")"
+    # ⭐ AND THE TWO READS THAT DID COMPLETE STILL PRINT THEIR OWN LINES — asserted as a PRESENCE,
+    # because README.md's row for this tool says the suppression is PER-READ and that the run's
+    # verdict is the rc, never a stdout line. Every position-1 row above asserts only the ABSENCE
+    # of `OK (field registered`, so nothing held that claim to the behaviour; these rows red the
+    # day either moves (a wrapper grepping stdout for `zero residue` reads one read's answer).
+    eq "[$shape] …⭐ the after-clear read DID complete, so its own line still prints" "true" \
+       "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT empty" "$out")"
+    eq "[$shape] …⭐ and so does the acceptance read's — a run at rc 3 carries 'zero residue'" "true" \
+       "$(has 'zero residue' "$out")"
 
     # Position 2 — after the clear. THE FAIL-OPEN: `empty` is the pass condition.
     KB_STUB_BYREF="hit $shape miss" run_a1
@@ -380,6 +473,10 @@ for shape in html trunc jsonerr nobody trailing http500; do
        "$(has 'UNMEASURED — the by-ref read(s) after-clear' "$err")"
     eq "[$shape] …and the still_present column says UNMEASURED, not 0" "true" \
        "$(has 'still_present=UNMEASURED' "$err")"
+    # The same per-read property from the other side: the acceptance read completed here, so its
+    # positive claim still prints on a run that exits 3.
+    eq "[$shape] …⭐ the acceptance read DID complete, so 'zero residue' still prints" "true" \
+       "$(has 'zero residue' "$out")"
 
     # Position 3 — the acceptance. THE OTHER FAIL-OPEN: `zero residue` is a POSITIVE claim about
     # the board, and it may only be made from a read that succeeded.
@@ -408,6 +505,21 @@ eq "control: readable answers at all three positions → rc 0" "0" "$rc"
 eq "control: …the after-clear line reads empty"  "true" \
    "$(has "after clear: by-ref ref=$SENTINEL_DEFAULT empty" "$out")"
 eq "control: …the acceptance claims zero residue" "true" "$(has 'zero residue' "$out")"
+
+# ⛔ THE REMEDY ON THE ACCEPTANCE LINE MUST NAME A READ THAT ANSWERS THE QUESTION IT IS ABOUT.
+# It printed `kbcard show --task <id>`, which is wrong on both legs: `cmd_show` issues
+# `GET /tasks/<id>.json` with NO `?trashed=1`, so after the successful soft-delete this line sits
+# beneath it 404s — and the card it would have shown is not the by-ref INDEX the line is about.
+# There is no kbcard spelling for a `system=dl` by-ref read, so the honest remedy is the raw GET.
+KB_STUB_BYREF="hit miss html" run_a1
+eq "the acceptance remedy names the by-ref INDEX read, with system and ref" "true" \
+   "$(has "/boards/42/tasks/by-ref.json?system=dl&ref=$SENTINEL_DEFAULT" "$err")"
+eq "…and no longer sends the operator to a card read that 404s after the delete" "false" \
+   "$(has "kbcard show --task" "$err")"
+# The api base rides that remedy, so it goes through the lib's userinfo redactor — an api base
+# may legitimately carry credentials (card#7500) and this line is printed to stderr and to logs.
+eq "…and the api base it prints is the stub's, unredacted only because it carries no userinfo" "true" \
+   "$(has "GET $KB_STUB_API/boards/42/" "$err")"
 
 # ⛔ THE PRODUCER IS NAMED, not folded into one "could not read" sentence, because the three lead
 # an operator to three different next actions — and this tool is the only surface that can say
