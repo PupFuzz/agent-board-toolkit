@@ -7735,6 +7735,191 @@ done < <(jq -r '(.title.rules[].checks[] | select(.kind == "prefix") | .values[]
 eq "README § Plain-language card text names every closed-list value the rule file holds" "" "$_rd_miss"
 eq "  control: that section was found at all" "true" "$(has 'Technical notes (for agents)' "$_rd_sec")"
 
+echo "-- the rule file's patterns are portable: a PCRE reader following README's algorithm agrees with kbcard --"
+# README.md § The rule file's schema claims the patterns carry no backslash inside a bracket
+# expression, never contain the delimiter `@`, and mean the same to a PCRE reader. Each claim is
+# checked here over EVERY pattern the file holds (every string under a key `ere` or `*_ere`, so a
+# pattern added under a new key is covered), and each check has a planted control that fails it.
+_need -x "$(command -v perl || echo /no-perl-on-PATH)" perl
+_ere_all() { jq -r '[paths(type == "string") as $p | select($p[-1] | tostring | test("^ere$|_ere$")) | getpath($p)] | .[]' "$1"; }
+cat > "$TMP/ctr-reader.pl" <<'PERL'
+use strict; use warnings; use JSON::PP; use Encode ();
+# A second reader of bin/_card-text-rules.json, written from README.md § The rule file's schema.
+# Modes: brackets <pattern> | titles <rules> <corpus> | descriptions <rules> <file>...
+my $mode = shift @ARGV;
+sub bracket_backslash {    # 1 when a `\` sits inside a bracket expression, else 0
+    my ($p) = @_; my ($i, $n) = (0, length $p);
+    while ($i < $n) {
+        my $c = substr($p, $i, 1);
+        if ($c eq '\\') { $i += 2; next }
+        if ($c ne '[') { $i++; next }
+        $i++; $i++ if substr($p, $i, 1) eq '^';
+        my $first = $i;
+        while ($i < $n) {
+            my $d = substr($p, $i, 1);
+            last if $d eq ']' && $i > $first;
+            if ($d eq '[' && substr($p, $i + 1, 1) =~ /[:.=]/) {
+                my $e = index($p, substr($p, $i + 1, 1) . ']', $i + 2);
+                return 1 if $e < 0; $i = $e + 2; next;
+            }
+            return 1 if $d eq '\\';
+            $i++;
+        }
+        $i++;
+    }
+    return 0;
+}
+if ($mode eq 'brackets') { print bracket_backslash($ARGV[0]), "\n"; exit 0 }
+my $R = do { local $/; open my $fh, '<', shift @ARGV or die "rules: $!"; decode_json(<$fh>) };
+sub rx { my ($re, $ic) = @_; return $ic ? qr/(?aai:$re)/ : qr/(?aa:$re)/ }
+sub norm { my ($w) = @_; $w =~ s/[ \t\r\n\x0b\f]+/ /g; $w =~ s/^ //; $w =~ s/ $//; return $w }
+sub leftmost {
+    my ($t, $re, $b, $ic) = @_; my $q = rx($re, $ic);
+    if ($b eq 'word')  { return $t =~ /(?<![A-Za-z0-9_])($q)(?![A-Za-z0-9_])/ ? ($-[1], $1) : () }
+    if ($b eq 'start') { return $t =~ /^($q)/ ? (0, $1) : () }
+    return $t =~ /($q)/ ? ($-[1], $1) : ();
+}
+if ($mode eq 'titles') {
+    open my $c, '<', shift @ARGV or die "corpus: $!";
+    while (my $title = <$c>) {
+        chomp $title; print "=== $title\n";
+        (my $trim = $title) =~ s/^[ \t\r\n\x0b\f]+|[ \t\r\n\x0b\f]+$//g;
+        my $w = norm($title);
+        for my $rule (@{ $R->{title}{rules} }) {
+            for my $ck (@{ $rule->{checks} }) {
+                if ($ck->{kind} eq 'max_length') {
+                    my $len = length Encode::decode('UTF-8', $trim);
+                    print "L\t$rule->{id}\t$len\t$ck->{limit}\n" if $len > $ck->{limit};
+                } elsif ($ck->{kind} eq 'prefix') {
+                    for my $v (@{ $ck->{values} }) {
+                        next unless index($w, $v) == 0;
+                        print "F\t$rule->{id}\t$v\n"; $w = norm(' ' . substr($w, length $v));
+                    }
+                } else {
+                    while (my ($at, $tok) = leftmost($w, $ck->{ere}, $ck->{boundary}, $ck->{ignore_case})) {
+                        die "empty match\n" if $tok eq '';
+                        print "F\t$rule->{id}\t$tok\n";
+                        $w = norm(substr($w, 0, $at) . ' ' . substr($w, $at + length $tok));
+                    }
+                }
+            }
+        }
+        print "R\t$w\n";
+    }
+    exit 0;
+}
+if ($mode eq 'descriptions') {
+    my $D = $R->{description}; my $fb = $D->{filing_bar};
+    my ($div) = map { $_->{divider} } grep { $_->{id} eq 'D1' } @{ $D->{rules} };
+    my $lab = sub { (my $l = $_[0]) =~ s/ /$fb->{label_space_ere}/g; $D->{line_lead_ere} . $l . $fb->{label_sep_ere} };
+    for my $f (@ARGV) {
+        my $text = do { local $/; open my $fh, '<', $f or die; <$fh> };
+        my @lines = split /\n/, $text, -1;
+        my ($kind, $kind_at, $div_at, $above, $req) = ('', -1, -1, 0, '');
+        for my $n (0 .. $#lines) {
+            my $up = uc $lines[$n];
+            if ($kind eq '') {
+                for my $k (@{ $fb->{kinds} }) {
+                    next unless $up =~ rx($lab->($fb->{label}) . $k->{kind} . $fb->{kind_end_ere});
+                    ($kind, $kind_at, $req) = ($k->{kind}, $n, $k->{requires_line} // ''); last;
+                }
+            }
+            next if $div_at >= 0;
+            (my $rest = $up) =~ s/${\ rx($D->{line_lead_ere})}//;
+            $rest =~ s/${\ rx($D->{line_trail_ere})}//;
+            if ($rest eq uc $div) { $div_at = $n } elsif ($lines[$n] !~ /^[ \t\r\n\x0b\f]*$/) { $above = 1 }
+        }
+        my $have = $req eq '' ? 1 : scalar grep { uc($_) =~ rx($lab->($req) . $fb->{value_ere}) } @lines;
+        my $v = $kind eq '' ? 'noimpact' : !$have ? 'noreq' : $div_at < 0 ? 'nodiv'
+              : !$above ? 'noabove' : $kind_at < $div_at ? 'above' : 'ok';
+        print "$v\n";
+    }
+    exit 0;
+}
+die "mode?\n";
+PERL
+# kbcard's own answer over the same inputs, from the kbcard under test, against <rules>.
+_kbc_titles() {   # <rules> <corpus>
+    bash -c 'source "$1" >/dev/null 2>&1; KBC_TEXT_RULES="$2"; _KBC_RULES=""; _kbc_rules || exit 2
+             while IFS= read -r t; do printf "=== %s\n" "$t"; _kbc_title_findings "$t"; done < "$3"' _ "$BIN" "$1" "$2"
+}
+_kbc_descs() {    # <rules> <file>...
+    bash -c 'source "$1" >/dev/null 2>&1; KBC_TEXT_RULES="$2"; _KBC_RULES=""; shift 2
+             for f in "$@"; do
+                 d="$(cat "$f"; printf x)"; d="${d%x}"; rc=0
+                 err="$(KB_MINT_BAR=on _kbc_mint_bar "$d" probe 2>&1)" || rc=$?
+                 case "$rc:$err" in
+                     0:*) echo ok ;; *"states no"*) echo noimpact ;; *"no non-empty"*) echo noreq ;;
+                     *"has no '"'"'"*) echo nodiv ;; *"no plain-language text above"*) echo noabove ;;
+                     *"sits above"*) echo above ;; *) echo "other:$rc" ;;
+                 esac
+             done' _ "$BIN" "$@"
+}
+
+_bs_hit=""
+while IFS= read -r _re; do
+    [[ "$(perl "$TMP/ctr-reader.pl" brackets "$_re")" == 0 ]] || _bs_hit+="$_re "
+done < <(_ere_all "$RULES")
+eq "no pattern in the rule file has a backslash inside a bracket expression" "" "$_bs_hit"
+eq "  control: the bracket check flags a planted [\\.]" "1" "$(perl "$TMP/ctr-reader.pl" brackets '[\.]')"
+eq "  control: …and not \\[[^]]*\\] or [[:space:]*_]" "0|0" \
+   "$(perl "$TMP/ctr-reader.pl" brackets '\[[^]]*\]')|$(perl "$TMP/ctr-reader.pl" brackets '[[:space:]*_]')"
+eq "the patterns were found at all (title and filing-bar keys alike)" "true|true" \
+   "$(has 'rc[[:space:]]+[0-9]+' "$(_ere_all "$RULES")")|$(has '[^[:space:]*_]' "$(_ere_all "$RULES")")"
+eq "no pattern contains @, the delimiter README names for a PCRE reader" "" "$(_ere_all "$RULES" | command grep -F '@' || true)"
+eq "the filing-bar labels and kinds are plain literal text (A-Z, 0-9, -, and spaces in a label)" "" \
+   "$(jq -r '.description.filing_bar | (.label, .kinds[].requires_line // empty | select(test("^[A-Z0-9 -]+$") | not)),
+             (.kinds[].kind | select(test("^[A-Z0-9-]+$") | not))' "$RULES")"
+
+cat > "$TMP/ctr-titles.txt" <<'CORPUS'
+Card titles follow a plain-language format
+Fix docs/SPRINT.md parsing and README.md.
+Explain `foo` and `bar baz` usage
+Follow up card#11140 and fw#12, PR 12, pr#5, DL-0288, #123 and the #1 priority
+[fw] CLASS: kb_board_keys_unset() with $KB_MINT_BAR and ${HOME} and --name in ~/x and /home/kanban/y
+SECURITY: Security: a selftest, selftests, seen-to-fail, canon #5, rc 2 and RC 2 and RC1
+OPERATOR-DIRECTED: and/or plain words, e.g. a 50/50 split, my-tool.sh foo.bar.md
+   padded    with	tabs   and Built: v0.47.0
+Speed up render() and a.b::c() calls, snake_case_word, read-only mode
+Pick x\y from the list
+CORPUS
+printf '%s\n' "$(printf 'a%.0s' {1..81})" "$(printf '\xc3\xa9%.0s' {1..81})" >> "$TMP/ctr-titles.txt"
+_pt="$(perl "$TMP/ctr-reader.pl" titles "$RULES" "$TMP/ctr-titles.txt" 2>&1)"
+_bt="$(_kbc_titles "$RULES" "$TMP/ctr-titles.txt" 2>&1)"
+eq "titles: the PCRE reader's findings and rewrites equal kbcard's, title by title" "$_bt" "$_pt"
+eq "  control: the corpus exercises every title rule" "T1 T2 T3 T4 T5 T6" \
+   "$(printf '%s\n' "$_bt" | awk -F'\t' '$1 == "F" || $1 == "L" {print $2}' | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
+# The planted control: a [\.] pattern means "backslash or dot" to kbcard's POSIX engine and "dot"
+# to PCRE, and the corpus line `x\y` tells them apart — so this comparison can fail.
+jq '(.title.rules[] | select(.id == "T3") | .checks) += [{"kind": "ere", "boundary": "none", "ignore_case": false, "what": "planted", "ere": "x[\\.]y"}]' \
+   "$RULES" > "$TMP/ctr-planted.json"
+eq "  control: with a planted x[\\.]y the bracket check flags it" "1" \
+   "$(perl "$TMP/ctr-reader.pl" brackets "$(jq -r '.title.rules[] | select(.id == "T3") | .checks[-1].ere' "$TMP/ctr-planted.json")")"
+eq "  control: …and the two readers DISAGREE on it" "false" \
+   "$([[ "$(perl "$TMP/ctr-reader.pl" titles "$TMP/ctr-planted.json" "$TMP/ctr-titles.txt" 2>&1)" == "$(_kbc_titles "$TMP/ctr-planted.json" "$TMP/ctr-titles.txt" 2>&1)" ]] && echo true || echo false)"
+
+mkdir -p "$TMP/ctr-desc"
+_cd() { printf '%s' "$2" > "$TMP/ctr-desc/$1"; }
+_cd 01 $'Summary.\n\nTechnical notes (for agents)\nIMPACT: RUNTIME\n'
+_cd 02 $'Summary.\n## **Technical notes (for agents):** ##\n> - **impact:** security'
+_cd 03 $'Summary.\nTechnical notes (for agents)\nIMPACT: REQUESTED\nREQUESTED  BY: operator, 2026-10-17'
+_cd 04 $'Summary.\nTechnical notes (for agents)\n**IMPACT:** REQUESTED\n**REQUESTED BY:**   '
+_cd 05 $'Summary.\nTechnical notes (for agents)\nIMPACT: BELOW-BAR\nBELOW-BAR REASON: a peer asked'
+_cd 06 $'Summary.\nIMPACT: RUNTIME\nTechnical notes (for agents)\nx'
+_cd 07 $'\n  \nTechnical notes (for agents)\nIMPACT: RUNTIME'
+_cd 08 $'what broke\nIMPACT: RUNTIME'
+_cd 09 $'Summary.\nTechnical notes (for agents)\nthe IMPACT: RUNTIME is mid-sentence'
+_cd 10 $'Summary.\nTechnical notes (for agents)\nIMPACT: RUNTIMES'
+_cd 11 $'Summary.\r\nTechnical notes (for agents)\r\nIMPACT: SECURITY\r\n'
+_cd 12 $'Summary.\nTechnical notes (for agents) extra\nIMPACT: RUNTIME'
+_pd="$(perl "$TMP/ctr-reader.pl" descriptions "$RULES" "$TMP"/ctr-desc/* 2>&1)"
+_bd="$(_kbc_descs "$RULES" "$TMP"/ctr-desc/* 2>&1)"
+eq "descriptions: the PCRE reader's filing-bar and D1 verdicts equal kbcard's" "$_bd" "$_pd"
+eq "  control: the corpus reaches every verdict" "above noabove nodiv noimpact noreq ok" \
+   "$(printf '%s\n' "$_bd" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
+unset -f _ere_all _kbc_titles _kbc_descs _cd
+unset _bs_hit _pt _bt _pd _bd
+
 rm -rf "$TMP"
 _mktmp_scratch --home
 kb_stub_scrub_env
@@ -7822,6 +8007,7 @@ pt "  control: Security: is the one allowed prefix" 0 "${PC[@]}" --name 'Securit
 pt "selftest jargon is refused" 2 "${PC[@]}" --name 'Add a selftest for search'
 pt "rc 2 jargon is refused" 2 "${PC[@]}" --name 'Exit with rc 2 on a bad flag'
 pt "  control: a release candidate (RC1) is not rc N" 0 "${PC[@]}" --name 'Ship the RC1 build'
+pt "  control: rc N is case-sensitive, so RC 2 passes" 0 "${PC[@]}" --name 'Ship RC 2 to testers'
 
 echo "-- several rules at once: one refusal names them all --"
 pt "a title breaking T2, T3 and T4" 2 "${PC[@]}" --name 'Fix `x` in docs/a.md for card#5'
@@ -7856,6 +8042,7 @@ pt "a divider with nothing above it is refused" 2 "${DB[@]}" --description $'\n 
 eq "  …saying there is no plain-language text above it" "true" "$(has 'no plain-language text above' "$err")"
 pt "  control: summary, divider, IMPACT below is written" 0 "${DB[@]}" --description $'what broke\n\nTechnical notes (for agents)\nIMPACT: RUNTIME'
 pt "  control: a decorated divider (## …:) counts" 0 "${DB[@]}" --description $'what broke\n\n## **Technical notes (for agents):**\nIMPACT: RUNTIME'
+pt "  control: a divider with a closing ## counts" 0 "${DB[@]}" --description $'what broke\n\n## Technical notes (for agents) ##\nIMPACT: RUNTIME'
 pt "patch --description is held to D1 too" 2 --board dbar patch --task 606 --description $'what broke\nIMPACT: RUNTIME'
 eq "  …in the patch verb's own words" "true" "$(has 'kbcard: patch: the description has no' "$err")"
 pt "  control: patch --description with the layout is written" 0 --board dbar patch --task 606 --description $'what broke\n\nTechnical notes (for agents)\nIMPACT: RUNTIME'

@@ -1590,7 +1590,7 @@ _kbc_bar_state() {
 # filing bar, which owns the rule) and D1 (README.md § Plain-language card text). rc 0 when the
 # board env opts out (KB_MINT_BAR=off) or the RESOLVED description carries an `IMPACT: <kind>` line,
 # the line its kind requires, and the D1 layout; rc 2 with the refusal otherwise. The vocabulary,
-# the line-lead pattern and the divider are read from the rule file. It checks that the claim is
+# every pattern and the divider are read from the rule file. It checks that the claim is
 # STATED on the card, never that it is true. Lines are matched one at a time because a bash ERE has
 # no multi-line anchor; the case fold and the matches run under LC_ALL=C, so `[[:space:]]` is ASCII.
 _kbc_mint_bar() {
@@ -1599,26 +1599,34 @@ _kbc_mint_bar() {
     _kbc_rules || return 2
     # C locale for the case fold as well as the match: `${line^^}` is locale-aware, and under a
     # Turkish locale `impact` folds to `İMPACT`, which no ASCII label matches.
-    local LC_ALL=C lead trail label div kinds="" alt="" k req rtext
+    local LC_ALL=C lead trail label div lspace lsep kend val kinds="" alt="" k req rtext
     local -A need_line=() need_text=()
     {
         IFS= read -r lead; IFS= read -r trail; IFS= read -r label; IFS= read -r div
+        IFS= read -r lspace; IFS= read -r lsep; IFS= read -r kend; IFS= read -r val
         while IFS=$'\x1f' read -r k req rtext; do
-            kinds="${kinds:+$kinds | }$k"; alt="${alt:+$alt|}$k"
+            kinds="${kinds:+$kinds | }$k"; alt="${alt:+$alt }$k"
             need_line[$k]="$req"; need_text[$k]="$rtext"
         done
     } < <(jq -r '.description | .line_lead_ere, .line_trail_ere, .filing_bar.label,
                   (.rules[] | select(.id == "D1") | .divider),
+                  (.filing_bar | .label_space_ere, .label_sep_ere, .kind_end_ere, .value_ere),
                   (.filing_bar.kinds[] | [.kind, (.requires_line // ""), (.requires_text // "")] | join("\u001f"))' <<<"$_KBC_RULES")
-    local val='[*_]*:[[:space:]*_]*[^[:space:]*_]'
+    # README.md § The rule file's schema owns how these compose; kbcard-selftest holds a second
+    # reader of that section equal to this one.
+    local label_re="${lead}${label// /$lspace}${lsep}"
     local line up kind="" kind_at=-1 div_at=-1 text_above="" n=0 have_req="" rest
     local req_re=""
     while IFS= read -r line || [[ -n "$line" ]]; do
         up="${line^^}"
-        if [[ -z "$kind" ]] && kb_ere_match "$up" "${lead}${label}[*_]*:[[:space:]*_]*($alt)([^A-Z0-9_]|\$)"; then
-            kind="${BASH_REMATCH[1]}"; kind_at=$n
-            req="${need_line[$kind]}"
-            [[ -z "$req" ]] || req_re="${lead}${req// /[[:space:]]+}${val}"
+        if [[ -z "$kind" ]]; then
+            for k in $alt; do
+                kb_ere_match "$up" "${label_re}${k}${kend}" || continue
+                kind="$k"; kind_at=$n
+                req="${need_line[$kind]}"
+                [[ -z "$req" ]] || req_re="${lead}${req// /$lspace}${lsep}${val}"
+                break
+            done
         fi
         if [[ $div_at -lt 0 ]]; then
             # The divider: the line's text once the lead and trail decoration are cut, in any case.
@@ -1640,7 +1648,7 @@ _kbc_mint_bar() {
         done <<<"$1"
     fi
     local clauses="" kk
-    for kk in ${alt//|/ }; do
+    for kk in $alt; do
         [[ -z "${need_line[$kk]}" ]] || clauses="${clauses:+$clauses, }$kk also needs a '${need_line[$kk]}: ${need_text[$kk]}' line"
     done
     local need="the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: $label: $kinds${clauses:+ — $clauses}. $tail"

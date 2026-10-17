@@ -64,16 +64,20 @@
           { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "process jargon", "ere": "seen-to-fail" },
           { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "process jargon", "ere": "canon[[:space:]]*#[0-9]*" },
           { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "process jargon", "ere": "selftests?" },
-          { "kind": "ere", "boundary": "word", "ignore_case": true, "what": "process jargon", "ere": "rc[[:space:]]+[0-9]+" }
+          { "kind": "ere", "boundary": "word", "ignore_case": false, "what": "process jargon", "ere": "rc[[:space:]]+[0-9]+" }
         ]
       }
     ]
   },
   "description": {
     "line_lead_ere": "^[[:space:]*_>#-]*",
-    "line_trail_ere": "[[:space:]*_:]*$",
+    "line_trail_ere": "[[:space:]*_:#]*$",
     "filing_bar": {
       "label": "IMPACT",
+      "label_space_ere": "[[:space:]]+",
+      "label_sep_ere": "[*_]*:[[:space:]*_]*",
+      "kind_end_ere": "([^A-Z0-9_]|$)",
+      "value_ere": "[^[:space:]*_]",
       "kinds": [
         { "kind": "RUNTIME" },
         { "kind": "SECURITY" },
