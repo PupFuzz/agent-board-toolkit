@@ -54,6 +54,8 @@ _rmut() {
     mkdir -p "$dir"
     sed "$2" "$src" > "$dir/kbcard"
     sed "${4:-}" "$lib" > "$dir/_kb-board-lib.sh"
+    # The card-text rule file travels with the bin it is read by, unmodified.
+    cp "$(dirname "$src")/_card-text-rules.json" "$dir/"
     chmod +x "$dir/kbcard"
     if [[ -n "${4:-}" ]]; then
         cmp -s "$dir/_kb-board-lib.sh" "$lib" && bad "_rmut $1: the lib mutation matched nothing — this control would measure the guard it exists to remove"
@@ -435,10 +437,10 @@ eval "_kbc_write_echo_orig() $(declare -f _kbc_write_echo | tail -n +2)"
 kb_api() { printf '%s' "$3"; }
 _kbc_write_echo() { printf '%s' "$3"; }   # $3 is the response (see its new signature)
 export KB_BOARD_ID=12 KB_STAGE_BACKLOG=48
-# These sourced-function legs load no board env, so the filing bar would refuse every
-# cmd_create_card below; they test other flags. The bar's own legs run as a process near the end,
-# where kb_board_keys_unset clears this export before each board env is sourced.
-export KB_MINT_BAR=off
+# These sourced-function legs load no board env, so the filing bar and the title rules would refuse
+# cmd_create_card below; they test other flags. The bars' own legs run as a process near the end,
+# where kb_board_keys_unset clears these exports before each board env is sourced.
+export KB_MINT_BAR=off KB_TITLE_BAR=off
 
 # has_tag <body-json> <tag> → membership of the created card's flat .tags array.
 has_tag() { jq -e --arg t "$2" '((.tags // []) | index($t)) != null' <<<"$1" >/dev/null && echo true || echo false; }
@@ -1360,7 +1362,7 @@ eq "patch --dl DL-7 still stamps (control)"        "DL-0007" \
 # moment a hand list never got.
 DRIVEN_HERE=(--dl --pr --pr-url --issue --issue-url --version --column --swimlane --description
              --name --tags --add-tags --remove-tags --type --external-id --origin --task --assign
-             --block-reason --clear --partial)
+             --block-reason --clear --partial --component --risk)
 GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty as a PROCESS in
                                        # kb-positional-guard-selftest.sh, the only file with a
                                        # resolvable kbcard config
@@ -1376,7 +1378,8 @@ GUARDED_NOT_DRIVEN=(--board            # the global pre-verb flag; driven empty 
                     --field --from --to --relation --key --label)
 expect_value_flags "$BIN" "${DRIVEN_HERE[@]}" "${GUARDED_NOT_DRIVEN[@]}"
 for f in --dl --pr --pr-url --issue --issue-url --version --column --swimlane --description \
-         --name --tags --add-tags --remove-tags --type --external-id --origin --assign --block-reason --clear --partial; do
+         --name --tags --add-tags --remove-tags --type --external-id --origin --assign --block-reason --clear --partial \
+         --component --risk; do
     rc=0; err="$(cmd_patch --task 99 "$f" "" 2>&1 >/dev/null)" || rc=$?
     eq "patch $f \"\" → rc 2"                      "2"    "$rc"
     eq "patch $f \"\" names the flag"              "true" "$(case "$err" in *"$f requires a non-empty value"*) echo true ;; *) echo false ;; esac)"
@@ -7626,23 +7629,26 @@ mbar() {
     fi
 }
 MB=(create-card --type fr --name probe)
+# D1 (README.md § Plain-language card text) is part of the bar, so a description that clears it
+# carries a plain-language summary, the divider line, and the IMPACT line below the divider.
+TN=$'What it is, in plain words.\n\nTechnical notes (for agents)\n'
 
 echo "-- each of the four kinds passes --"
-mbar "IMPACT: RUNTIME"   0 "${MB[@]}" --description $'what broke\n\nIMPACT: RUNTIME'
-mbar "IMPACT: SECURITY"  0 "${MB[@]}" --description $'IMPACT: SECURITY\nthe token leaks'
+mbar "IMPACT: RUNTIME"   0 "${MB[@]}" --description $'what broke\n\nTechnical notes (for agents)\nIMPACT: RUNTIME'
+mbar "IMPACT: SECURITY"  0 "${MB[@]}" --description $'the token leaks\nTechnical notes (for agents)\nIMPACT: SECURITY'
 mbar "IMPACT: REQUESTED + REQUESTED BY" 0 "${MB[@]}" \
-     --description $'IMPACT: REQUESTED\nREQUESTED BY: operator 2026-10-11, "add a --foo flag"'
+     --description "$TN"$'IMPACT: REQUESTED\nREQUESTED BY: operator 2026-10-11, "add a --foo flag"'
 mbar "IMPACT: BELOW-BAR + BELOW-BAR REASON" 0 "${MB[@]}" \
-     --description $'IMPACT: BELOW-BAR\nBELOW-BAR REASON: a peer committed to it in the thread'
-eq "  …and the description goes on the wire unchanged" '"IMPACT: BELOW-BAR\nBELOW-BAR REASON: a peer committed to it in the thread"' \
+     --description "$TN"$'IMPACT: BELOW-BAR\nBELOW-BAR REASON: a peer committed to it in the thread'
+eq "  …and the description goes on the wire unchanged" '"What it is, in plain words.\n\nTechnical notes (for agents)\nIMPACT: BELOW-BAR\nBELOW-BAR REASON: a peer committed to it in the thread"' \
    "$(kb_stub_bodies POST /tasks.json | jq -c .description)"
 
 echo "-- spellings the bar accepts --"
-mbar "markdown emphasis: **IMPACT:** RUNTIME" 0 "${MB[@]}" --description $'body\n**IMPACT:** RUNTIME'
-mbar "lower case, a list/quote prefix: > - **impact:** security" 0 "${MB[@]}" --description '> - **impact:** security'
+mbar "markdown emphasis: **IMPACT:** RUNTIME" 0 "${MB[@]}" --description "$TN"$'body\n**IMPACT:** RUNTIME'
+mbar "lower case, a list/quote prefix: > - **impact:** security" 0 "${MB[@]}" --description "$TN"'> - **impact:** security'
 mbar "emphasis on both labels: **IMPACT:** REQUESTED / **REQUESTED BY:** …" 0 "${MB[@]}" \
-     --description $'**IMPACT:** REQUESTED\n**REQUESTED BY:** operator, 2026-10-11'
-printf '# title\r\n\r\n**IMPACT:** BELOW-BAR\r\n**BELOW-BAR REASON:** paid-for analysis\r\n' > "$TMP/mb-crlf.md"
+     --description "$TN"$'**IMPACT:** REQUESTED\n**REQUESTED BY:** operator, 2026-10-11'
+printf '# title\r\n\r\nTechnical notes (for agents)\r\n**IMPACT:** BELOW-BAR\r\n**BELOW-BAR REASON:** paid-for analysis\r\n' > "$TMP/mb-crlf.md"
 mbar "--description-file (a CRLF file, through the same reader)" 0 "${MB[@]}" --description-file "$TMP/mb-crlf.md"
 
 echo "-- refusals: rc 2, before any request --"
@@ -7670,7 +7676,7 @@ mbar "KB_MINT_BAR=off in the board env: an IMPACT-less card passes" 0 --board of
 mbar "KB_MINT_BAR=off: no description at all passes too" 0 --board offbar "${MB[@]}"
 mbar "KB_MINT_BAR=Off (not exactly 'off') stays ON" 2 --board oddbar "${MB[@]}" --description 'just a body'
 eq "  …and WARNS that the value is not the opt-out" "true" "$(has "KB_MINT_BAR='Off'" "$err")"
-mbar "KB_MINT_BAR=Off: a card that clears the bar still passes" 0 --board oddbar "${MB[@]}" --description 'IMPACT: RUNTIME'
+mbar "KB_MINT_BAR=Off: a card that clears the bar still passes" 0 --board oddbar "${MB[@]}" --description "$TN"'IMPACT: RUNTIME'
 eq "  …still warning" "true" "$(has "KB_MINT_BAR='Off'" "$err")"
 mbar "KB_MINT_BAR=on is ON" 2 --board onbar "${MB[@]}" --description 'just a body'
 eq "  …and is not warned about" "false" "$(has "KB_MINT_BAR=" "$err")"
@@ -7680,7 +7686,7 @@ export KB_MINT_BAR=off
 mbar "an exported KB_MINT_BAR=off does not opt a board out" 2 "${MB[@]}" --description 'just a body'
 # …and that is kb_board_keys_unset's doing: with KB_MINT_BAR dropped from the lib's unset, the
 # exported value survives the board env (which declares none) and the same call is POSTed.
-_rmut mint-bar-leak '' MB_LEAK 's/^    unset KB_BOARD_ID KB_WORKFLOW_ID KB_TYPING_MODE KB_MINT_BAR \\$/    unset KB_BOARD_ID KB_WORKFLOW_ID KB_TYPING_MODE \\/'
+_rmut mint-bar-leak '' MB_LEAK 's/^    unset KB_BOARD_ID KB_WORKFLOW_ID KB_TYPING_MODE KB_MINT_BAR KB_TITLE_BAR \\$/    unset KB_BOARD_ID KB_WORKFLOW_ID KB_TYPING_MODE KB_TITLE_BAR \\/'
 kb_stub_reset; rc=0; "$MB_LEAK" "${MB[@]}" --description 'just a body' </dev/null >/dev/null 2>&1 || rc=$?
 eq "  control: WITHOUT the unset, the exported off leaks and the call is POSTed" "0|1" "$rc|$(kb_stub_count POST /tasks.json)"
 unset KB_MINT_BAR
@@ -7692,5 +7698,498 @@ kb_stub_reset; rc=0; "$MB_MUT" "${MB[@]}" --description 'just a body' </dev/null
 eq "  control: WITHOUT the bar's return, the same call is POSTed" "0|1" "$rc|$(kb_stub_count POST /tasks.json)"
 unset -f kb_stub_route mbar
 unset MB_CARD MB MB_MUT MB_LEAK
+
+# ---------------------------------------------------------------------------
+echo "== plain-language card text: the rule file, T1-T6, D1, tags, --component / --risk (README.md § Plain-language card text) =="
+# Every refusal below is asserted on its MESSAGE and on the request count it implies (none), and each
+# has a known-good twin that IS written — so a refusal is the rule's, not a call that never sends.
+RULES="$HERE/../bin/_card-text-rules.json"
+
+echo "-- the rule file: parses, is schema 1, and every pattern is usable --"
+eq "the rule file is one JSON object of schema 1" "agent-board-toolkit/card-text-rules|1" \
+   "$(jq -r '"\(.schema)|\(.schema_version)"' "$RULES" 2>/dev/null)"
+eq "it declares the FR's rule ids, once each" "D1 T1 T2 T3 T4 T5 T6" \
+   "$(jq -r '[.title.rules[].id, .description.rules[].id] | sort | join(" ")' "$RULES")"
+eq "every check is a kind kbcard applies" "" \
+   "$(jq -r '.title.rules[] | .id as $i | .checks[] | select(.kind | IN("max_length", "prefix", "ere") | not) | "\($i):\(.kind)"' "$RULES")"
+eq "every ere check names a boundary kbcard applies" "" \
+   "$(jq -r '.title.rules[].checks[] | select(.kind == "ere") | select(.boundary | IN("word", "start", "none") | not) | .ere' "$RULES")"
+_rf_bad=""
+while IFS= read -r _re; do
+    _rc=0; ( LC_ALL=C; [[ "x" =~ $_re ]] ) 2>/dev/null || _rc=$?
+    [[ "$_rc" != 2 ]] || _rf_bad+="does-not-compile:$_re "
+    if ( LC_ALL=C; [[ "" =~ ^($_re)$ ]] ); then _rf_bad+="matches-empty:$_re "; fi
+done < <(jq -r '.title.rules[].checks[] | select(.kind == "ere") | .ere' "$RULES")
+eq "every pattern compiles as a bash ERE and none matches the empty string" "" "$_rf_bad"
+# The control for that loop: a pattern that matches the empty string IS caught by the same test.
+eq "  control: the empty-match test catches [0-9]*" "true" "$( ( LC_ALL=C; [[ "" =~ ^([0-9]*)$ ]] ) && echo true || echo false)"
+# README restates the closed lists for a human reader; this holds it level with the file.
+_rd_sec="$(awk '/^## Plain-language card text/{f=1} f && /^## `kbcard field`/{exit} f' "$HERE/../README.md")"
+_rd_miss=""
+while IFS= read -r _v; do
+    [[ "$(has "$_v" "$_rd_sec")" == true ]] || _rd_miss+="$_v "
+done < <(jq -r '(.title.rules[].checks[] | select(.kind == "prefix") | .values[]),
+                (.title.rules[].checks[] | select(.kind == "max_length") | "at most \(.limit) characters"),
+                (.description.rules[].divider), (.tags.refused_prefixes[].prefix),
+                (.tags.refused_on_native_type_boards[].prefix)' "$RULES")
+eq "README § Plain-language card text names every closed-list value the rule file holds" "" "$_rd_miss"
+eq "  control: that section was found at all" "true" "$(has 'Technical notes (for agents)' "$_rd_sec")"
+# README § kbcard create-card — the filing bar keeps a table of the IMPACT kinds for a human reader
+# (what each is for); its kinds and required lines must EQUAL the rule file's, in order.
+_rd_kinds() {   # <readme> — `KIND|REQUIRED LINE: <text>` per table row
+    awk '/^## `kbcard create-card` — the filing bar/{f=1; next} f && /^## /{exit} f' "$1" \
+        | sed -nE 's/^\| `([A-Z0-9-]+)` \|[^|]*\| (a `([^`]*)` line|—) \|$/\1|\3/p'
+}
+_fb_kinds() {   # <rules>
+    jq -r '.description.filing_bar.kinds[] | "\(.kind)|\(if .requires_line then "\(.requires_line): \(.requires_text)" else "" end)"' "$1"
+}
+eq "README's filing-bar kind table equals the rule file's kinds and required lines" "$(_fb_kinds "$RULES")" "$(_rd_kinds "$HERE/../README.md")"
+eq "  control: the table was read at all" "true" "$(has 'REQUESTED|REQUESTED BY: <who, when, the ask>' "$(_rd_kinds "$HERE/../README.md")")"
+jq '.description.filing_bar.kinds += [{"kind": "PLANTED"}]' "$RULES" > "$TMP/fb-planted.json"
+eq "  control: a kind added to the rule file alone makes the two differ" "false" \
+   "$([[ "$(_fb_kinds "$TMP/fb-planted.json")" == "$(_rd_kinds "$HERE/../README.md")" ]] && echo true || echo false)"
+sed 's/^| `BELOW-BAR` |.*$//' "$HERE/../README.md" > "$TMP/fb-readme.md"
+eq "  control: a kind dropped from README's table alone makes the two differ" "false" \
+   "$([[ "$(_fb_kinds "$RULES")" == "$(_rd_kinds "$TMP/fb-readme.md")" ]] && echo true || echo false)"
+unset -f _rd_kinds _fb_kinds
+
+echo "-- the rule file's patterns are portable: a PCRE reader following README's algorithm agrees with kbcard --"
+# README.md § The rule file's schema claims the patterns carry no backslash inside a bracket
+# expression, never contain the delimiter `@`, and mean the same to a PCRE reader. Each claim is
+# checked here over EVERY pattern the file holds (every string under a key `ere` or `*_ere`, so a
+# pattern added under a new key is covered), and each check has a planted control that fails it.
+_need -x "$(command -v perl || echo /no-perl-on-PATH)" perl
+_ere_all() { jq -r '[paths(type == "string") as $p | select($p[-1] | tostring | test("^ere$|_ere$")) | getpath($p)] | .[]' "$1"; }
+cat > "$TMP/ctr-reader.pl" <<'PERL'
+use strict; use warnings; use JSON::PP; use Encode ();
+# A second reader of bin/_card-text-rules.json, written from README.md § The rule file's schema.
+# Modes: brackets <pattern> | titles <rules> <corpus> | descriptions <rules> <file>...
+my $mode = shift @ARGV;
+sub bracket_backslash {    # 1 when a `\` sits inside a bracket expression, else 0
+    my ($p) = @_; my ($i, $n) = (0, length $p);
+    while ($i < $n) {
+        my $c = substr($p, $i, 1);
+        if ($c eq '\\') { $i += 2; next }
+        if ($c ne '[') { $i++; next }
+        $i++; $i++ if substr($p, $i, 1) eq '^';
+        my $first = $i;
+        while ($i < $n) {
+            my $d = substr($p, $i, 1);
+            last if $d eq ']' && $i > $first;
+            if ($d eq '[' && substr($p, $i + 1, 1) =~ /[:.=]/) {
+                my $e = index($p, substr($p, $i + 1, 1) . ']', $i + 2);
+                return 1 if $e < 0; $i = $e + 2; next;
+            }
+            return 1 if $d eq '\\';
+            $i++;
+        }
+        $i++;
+    }
+    return 0;
+}
+if ($mode eq 'brackets') { print bracket_backslash($ARGV[0]), "\n"; exit 0 }
+my $R = do { local $/; open my $fh, '<', shift @ARGV or die "rules: $!"; decode_json(<$fh>) };
+sub rx { my ($re, $ic) = @_; return $ic ? qr/(?aai:$re)/ : qr/(?aa:$re)/ }
+sub norm { my ($w) = @_; $w =~ s/[ \t\r\n\x0b\f]+/ /g; $w =~ s/^ //; $w =~ s/ $//; return $w }
+sub leftmost {
+    my ($t, $re, $b, $ic) = @_; my $q = rx($re, $ic);
+    if ($b eq 'word')  { return $t =~ /(?<![A-Za-z0-9_])($q)(?![A-Za-z0-9_])/ ? ($-[1], $1) : () }
+    if ($b eq 'start') { return $t =~ /^($q)/ ? (0, $1) : () }
+    return $t =~ /($q)/ ? ($-[1], $1) : ();
+}
+if ($mode eq 'titles') {
+    open my $c, '<', shift @ARGV or die "corpus: $!";
+    while (my $title = <$c>) {
+        chomp $title; print "=== $title\n";
+        (my $trim = $title) =~ s/^[ \t\r\n\x0b\f]+|[ \t\r\n\x0b\f]+$//g;
+        my $w = norm($title);
+        for my $rule (@{ $R->{title}{rules} }) {
+            for my $ck (@{ $rule->{checks} }) {
+                if ($ck->{kind} eq 'max_length') {
+                    my $len = length Encode::decode('UTF-8', $trim);
+                    print "L\t$rule->{id}\t$len\t$ck->{limit}\n" if $len > $ck->{limit};
+                } elsif ($ck->{kind} eq 'prefix') {
+                    for my $v (@{ $ck->{values} }) {
+                        next unless index($w, $v) == 0;
+                        print "F\t$rule->{id}\t$v\n"; $w = norm(' ' . substr($w, length $v));
+                    }
+                } else {
+                    while (my ($at, $tok) = leftmost($w, $ck->{ere}, $ck->{boundary}, $ck->{ignore_case})) {
+                        die "empty match\n" if $tok eq '';
+                        print "F\t$rule->{id}\t$tok\n";
+                        $w = norm(substr($w, 0, $at) . ' ' . substr($w, $at + length $tok));
+                    }
+                }
+            }
+        }
+        print "R\t$w\n";
+    }
+    exit 0;
+}
+if ($mode eq 'descriptions') {
+    my $D = $R->{description}; my $fb = $D->{filing_bar};
+    my ($div) = map { $_->{divider} } grep { $_->{id} eq 'D1' } @{ $D->{rules} };
+    my $lab = sub { (my $l = $_[0]) =~ s/ /$fb->{label_space_ere}/g; $D->{line_lead_ere} . $l . $fb->{label_sep_ere} };
+    for my $f (@ARGV) {
+        my $text = do { local $/; open my $fh, '<', $f or die; <$fh> };
+        my @lines = split /\n/, $text, -1;
+        my ($kind, $kind_at, $div_at, $above, $req) = ('', -1, -1, 0, '');
+        for my $n (0 .. $#lines) {
+            my $up = uc $lines[$n];
+            if ($kind eq '') {
+                for my $k (@{ $fb->{kinds} }) {
+                    next unless $up =~ rx($lab->($fb->{label}) . $k->{kind} . $fb->{kind_end_ere});
+                    ($kind, $kind_at, $req) = ($k->{kind}, $n, $k->{requires_line} // ''); last;
+                }
+            }
+            next if $div_at >= 0;
+            (my $rest = $up) =~ s/${\ rx($D->{line_lead_ere})}//;
+            $rest =~ s/${\ rx($D->{line_trail_ere})}//;
+            if ($rest eq uc $div) { $div_at = $n } elsif ($lines[$n] !~ /^[ \t\r\n\x0b\f]*$/) { $above = 1 }
+        }
+        my $have = $req eq '' ? 1 : scalar grep { uc($_) =~ rx($lab->($req) . $fb->{value_ere}) } @lines;
+        my $v = $kind eq '' ? 'noimpact' : !$have ? 'noreq' : $div_at < 0 ? 'nodiv'
+              : !$above ? 'noabove' : $kind_at < $div_at ? 'above' : 'ok';
+        print "$v\n";
+    }
+    exit 0;
+}
+die "mode?\n";
+PERL
+# kbcard's own answer over the same inputs, from the kbcard under test, against <rules>.
+_kbc_titles() {   # <rules> <corpus>
+    bash -c 'source "$1" >/dev/null 2>&1; KBC_TEXT_RULES="$2"; _KBC_RULES=""; _kbc_rules || exit 2
+             while IFS= read -r t; do printf "=== %s\n" "$t"; _kbc_title_findings "$t"; done < "$3"' _ "$BIN" "$1" "$2"
+}
+_kbc_descs() {    # <rules> <file>...
+    bash -c 'source "$1" >/dev/null 2>&1; KBC_TEXT_RULES="$2"; _KBC_RULES=""; shift 2
+             for f in "$@"; do
+                 d="$(cat "$f"; printf x)"; d="${d%x}"; rc=0
+                 err="$(KB_MINT_BAR=on _kbc_mint_bar "$d" probe 2>&1)" || rc=$?
+                 case "$rc:$err" in
+                     0:*) echo ok ;; *"states no"*) echo noimpact ;; *"no non-empty"*) echo noreq ;;
+                     *"has no '"'"'"*) echo nodiv ;; *"no plain-language text above"*) echo noabove ;;
+                     *"sits above"*) echo above ;; *) echo "other:$rc" ;;
+                 esac
+             done' _ "$BIN" "$@"
+}
+
+_bs_hit=""
+while IFS= read -r _re; do
+    [[ "$(perl "$TMP/ctr-reader.pl" brackets "$_re")" == 0 ]] || _bs_hit+="$_re "
+done < <(_ere_all "$RULES")
+eq "no pattern in the rule file has a backslash inside a bracket expression" "" "$_bs_hit"
+eq "  control: the bracket check flags a planted [\\.]" "1" "$(perl "$TMP/ctr-reader.pl" brackets '[\.]')"
+eq "  control: …and not \\[[^]]*\\] or [[:space:]*_]" "0|0" \
+   "$(perl "$TMP/ctr-reader.pl" brackets '\[[^]]*\]')|$(perl "$TMP/ctr-reader.pl" brackets '[[:space:]*_]')"
+eq "the patterns were found at all (title and filing-bar keys alike)" "true|true" \
+   "$(has 'rc[[:space:]]+[0-9]+' "$(_ere_all "$RULES")")|$(has '[^[:space:]*_]' "$(_ere_all "$RULES")")"
+eq "no pattern contains @, the delimiter README names for a PCRE reader" "" "$(_ere_all "$RULES" | command grep -F '@' || true)"
+eq "the filing-bar labels and kinds are plain literal text (A-Z, 0-9, -, and spaces in a label)" "" \
+   "$(jq -r '.description.filing_bar | (.label, .kinds[].requires_line // empty | select(test("^[A-Z0-9 -]+$") | not)),
+             (.kinds[].kind | select(test("^[A-Z0-9-]+$") | not))' "$RULES")"
+
+cat > "$TMP/ctr-titles.txt" <<'CORPUS'
+Card titles follow a plain-language format
+Fix docs/SPRINT.md parsing and README.md.
+Explain `foo` and `bar baz` usage
+Follow up card#11140 and fw#12, PR 12, pr#5, DL-0288, #123 and the #1 priority
+[fw] CLASS: kb_board_keys_unset() with $KB_MINT_BAR and ${HOME} and --name in ~/x and /home/kanban/y
+SECURITY: Security: a selftest, selftests, seen-to-fail, canon #5, rc 2 and RC 2 and RC1
+OPERATOR-DIRECTED: and/or plain words, e.g. a 50/50 split, my-tool.sh foo.bar.md
+   padded    with	tabs   and Built: v0.47.0
+Speed up render() and a.b::c() calls, snake_case_word, read-only mode
+Pick x\y from the list
+flag --x-
+--x--
+--flag-
+CLASS: CLASS: x
+SECURITY: CLASS: x
+CORPUS
+printf '%s\n' "$(printf 'a%.0s' {1..81})" "$(printf '\xc3\xa9%.0s' {1..81})" >> "$TMP/ctr-titles.txt"
+_pt="$(perl "$TMP/ctr-reader.pl" titles "$RULES" "$TMP/ctr-titles.txt" 2>&1)"
+_bt="$(_kbc_titles "$RULES" "$TMP/ctr-titles.txt" 2>&1)"
+eq "titles: the PCRE reader's findings and rewrites equal kbcard's, title by title" "$_bt" "$_pt"
+eq "  control: the corpus exercises every title rule" "T1 T2 T3 T4 T5 T6" \
+   "$(printf '%s\n' "$_bt" | awk -F'\t' '$1 == "F" || $1 == "L" {print $2}' | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
+# The planted control: a [\.] pattern means "backslash or dot" to kbcard's POSIX engine and "dot"
+# to PCRE, and the corpus line `x\y` tells them apart — so this comparison can fail.
+jq '(.title.rules[] | select(.id == "T3") | .checks) += [{"kind": "ere", "boundary": "none", "ignore_case": false, "what": "planted", "ere": "x[\\.]y"}]' \
+   "$RULES" > "$TMP/ctr-planted.json"
+eq "  control: with a planted x[\\.]y the bracket check flags it" "1" \
+   "$(perl "$TMP/ctr-reader.pl" brackets "$(jq -r '.title.rules[] | select(.id == "T3") | .checks[-1].ere' "$TMP/ctr-planted.json")")"
+eq "  control: …and the two readers DISAGREE on it" "false" \
+   "$([[ "$(perl "$TMP/ctr-reader.pl" titles "$TMP/ctr-planted.json" "$TMP/ctr-titles.txt" 2>&1)" == "$(_kbc_titles "$TMP/ctr-planted.json" "$TMP/ctr-titles.txt" 2>&1)" ]] && echo true || echo false)"
+# A flag token ending in `-` at the end of the title keeps its `-`: a word boundary that is end of
+# text must not let the shorter token, followed by its own last `-`, win the match.
+_tt() { printf '%s\n' "$1" > "$TMP/ctr-one.txt"; _kbc_titles "$RULES" "$TMP/ctr-one.txt" 2>&1 | sed 1d | tr '\t\n' ' |'; }
+eq "the flag in 'flag --x-' is --x-, and the rewrite keeps no -" "F T3 --x-|R flag|" "$(_tt 'flag --x-')"
+eq "the flag in '--x--' is --x--, and nothing is left" "F T3 --x--|R |" "$(_tt '--x--')"
+eq "the flag in '--flag-' is --flag-, and nothing is left" "F T3 --flag-|R |" "$(_tt '--flag-')"
+eq "  control: mid-title, the same flag was already whole" "F T3 --x-|R a b|" "$(_tt 'a --x- b')"
+eq "a listed WORD: prefix is cut once: CLASS: CLASS: x keeps one" "F T6 CLASS:|R CLASS: x|" "$(_tt 'CLASS: CLASS: x')"
+eq "  …and one a later cut exposes stays: SECURITY: CLASS: x keeps CLASS:" "F T6 SECURITY:|R CLASS: x|" "$(_tt 'SECURITY: CLASS: x')"
+unset -f _tt
+
+mkdir -p "$TMP/ctr-desc"
+_cd() { printf '%s' "$2" > "$TMP/ctr-desc/$1"; }
+_cd 01 $'Summary.\n\nTechnical notes (for agents)\nIMPACT: RUNTIME\n'
+_cd 02 $'Summary.\n## **Technical notes (for agents):** ##\n> - **impact:** security'
+_cd 03 $'Summary.\nTechnical notes (for agents)\nIMPACT: REQUESTED\nREQUESTED  BY: operator, 2026-10-17'
+_cd 04 $'Summary.\nTechnical notes (for agents)\n**IMPACT:** REQUESTED\n**REQUESTED BY:**   '
+_cd 05 $'Summary.\nTechnical notes (for agents)\nIMPACT: BELOW-BAR\nBELOW-BAR REASON: a peer asked'
+_cd 06 $'Summary.\nIMPACT: RUNTIME\nTechnical notes (for agents)\nx'
+_cd 07 $'\n  \nTechnical notes (for agents)\nIMPACT: RUNTIME'
+_cd 08 $'what broke\nIMPACT: RUNTIME'
+_cd 09 $'Summary.\nTechnical notes (for agents)\nthe IMPACT: RUNTIME is mid-sentence'
+_cd 10 $'Summary.\nTechnical notes (for agents)\nIMPACT: RUNTIMES'
+_cd 11 $'Summary.\r\nTechnical notes (for agents)\r\nIMPACT: SECURITY\r\n'
+_cd 12 $'Summary.\nTechnical notes (for agents) extra\nIMPACT: RUNTIME'
+_cd 13 $'Summary.\nTechnical notes (for agents)\n\\IMPACT: RUNTIME'
+_cd 14 $'Summary.\nTechnical notes (for agents)\nIMPACT: RUNTIME\nTechnical notes (for agents)'
+_cd 15 $'\nTechnical notes (for agents)\nIMPACT: RUNTIME\nSummary.\nTechnical notes (for agents)'
+_cd 16 $'\v\f \t\r\nTechnical notes (for agents)\nIMPACT: RUNTIME'
+_cd 17 $'\xc2\xa0\nTechnical notes (for agents)\nIMPACT: RUNTIME'
+_cd 18 $'Summary.\rTechnical notes (for agents)\rIMPACT: RUNTIME'
+_pd="$(perl "$TMP/ctr-reader.pl" descriptions "$RULES" "$TMP"/ctr-desc/* 2>&1)"
+_bd="$(_kbc_descs "$RULES" "$TMP"/ctr-desc/* 2>&1)"
+eq "descriptions: the PCRE reader's filing-bar and D1 verdicts equal kbcard's" "$_bd" "$_pd"
+eq "  control: the corpus reaches every verdict" "above noabove nodiv noimpact noreq ok" \
+   "$(printf '%s\n' "$_bd" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
+# README.md § The rule file's schema states how a description is read; each statement has a case
+# above whose verdict would differ were it false.
+eq "the reading rules: a backslash is no lead, the first divider wins, blank is the six ASCII blanks, lines split on LF only" \
+   "13:noimpact 14:ok 15:noabove 16:noabove 17:ok 18:noimpact" \
+   "$(printf '%s\n' "$_bd" | awk 'NR >= 13 {printf "%s%d:%s", (NR > 13 ? " " : ""), NR, $0}')"
+# The planted control: a [\\.] in the line lead means "backslash or dot" to kbcard's POSIX engine and
+# "dot" to PCRE, and case 13's `\IMPACT:` line tells them apart — so this comparison can fail.
+jq '.description.line_lead_ere = "^[[:space:]*_>#\\.-]*"' "$RULES" > "$TMP/ctr-dplanted.json"
+eq "  control: with a planted [\\.] in the line lead the bracket check flags it" "1" \
+   "$(perl "$TMP/ctr-reader.pl" brackets "$(jq -r '.description.line_lead_ere' "$TMP/ctr-dplanted.json")")"
+eq "  control: …and the two readers DISAGREE on the descriptions" "false" \
+   "$([[ "$(perl "$TMP/ctr-reader.pl" descriptions "$TMP/ctr-dplanted.json" "$TMP"/ctr-desc/* 2>&1)" == "$(_kbc_descs "$TMP/ctr-dplanted.json" "$TMP"/ctr-desc/* 2>&1)" ]] && echo true || echo false)"
+unset -f _ere_all _kbc_titles _kbc_descs _cd
+unset _bs_hit _pt _bt _pd _bd
+
+rm -rf "$TMP"
+_mktmp_scratch --home
+kb_stub_scrub_env
+# dev (the default board): the title rules ON (no KB_TITLE_BAR declared — the product default), filing bar OFF so the
+# title legs are about titles. dbar: the filing bar + D1 ON. The rest are the opt-out spellings, a
+# board with native card types (for `type:`), and a tag-typed board.
+KB_STUB_TITLE_BAR='' kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_IN_PROGRESS=49'
+kb_stub_board_config toff 43 'export KB_STAGE_BACKLOG=48'                                    # KB_TITLE_BAR=off
+KB_STUB_TITLE_BAR=Off kb_stub_board_config todd 44 'export KB_STAGE_BACKLOG=48'              # not exactly `off`
+KB_STUB_TITLE_BAR='' KB_STUB_MINT_BAR='' kb_stub_board_config dbar 45 'export KB_STAGE_BACKLOG=48'
+KB_STUB_TITLE_BAR='' kb_stub_board_config native 46 'export KB_STAGE_BACKLOG=48' 'export KB_TYPE_FR=21'
+KB_STUB_TITLE_BAR='' kb_stub_board_config tagmode 47 'export KB_STAGE_BACKLOG=48' 'export KB_TYPE_FR=21' 'export KB_TYPING_MODE=tags'
+kb_stub_install
+PT_CARD='{"data":{"id":606,"name":"probe","workflow_stage_id":48,"board_id":42,"tags":[],"payload":{}}}'
+PT_FIELDS='{"data":[{"id":122,"key":"component","label":"Component","type":"multi_select","options":[{"value":"plugin"},{"value":"bridge"},{"value":"toolkit"},{"value":"docs"},{"value":"ci"},{"value":"process"}]},{"id":123,"key":"risk","label":"Risk","type":"enum","options":[{"value":"routine"},{"value":"reserved"}]},{"id":124,"key":"origin","label":"Origin","type":"string","options":null}]}'
+export PT_CARD PT_FIELDS
+kb_stub_route() {
+    case "$1 $2" in
+        "POST "*/tasks.json)                    printf '201\n%s' "$PT_CARD" ;;
+        "PATCH "*/tasks/606.json)               printf '200\n%s' "$PT_CARD" ;;
+        "GET "*/tasks/606.json*)                printf '200\n%s' "$PT_CARD" ;;
+        "GET "*/boards/42/custom_fields.json*)  printf '200\n%s' "$PT_FIELDS" ;;
+        "GET "*/boards/43/custom_fields.json*)  printf '200\n%s' '{"data":[]}' ;;
+    esac
+}
+export -f kb_stub_route
+# pt <label> <want-rc> <args…> — one kbcard call; a pass is exactly one write, a refusal NO request.
+pt() {
+    local label="$1" want="$2"; shift 2
+    kbc "$@"
+    if [[ "$want" == 0 ]]; then
+        eq "$label → rc 0, one write" "0|1" "$rc|$(( $(kb_stub_count POST /tasks.json) + $(kb_stub_count PATCH /tasks/606.json) ))"
+    else
+        eq "$label → rc 2, NO request" "2|0" "$rc|$(kb_stub_total)"
+    fi
+}
+PC=(create-card --type fr)
+T80="$(printf 'a%.0s' {1..80})"
+
+echo "-- T1: at most 80 characters --"
+pt "an 81-character title is refused" 2 "${PC[@]}" --name "${T80}b"
+eq "  …naming T1, the length and the fix" "true|true" \
+   "$(has 'T1 (at most 80 characters): the title is 81 characters, over the limit of 80' "$err")|$(has 'shorten it' "$err")"
+pt "  control: an 80-character title is written" 0 "${PC[@]}" --name "$T80"
+pt "  control: the limit is counted after the trim (80 + padding)" 0 "${PC[@]}" --name "  $T80  "
+pt "  control: the limit counts characters, not bytes (80 × é)" 0 "${PC[@]}" --name "$(printf '\xc3\xa9%.0s' {1..80})"
+
+echo "-- T2: no file path --"
+pt "docs/SPRINT.md in a title is refused" 2 "${PC[@]}" --name 'Update docs/SPRINT.md for the new sprint'
+eq "  …naming T2 and the token" "true" "$(has 'T2 (no file path): docs/SPRINT.md' "$err")"
+eq "  …with the token cut out of a suggested title" "true" "$(has 'suggested title: Update for the new sprint' "$err")"
+eq "  …and the token as a technical-notes line" "true" "$(has 'technical notes line (paste it below the description'"'"'s Technical notes divider): docs/SPRINT.md' "$err")"
+pt "a bare file name (README.md) is refused" 2 "${PC[@]}" --name 'Rewrite README.md'
+pt "a ~/ path is refused" 2 "${PC[@]}" --name 'Clean up ~/worktrees'
+pt "  control: the same idea in plain words is written" 0 "${PC[@]}" --name 'Update the sprint plan for the new sprint'
+pt "  control: and/or and a 50/50 split are not paths" 0 "${PC[@]}" --name 'Pick one and/or the other, a 50/50 split'
+
+echo "-- T3: no code identifier --"
+pt "\`foo\` in a title is refused" 2 "${PC[@]}" --name 'Explain `foo` to readers'
+eq "  …naming T3 and the token" "true" "$(has 'T3 (no code identifier): `foo`' "$err")"
+pt "a snake_case word is refused" 2 "${PC[@]}" --name 'Rename kb_board_keys'
+pt "a --flag is refused" 2 "${PC[@]}" --name 'Add a --quiet option'
+pt "a \$VAR is refused" 2 "${PC[@]}" --name 'Honour $HOME everywhere'
+pt "a call() is refused" 2 "${PC[@]}" --name 'Speed up render() calls'
+pt "  control: a hyphenated word is not a flag" 0 "${PC[@]}" --name 'Make the read-only mode faster'
+
+echo "-- T4: no card, PR, issue or DL number --"
+pt "card#11140 in a title is refused" 2 "${PC[@]}" --name 'Follow up on card#11140'
+eq "  …naming T4 and the token" "true" "$(has 'T4 (no card, PR, issue or DL number): card#11140' "$err")"
+pt "DL-0288 is refused" 2 "${PC[@]}" --name 'Close DL-0288'
+pt "PR 12 is refused (any case)" 2 "${PC[@]}" --name 'Land pr 12 first'
+pt "#123 is refused" 2 "${PC[@]}" --name 'Fix the #123 crash'
+pt "  control: a #1 ranking is not a reference" 0 "${PC[@]}" --name 'Make search the #1 priority'
+
+echo "-- T5: no leading [...] prefix --"
+pt "[fw] x is refused" 2 "${PC[@]}" --name '[fw] x'
+eq "  …naming T5 and pointing at --component" "true|true" "$(has 'T5 (no leading [...] prefix): [fw]' "$err")|$(has '--component' "$err")"
+pt "  control: brackets later in the title are fine" 0 "${PC[@]}" --name 'Show the [draft] label on cards'
+
+echo "-- T6: no WORD: prefix from the closed list, no process jargon --"
+pt "CLASS: x is refused" 2 "${PC[@]}" --name 'CLASS: x'
+eq "  …naming T6 and the token" "true" "$(has 'T6 (no WORD: prefix and no process jargon): CLASS:' "$err")"
+pt "uppercase SECURITY: is refused" 2 "${PC[@]}" --name 'SECURITY: tokens leak into logs'
+pt "  control: Security: is the one allowed prefix" 0 "${PC[@]}" --name 'Security: tokens leak into logs'
+pt "selftest jargon is refused" 2 "${PC[@]}" --name 'Add a selftest for search'
+pt "rc 2 jargon is refused" 2 "${PC[@]}" --name 'Exit with rc 2 on a bad flag'
+pt "  control: a release candidate (RC1) is not rc N" 0 "${PC[@]}" --name 'Ship the RC1 build'
+pt "  control: rc N is case-sensitive, so RC 2 passes" 0 "${PC[@]}" --name 'Ship RC 2 to testers'
+
+echo "-- several rules at once: one refusal names them all --"
+pt "a title breaking T2, T3 and T4" 2 "${PC[@]}" --name 'Fix `x` in docs/a.md for card#5'
+eq "  …names each rule once" "true|true|true" "$(has '  T2 (' "$err")|$(has '  T3 (' "$err")|$(has '  T4 (' "$err")"
+eq "  …and one notes line carries every token" "true" "$(has 'divider): docs/a.md, `x`, card#5' "$err")"
+
+echo "-- --name-file is the same text, and patch --name is held to the same rules --"
+printf 'Follow up on card#11140\n' > "$TMP/pt-name.txt"
+pt "create-card --name-file with a card number" 2 "${PC[@]}" --name-file "$TMP/pt-name.txt"
+pt "patch --name with a card number" 2 patch --task 606 --name 'Follow up on card#11140'
+eq "  …in the patch verb's own words" "true" "$(has 'kbcard: patch: the title breaks the plain-language card rules' "$err")"
+pt "patch --name-file with a card number" 2 patch --task 606 --name-file "$TMP/pt-name.txt"
+pt "  control: patch --name with a plain title is written" 0 patch --task 606 --name 'Follow up on the sprint plan'
+pt "  control: patch --column reads no title, so an old card is never refused" 0 patch --task 606 --column backlog
+
+echo "-- the opt-out is the board env's, exactly 'off' --"
+pt "KB_TITLE_BAR=off: the refused title is written" 0 --board toff "${PC[@]}" --name 'Follow up on card#11140'
+pt "KB_TITLE_BAR=Off (not exactly 'off') stays ON" 2 --board todd "${PC[@]}" --name 'Follow up on card#11140'
+eq "  …and WARNS that the value is not the opt-out" "true" "$(has "KB_TITLE_BAR='Off'" "$err")"
+export KB_TITLE_BAR=off
+pt "an exported KB_TITLE_BAR=off does not opt a board out" 2 "${PC[@]}" --name 'Follow up on card#11140'
+unset KB_TITLE_BAR
+
+echo "-- D1: the description layout (with the filing bar ON) --"
+DB=(--board dbar create-card --type fr --name 'A plain title')
+pt "a description with no divider is refused" 2 "${DB[@]}" --description $'what broke\nIMPACT: RUNTIME'
+eq "  …naming the missing divider and D1" "true|true" \
+   "$(has "the description has no 'Technical notes (for agents)' line" "$err")|$(has 'D1 (README.md § Plain-language card text)' "$err")"
+pt "IMPACT: above the divider is refused" 2 "${DB[@]}" --description $'what broke\nIMPACT: RUNTIME\nTechnical notes (for agents)\nsrc: x'
+eq "  …saying it sits above" "true" "$(has "the IMPACT line sits above the 'Technical notes (for agents)' line" "$err")"
+pt "a divider with nothing above it is refused" 2 "${DB[@]}" --description $'\n  \nTechnical notes (for agents)\nIMPACT: RUNTIME'
+eq "  …saying there is no plain-language text above it" "true" "$(has 'no plain-language text above' "$err")"
+pt "  control: summary, divider, IMPACT below is written" 0 "${DB[@]}" --description $'what broke\n\nTechnical notes (for agents)\nIMPACT: RUNTIME'
+pt "  control: a decorated divider (## …:) counts" 0 "${DB[@]}" --description $'what broke\n\n## **Technical notes (for agents):**\nIMPACT: RUNTIME'
+pt "  control: a divider with a closing ## counts" 0 "${DB[@]}" --description $'what broke\n\n## Technical notes (for agents) ##\nIMPACT: RUNTIME'
+pt "patch --description is held to D1 too" 2 --board dbar patch --task 606 --description $'what broke\nIMPACT: RUNTIME'
+eq "  …in the patch verb's own words" "true" "$(has 'kbcard: patch: the description has no' "$err")"
+pt "  control: patch --description with the layout is written" 0 --board dbar patch --task 606 --description $'what broke\n\nTechnical notes (for agents)\nIMPACT: RUNTIME'
+
+echo "-- tags are for filtering --"
+pt "--tags owner:a/b is refused" 2 "${PC[@]}" --name 'A plain title' --tags owner:a/b
+eq "  …naming the tag and where the data belongs" "true|true" "$(has "'owner:a/b' is a data tag" "$err")|$(has 'assignee' "$err")"
+pt "a padded data tag in a list is refused" 2 "${PC[@]}" --name 'A plain title' --tags 'ok, idem:k1'
+pt "patch --add-tags related:x is refused" 2 patch --task 606 --add-tags related:x
+pt "patch --tags design:y is refused" 2 patch --task 606 --tags design:y
+pt "  control: a filtering tag is written" 0 "${PC[@]}" --name 'A plain title' --tags needs-review
+pt "  control: --remove-tags owner:a/b is written (it is how a card moves off one)" 0 patch --task 606 --remove-tags owner:a/b
+pt "type: is refused on a board with a native card type" 2 --board native "${PC[@]}" --name 'A plain title' --tags type:bug
+eq "  …naming the env key and --type" "true|true" "$(has 'KB_TYPE_FR' "$err")|$(has 'use --type' "$err")"
+pt "  control: type: is written on a tag-typed board" 0 --board tagmode "${PC[@]}" --name 'A plain title' --tags type:bug
+pt "  control: type: is written where no native type is mapped" 0 "${PC[@]}" --name 'A plain title' --tags type:bug
+kbc --board native create-card --type bug --name 'A plain title'
+eq "  …and the type: tag create-card adds itself (an alias with no native id) is not refused" "0|true" \
+   "$rc|$(kb_stub_bodies POST /tasks.json | jq -c '.tags | index("type:bug") != null')"
+
+echo "-- --component / --risk are checked against the board's option sets --"
+kbc "${PC[@]}" --name 'A plain title' --risk nonsense
+eq "--risk nonsense → rc 2, the field read only, NO write" "2|1|0" "$rc|$(kb_stub_count GET /boards/42/custom_fields.json)|$(kb_stub_count POST /tasks.json)"
+eq "  …naming the value and the option set" "true" "$(has "'nonsense' is not an option of the 'risk' field on board 42 — its options are: routine, reserved" "$err")"
+kbc "${PC[@]}" --name 'A plain title' --risk routine --component plugin,docs
+eq "  control: --risk routine --component plugin,docs → rc 0, one read, one POST" "0|1|1" \
+   "$rc|$(kb_stub_count GET /boards/42/custom_fields.json)|$(kb_stub_count POST /tasks.json)"
+eq "  …the enum as a string and the multi_select as an array" '{"component":["plugin","docs"],"risk":"routine"}' \
+   "$(kb_stub_bodies POST /tasks.json | jq -c '.payload | {component, risk}')"
+kbc "${PC[@]}" --name 'A plain title' --component plugin,web
+eq "--component with one unknown member → rc 2, no write, naming it" "2|0|true" "$rc|$(kb_stub_count POST /tasks.json)|$(has "'web' is not an option" "$err")"
+kbc "${PC[@]}" --name 'A plain title' --risk routine,reserved
+eq "--risk with two values on an enum → rc 2, no write" "2|0|true" "$rc|$(kb_stub_count POST /tasks.json)|$(has 'takes ONE value' "$err")"
+kbc --board toff "${PC[@]}" --name 'A plain title' --risk routine
+eq "--risk on a board with no risk field → rc 2, no write" "2|0|true" "$rc|$(kb_stub_count POST /tasks.json)|$(has "board 43 has no 'risk' custom field" "$err")"
+kbc patch --task 606 --component bridge
+eq "patch --component bridge → rc 0, written as the payload key" "0|[\"bridge\"]" "$rc|$(kb_stub_bodies PATCH /tasks/606.json | jq -c '.payload.component')"
+kbc patch --task 606 --risk nonsense
+eq "patch --risk nonsense → rc 2, no PATCH" "2|0" "$rc|$(kb_stub_count PATCH /tasks/606.json)"
+pt "  and no field read at all when neither flag is passed" 0 "${PC[@]}" --name 'A plain title'
+eq "  …(zero reads of the field set)" "0" "$(kb_stub_count GET /boards/42/custom_fields.json)"
+
+echo "-- title-check / description-check: the same checks, no request, no token --"
+kbc title-check --name 'Follow up on card#11140'
+eq "title-check on a refused title → rc 2, NO request, the same refusal" "2|0|true" \
+   "$rc|$(kb_stub_total)|$(has 'T4 (no card, PR, issue or DL number): card#11140' "$err")"
+eq "  …saying it was a dry run" "true" "$(has 'this was a dry run; no request is ever sent.' "$err")"
+kbc title-check --name 'Follow up on the sprint plan'
+eq "  control: title-check on a plain title → rc 0, NO request" "0|0|true" "$rc|$(kb_stub_total)|$(has 'passes' "$err")"
+kbc --board toff title-check --name 'Follow up on card#11140'
+eq "title-check on an opted-out board → rc 0, says so" "0|true" "$rc|$(has 'KB_TITLE_BAR=off' "$err")"
+kbc --board dbar description-check --description $'what broke\nIMPACT: RUNTIME'
+eq "description-check with no divider → rc 2, NO request" "2|0|true" "$rc|$(kb_stub_total)|$(has "no 'Technical notes (for agents)' line" "$err")"
+kbc --board dbar description-check --description $'what broke\n\nTechnical notes (for agents)\nIMPACT: RUNTIME'
+eq "  control: description-check on the layout → rc 0" "0|0" "$rc|$(kb_stub_total)"
+kbc title-check
+eq "title-check with no text → rc 2 naming the flags" "2|true" "$rc|$(has 'title-check requires --name' "$err")"
+# No token: the dry runs read the board env only. With the token file gone, create-card cannot load
+# its config at all, and title-check still answers.
+mv "$KB_STUB_TOKEN_FILE" "$TMP/token.away"
+kbc title-check --name 'Follow up on the sprint plan'
+eq "title-check with the token file gone → rc 0" "0" "$rc"
+kbc "${PC[@]}" --name 'Follow up on the sprint plan'
+eq "  control: create-card with the token file gone → rc 2 (it needs the token)" "2|true" "$rc|$(has 'token file not readable' "$err")"
+mv "$TMP/token.away" "$KB_STUB_TOKEN_FILE"
+
+echo "-- the refusals come from the rule file --"
+# A kbcard beside an EDITED rule file: T1 at 20 and a new T6 prefix. The real file accepts both
+# titles below, the edited one refuses them — so the limit and the list are read, not restated.
+RE_BIN="$TMP/rules-edit/kbcard"; mkdir -p "$TMP/rules-edit"
+cp "$(readlink -f "$BIN")" "$RE_BIN"; cp "$(dirname "$(readlink -f "$BIN")")/_kb-board-lib.sh" "$TMP/rules-edit/"
+jq '(.title.rules[] | select(.id == "T1") | .checks[0].limit) = 20
+    | (.title.rules[] | select(.id == "T6") | .checks[0].values) += ["WIBBLE:"]' "$RULES" > "$(dirname "$RE_BIN")/_card-text-rules.json"
+kb_stub_reset; rc=0; err="$("$RE_BIN" "${PC[@]}" --name 'A title of thirty characters' 2>&1 >/dev/null </dev/null)" || rc=$?
+eq "with T1 set to 20 in the file, a 28-character title → rc 2 naming the new limit" "2|true|0" "$rc|$(has 'over the limit of 20' "$err")|$(kb_stub_total)"
+kb_stub_reset; rc=0; err="$("$RE_BIN" "${PC[@]}" --name 'WIBBLE: a plain title' 2>&1 >/dev/null </dev/null)" || rc=$?
+eq "with WIBBLE: added to T6 in the file → rc 2 naming it" "2|true" "$rc|$(has 'T6 (no WORD: prefix and no process jargon): WIBBLE:' "$err")"
+pt "  control: the real file accepts the 28-character title" 0 "${PC[@]}" --name 'A title of thirty characters'
+pt "  control: the real file accepts WIBBLE:" 0 "${PC[@]}" --name 'WIBBLE: a plain title'
+rm -f "$(dirname "$RE_BIN")/_card-text-rules.json"
+kb_stub_reset; rc=0; err="$("$RE_BIN" "${PC[@]}" --name 'A plain title' 2>&1 >/dev/null </dev/null)" || rc=$?
+eq "a kbcard with no rule file beside it → rc 2, NO request, naming the file" "2|0|true" \
+   "$rc|$(kb_stub_total)|$(has 'the card-text rule file is not readable' "$err")"
+jq '.schema_version = 2' "$RULES" > "$(dirname "$RE_BIN")/_card-text-rules.json"
+kb_stub_reset; rc=0; err="$("$RE_BIN" "${PC[@]}" --name 'A plain title' 2>&1 >/dev/null </dev/null)" || rc=$?
+eq "a rule file of another schema_version → rc 2, NO request" "2|0|true" "$rc|$(kb_stub_total)|$(has 'is not a schema_version 1' "$err")"
+
+# THE CONTROL for "NO request": with the title bar's `return 2` removed, the same refused title
+# reaches the wire — so the zero-request refusals above are the bar's.
+_rmut title-bar 's/^    _kbc_title_bar create-card "\$name" || return 2$/    _kbc_title_bar create-card "$name" || :/' TB_MUT
+kb_stub_reset; rc=0; "$TB_MUT" "${PC[@]}" --name 'Follow up on card#11140' </dev/null >/dev/null 2>&1 || rc=$?
+eq "  control: WITHOUT the title bar's return, the same call is POSTed" "0|1" "$rc|$(kb_stub_count POST /tasks.json)"
+_rmut tag-guard 's/^    _kbc_tag_guard --tags "\$tags" || return 2$/    _kbc_tag_guard --tags "$tags" || :/' TG_MUT
+kb_stub_reset; rc=0; "$TG_MUT" "${PC[@]}" --name 'A plain title' --tags owner:a/b </dev/null >/dev/null 2>&1 || rc=$?
+eq "  control: WITHOUT the tag guard's return, --tags owner:a/b is POSTed" "0|1" "$rc|$(kb_stub_count POST /tasks.json)"
+unset -f kb_stub_route pt
+unset PT_CARD PT_FIELDS PC DB T80 RULES RE_BIN TB_MUT TG_MUT _rf_bad _re _rc _rd_sec _rd_miss _v
 
 _summary "kbcard-selftest"

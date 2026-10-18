@@ -40,13 +40,26 @@
 # check"*, so they are different exit codes:
 #
 #   0  verified — every by-ref read completed and said what it had to say.
-#   1  verification FAILED, measured: by-ref did not resolve the throwaway, or the sentinel
-#      still resolves after the clear or after the delete — to the throwaway OR to any other
-#      card (a sentinel leaked by an earlier run is residue too, card#10426).
+#   1  THIS RUN CERTIFIES NOTHING AND STOPPED. Two kinds share this rc, and the line on stderr
+#      is what separates them — never the rc:
+#        * a MEASURED verification failure: by-ref did not resolve the throwaway, or the sentinel
+#          still resolves after the clear or after the delete — to the throwaway OR to any other
+#          card (a sentinel leaked by an earlier run is residue too, card#10426);
+#        * a SETUP STEP THAT COULD NOT BE CARRIED OUT OR READ — e.g. the registration was refused
+#          outright, the board's custom-field index could not be read, or answered 2xx with
+#          something that is not a field set (card#11984), the existing declaration is the wrong
+#          type, the throwaway's create or a teardown write was refused.
+#      ⛔ The second kind measured nothing about the by-ref route, and rc 1 says so only in words:
+#      do not read a 1 as "the board was measured and is broken". What both kinds share is that
+#      nothing here certifies this board. They stay ONE rc because the caller's action is the
+#      same for both — stop and read the line — whereas rc 3's caller has a set-up board and
+#      lacks only the by-ref evidence.
 #   2  usage / config — refused before any request.
-#   3  UNMEASURED — at least one by-ref read returned nothing this tool could read, and no
-#      measured failure was seen. NOTHING in a run that exits 3 says the route works, and
-#      nothing says the board is residue-free. The throwaway teardown still runs.
+#   3  UNMEASURED, and NARROWER THAN rc 1 ON PURPOSE: every step of the setup ran and the
+#      throwaway was torn down, and what is missing is only the BY-REF evidence — at least one
+#      by-ref read returned nothing this tool could read, and no measured failure was seen.
+#      NOTHING in a run that exits 3 says the route works, and nothing says the board is
+#      residue-free.
 #
 # 3 is the toolkit's published "sent, but nothing could be read back" exit code (kbcard's rc 3
 # UNVERIFIED WRITE, the lib's KB_RC_UNVERIFIED), so an operator reading a 3 out of any of these
@@ -234,7 +247,25 @@ elif [[ "$reg_http" == "409" || "$reg_http" == "422" ]]; then
         echo "dl-a1-register-field: FATAL: registration was refused (HTTP $reg_http, i.e. a dl_number definition already exists) and the board's custom-field index could not be read, so the EXISTING declaration's type is unknown. This tool cannot certify a board it cannot read: re-run once the board reads, or check the type with 'kbcard${KBC_BOARD_ARG} field list'." >&2
         exit 1
     }
-    existing_type="$(kb_parse_resp "$fields_resp" -r '.data[]? | select(.key == "dl_number") | .type')"
+    # ⛔ AN INDEX THIS TOOL COULD NOT READ IS NOT AN INDEX WITH NO dl_number. A tolerant parse
+    # (`.data[]? | select(…)` through kb_parse_resp) answers both with the same empty string, and
+    # the `""` arm below then asserted "the index carries NO dl_number definition" about a 2xx
+    # carrying a gateway's HTML, printed beside a registration body saying the field DOES exist
+    # (card#11984). So the type is read ONLY out of something that is an index: exactly one JSON
+    # text (kb_jq_one, the lib's strict reader kb_by_ref_hit also uses), an object whose `.data`
+    # is an array of objects. Anything else is refused here, on its own line, as nothing read.
+    # Past it, an empty type is a MEASURED absence — which is what the `""` arm asserts.
+    existing_type="$(kb_jq_one "$fields_resp" -r '
+        if type == "object" and (.data | type) == "array" and all(.data[]; type == "object")
+        then [.data[] | select(.key == "dl_number") | .type | tostring] | join(",")
+        else error("not a custom-field index") end')" || {
+        # The GET sent $KB_TOKEN, and a server echoing request headers hands it back (card#9777),
+        # so the body is masked BEFORE it is cut — a cut first could split the token and leave a
+        # prefix the literal-token mask no longer matches.
+        kb_xtrace_off _dla1_x; kb_mask_token fields_shown "${KB_TOKEN:-}" "$fields_resp"; kb_xtrace_restore _dla1_x
+        echo "dl-a1-register-field: FATAL: registration was refused (HTTP $reg_http, i.e. a dl_number definition already exists) and the board's custom-field index answered with something this tool could not read as a field set — e.g. a gateway's sign-in or error page at 2xx, a truncated body, or a JSON error envelope — so NOTHING was read and the EXISTING declaration's type is unknown. This is not 'the board defines no dl_number'. Re-run once the board reads, or check the type with 'kbcard${KBC_BOARD_ARG} field list'. The index read's body, first 300 bytes: ${fields_shown:0:300}" >&2
+        exit 1
+    }
     case "$existing_type" in
         string)
             echo "  dl_number already registered, STRING-typed (HTTP $reg_http) — idempotent OK" ;;
@@ -378,7 +409,13 @@ case "$brs" in
          fi
          echo "  acceptance: by-ref ref=$SENTINEL empty after delete — zero residue" ;;
     *) unmeasured="$unmeasured acceptance"
-       echo "  acceptance: by-ref ref=$SENTINEL UNMEASURED — $BY_REF_WHY, so this run makes NO residue claim. Check by hand before seeding a DL minter from this board: kbcard${KBC_BOARD_ARG} show --task $TID" >&2 ;;
+       # ⛔ THE REMEDY NAMES THE READ THIS RUN COULD NOT MAKE — the by-ref INDEX — and there is no
+       # kbcard spelling for a `system=dl` by-ref read, so the honest remedy is the raw GET. The
+       # line used to print `kbcard show --task $TID`, which is wrong twice: cmd_show issues
+       # `GET /tasks/<id>.json` with no `?trashed=1`, so after the delete above it 404s, and the
+       # card it would have shown is not the index this line is about. The base is printed through
+       # the lib's userinfo redactor, because an api base may legitimately carry credentials.
+       echo "  acceptance: by-ref ref=$SENTINEL UNMEASURED — $BY_REF_WHY, so this run makes NO residue claim. Check the INDEX by hand before seeding a DL minter from this board — GET $(kb_redact_url_userinfo "$KB_API")/boards/$BOARD/tasks/by-ref.json?system=dl&ref=$SENTINEL with this board's token; an empty result set is the residue-free answer." >&2 ;;
 esac
 
 # The verdict. A MEASURED failure outranks an unmeasured read (header: both are non-zero, so the

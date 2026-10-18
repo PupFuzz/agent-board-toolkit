@@ -621,8 +621,8 @@ _kb_resolve_env() {
 }
 
 # kb_board_keys_unset: unset, in the CALLER's shell, every key a board env owns — KB_BOARD_ID,
-# KB_WORKFLOW_ID, KB_TYPING_MODE, KB_MINT_BAR (kbcard's filing-bar opt-out), and every KB_STAGE_* /
-# KB_TYPE_* / KB_USER_* / KB_SWIMLANE_* / KB_CF_* / KB_A1_* — so the board env sourced next is their ONLY source (card#10385 for the id,
+# KB_WORKFLOW_ID, KB_TYPING_MODE, KB_MINT_BAR and KB_TITLE_BAR (kbcard's filing-bar and title-rule
+# opt-outs), and every KB_STAGE_* / KB_TYPE_* / KB_USER_* / KB_SWIMLANE_* / KB_CF_* / KB_A1_* — so the board env sourced next is their ONLY source (card#10385 for the id,
 # card#10858 for the rest). Board envs `export` their keys, so without this a shell that sourced
 # board A's env carries A's ids into a run against board B, and a B env that does not declare
 # one (a column, a type alias, a seat) resolves it to A's id — a card on B written into A's
@@ -631,7 +631,7 @@ _kb_resolve_env() {
 # (KB_HELD_CREATE_MAX_AGE, KB_DL_CHECKOUT_GLOBS) are deliberately left alone.
 kb_board_keys_unset() {
     # shellcheck disable=SC2086  # intentional word-split: each name is a separate unset arg
-    unset KB_BOARD_ID KB_WORKFLOW_ID KB_TYPING_MODE KB_MINT_BAR \
+    unset KB_BOARD_ID KB_WORKFLOW_ID KB_TYPING_MODE KB_MINT_BAR KB_TITLE_BAR \
           ${!KB_STAGE_@} ${!KB_TYPE_@} ${!KB_USER_@} ${!KB_SWIMLANE_@} ${!KB_CF_@} ${!KB_A1_@}
 }
 

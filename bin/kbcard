@@ -80,11 +80,24 @@
 #     (backlog, in_progress, wont_do, done, …). A column the env declares no KB_STAGE_* for is
 #     rc 2 before any request.
 #                      [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--tags "tag1,tag2"] [--external-id 12345] \
-#                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--issue 42] [--issue-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested] [--triaged]
-#     THE FILING BAR (default ON): the description must carry a line
-#     `IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR` (REQUESTED also a `REQUESTED BY:`
-#     line, BELOW-BAR a `BELOW-BAR REASON:` line), or the call is rc 2 before any request.
+#                      [--dl "DL-093"] [--pr 178] [--pr-url URL] [--issue 42] [--issue-url URL] [--version "v0.9.2"] [--origin preemptive|consumer-driven|incident-triggered|user-requested] [--triaged] \
+#                      [--component a,b] [--risk x]
+#     THE FILING BAR (default ON): the description must carry a line `IMPACT: <kind>`, and the
+#     extra line its kind requires, or the call is rc 2 before any request. The kinds and the
+#     extra lines are read from bin/_card-text-rules.json; the refusal prints them.
 #     README.md § kbcard create-card — the filing bar owns the rule and the board-env opt-out.
+#     PLAIN-LANGUAGE CARD TEXT (default ON): the title follows T1-T6 (a length limit; no file
+#     path, code identifier, card/PR/DL number, leading [...] or listed WORD: prefix, or process
+#     jargon), and the description follows D1 (a plain-language summary, then the divider line
+#     the rule file names, with the IMPACT line below it). --tags refuses the data tags the rule
+#     file lists (and `type:` on a board with native card types). Each is rc 2 before any
+#     request; a title refusal names the rule and the tokens and suggests a rewrite. The limits
+#     and lists are read from bin/_card-text-rules.json and are not restated here: README.md § Plain-language card text owns the rules, the
+#     KB_TITLE_BAR=off board-env opt-out (T1-T6 only; D1 follows KB_MINT_BAR) and the schema.
+#     --component a,b / --risk x write the payload keys `component` / `risk`, each value checked
+#     against the option set the board defines for that field (ONE `field list` read, only when
+#     either flag is passed): a value outside it, or a board with no such field, is rc 2 with no
+#     card created — after that read; a field read that fails is rc 1.
 #     --triaged tags the card `triaged` at birth (symmetric with `patch --triaged`)
 #     so a plain PM-minted card isn't a false-positive untriaged next session.
 #     --swimlane births the card directly ON a lane (symmetric with `patch --swimlane`,
@@ -345,7 +358,13 @@
 #   kbcard patch --task ID-OR-EXT [--pr N] [--pr-url URL] [--issue N] [--issue-url URL] [--version VER] [--column COL] [--swimlane NAME-OR-ID] [--description "..."|--description-file PATH] [--clear-description] [--dl DL-NNN] [--triaged] [--keep-refs] \
 #                [--name "title"|--name-file PATH] [--tags "tag1,tag2"] [--add-tags "a,b"] [--remove-tags "c"] [--type <alias>] [--external-id 12345] [--origin <origin>] \
 #                [--assign <seat|user-id> [--steal]] [--unassign] \
-#                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]] [--partial "reason"]
+#                [--block-reason "..."|--block-reason-file PATH] [--unblock] [--clear FIELD[,FIELD...]] [--partial "reason"] \
+#                [--component a,b] [--risk x]
+#     THE TEXT RULES READ ONLY WHAT THIS CALL WRITES: --name / --name-file is held to T1-T6,
+#     --description / --description-file to the filing bar and D1, --tags / --add-tags to the
+#     data-tag refusals, and --component / --risk to the board's option sets — exactly as on
+#     create-card (above). A patch that writes none of them is never refused for the card's old
+#     text, so `patch --column` on an old card still moves it. --remove-tags is never refused.
 #     --partial "reason" is move's --partial (above), as one more `add_tags` member: with a
 #     finished --column the card is moved and marked in the one PATCH; WITHOUT --column it marks
 #     the card where it is, after ONE read showing it is already in a finished column (rc 2 if it
@@ -849,6 +868,14 @@
 #     irreversible request does not go out behind a precondition nobody read. A 2xx over a
 #     card that did not move is rc 1 HARD FAILURE; a card that could not be re-read is rc 3,
 #     and on --hard that rc explicitly says NOT to treat the DL ref as released.
+#   kbcard title-check --name "title"|--name-file PATH
+#   kbcard description-check --description "..."|--description-file PATH
+#     DRY RUN: the create-card / patch title rules (T1-T6), resp. the filing bar and D1, run over
+#     the given text with NO request at all — the board env is read for its opt-outs, and no
+#     token is read. rc 0 when the text passes (a line on stderr says so), rc 2 with
+#     the same refusal create-card prints otherwise. On a board that opts out (KB_TITLE_BAR=off,
+#     resp. KB_MINT_BAR=off) it says so and exits rc 0, which is what create-card would do there.
+#     A census can pipe existing titles through title-check, so the rules stay in one place.
 #   kbcard field list
 #     READ: list the board's custom fields (id/key/label/type); enum & multi_select
 #     fields include their full {value,label} option sets. The board index
@@ -1006,7 +1033,8 @@
 #      Every OTHER HARD FAILURE in this file means the mutation did not take.
 #   2  BAD INVOCATION — nothing was WRITTEN. Everything this tool can decide offline is decided
 #      before the first request, so a typo'd flag costs no traffic; the post-read exceptions are
-#      named below.
+#      named below (and --component / --risk, whose check is against the board's own option
+#      sets, refuse at rc 2 after that one field read).
 #   3  UNVERIFIED WRITE — the request WAS SENT and its outcome could NOT be read: the
 #      confirming read did not complete, was refused (401/403 — a card this token cannot read
 #      is not a card that is gone), or answered a 2xx nothing could be read out of. Nothing
@@ -1516,38 +1544,354 @@ _kbc_require_ext_id() {
     return 2
 }
 
-# _kbc_mint_bar <description>: the filing bar (README.md § kbcard create-card — the filing bar, which
-# owns the rule). rc 0 when the board env opts out (KB_MINT_BAR=off) or the RESOLVED description
-# carries an `IMPACT: <kind>` line, plus the line its kind requires; rc 2 with the refusal otherwise.
-# It checks that the claim is STATED on the card, never that it is true. Lines are matched one at a
-# time because a bash ERE has no multi-line anchor; the case fold and the label's leading markdown
-# (`*_>#-`, whitespace) are matched under LC_ALL=C (kb_ere_match), so `[[:space:]]` is ASCII.
-# KB_MINT_BAR is a board key (kb_board_keys_unset), so only the board env can switch the bar off.
-_kbc_mint_bar() {
-    case "${KB_MINT_BAR:-}" in
+# --- plain-language card text: ONE declared rule file -----------------------------------------
+# KBC_TEXT_RULES is bin/_card-text-rules.json, found beside this script's real path the way
+# _kb-board-lib.sh is. It is THE ONE DECLARATION of the title rules (T1-T6), the description
+# layout (D1) with the filing bar's IMPACT vocabulary, and the tag prefixes kept out of the tag
+# list. Nothing below restates a limit, a list or a pattern: each check reads it from the file,
+# and other writers (the bridge's board tools) read the same file instead of a copy. README.md
+# § Plain-language card text owns the schema note and the matching algorithm.
+KBC_TEXT_RULES="$(dirname "$KB_LIB")/_card-text-rules.json"
+_KBC_RULES=""
+
+# _kbc_rules: load the rule file into _KBC_RULES, once per process. rc 2, naming the file, when it
+# is missing, unreadable, or not a schema_version 1 rule file: a check whose rules cannot be read
+# refuses rather than passing. Call it in the verb's own shell, never inside $(…): the load must
+# outlive the call so the helpers below can read it.
+_kbc_rules() {
+    [[ -z "$_KBC_RULES" ]] || return 0
+    if [[ ! -r "$KBC_TEXT_RULES" ]]; then
+        echo "kbcard: the card-text rule file is not readable: $KBC_TEXT_RULES — it ships in bin/ beside kbcard; reinstall per docs/INSTALL.md §2, or vendor _card-text-rules.json beside kbcard. Nothing was sent." >&2
+        return 2
+    fi
+    local rules_json
+    rules_json="$(jq -c 'select(type == "object" and .schema == "agent-board-toolkit/card-text-rules" and .schema_version == 1)' "$KBC_TEXT_RULES" 2>/dev/null)" || rules_json=""
+    if [[ -z "$rules_json" ]]; then
+        echo "kbcard: $KBC_TEXT_RULES is not a schema_version 1 card-text rule file (schema agent-board-toolkit/card-text-rules) — nothing was sent" >&2
+        return 2
+    fi
+    _KBC_RULES="$rules_json"
+}
+
+# _kbc_bar_state <key> <verb> <what>: rc 0 when the board env switches the named bar OFF, rc 1
+# when it is on. Exactly `off` opts out; unset or `on` is on; any other value is on and warned
+# about, so a typo never opts a board out. The key is a board key (kb_board_keys_unset), so only
+# the board env can set it.
+_kbc_bar_state() {
+    local key="$1" verb="$2" what="$3" val="${!1:-}"
+    case "$val" in
         off) return 0 ;;
-        ""|on) ;;
-        *) echo "kbcard: create-card: ⚠ KB_MINT_BAR='$KB_MINT_BAR' in ${KB_BOARD_ENV:-the board env} is not 'off', the only value that opts out — the filing bar stays ON" >&2 ;;
+        ""|on) return 1 ;;
+        *) echo "kbcard: $verb: ⚠ $key='$val' in ${KB_BOARD_ENV:-the board env} is not 'off', the only value that opts out — $what stays ON" >&2; return 1 ;;
     esac
+}
+
+# _kbc_mint_bar <description> [verb] [tail]: the filing bar (README.md § kbcard create-card — the
+# filing bar, which owns the rule) and D1 (README.md § Plain-language card text). rc 0 when the
+# board env opts out (KB_MINT_BAR=off) or the RESOLVED description carries an `IMPACT: <kind>` line,
+# the line its kind requires, and the D1 layout; rc 2 with the refusal otherwise. The vocabulary,
+# every pattern and the divider are read from the rule file. It checks that the claim is
+# STATED on the card, never that it is true. Lines are matched one at a time because a bash ERE has
+# no multi-line anchor; the case fold and the matches run under LC_ALL=C, so `[[:space:]]` is ASCII.
+_kbc_mint_bar() {
+    local verb="${2:-create-card}" tail="${3:-Nothing was sent.}"
+    _kbc_bar_state KB_MINT_BAR "$verb" "the filing bar" && return 0
+    _kbc_rules || return 2
     # C locale for the case fold as well as the match: `${line^^}` is locale-aware, and under a
     # Turkish locale `impact` folds to `İMPACT`, which no ASCII label matches.
-    local LC_ALL=C lead='^[[:space:]*_>#-]*' val='[*_]*:[[:space:]*_]*[^[:space:]*_]'
-    local line up kind="" by="" reason=""
+    local LC_ALL=C lead trail label div lspace lsep kend val kinds="" alt="" k req rtext
+    local -A need_line=() need_text=()
+    {
+        IFS= read -r lead; IFS= read -r trail; IFS= read -r label; IFS= read -r div
+        IFS= read -r lspace; IFS= read -r lsep; IFS= read -r kend; IFS= read -r val
+        while IFS=$'\x1f' read -r k req rtext; do
+            kinds="${kinds:+$kinds | }$k"; alt="${alt:+$alt }$k"
+            need_line[$k]="$req"; need_text[$k]="$rtext"
+        done
+    } < <(jq -r '.description | .line_lead_ere, .line_trail_ere, .filing_bar.label,
+                  (.rules[] | select(.id == "D1") | .divider),
+                  (.filing_bar | .label_space_ere, .label_sep_ere, .kind_end_ere, .value_ere),
+                  (.filing_bar.kinds[] | [.kind, (.requires_line // ""), (.requires_text // "")] | join("\u001f"))' <<<"$_KBC_RULES")
+    # README.md § The rule file's schema owns how these compose; kbcard-selftest holds a second
+    # reader of that section equal to this one.
+    local label_re="${lead}${label// /$lspace}${lsep}"
+    local line up kind="" kind_at=-1 div_at=-1 text_above="" n=0 have_req="" rest
+    local req_re=""
     while IFS= read -r line || [[ -n "$line" ]]; do
         up="${line^^}"
-        if [[ -z "$kind" ]] && kb_ere_match "$up" "${lead}IMPACT[*_]*:[[:space:]*_]*(RUNTIME|SECURITY|REQUESTED|BELOW-BAR)([^A-Z0-9_]|\$)"; then
-            kind="${BASH_REMATCH[1]}"
+        if [[ -z "$kind" ]]; then
+            for k in $alt; do
+                kb_ere_match "$up" "${label_re}${k}${kend}" || continue
+                kind="$k"; kind_at=$n
+                req="${need_line[$kind]}"
+                [[ -z "$req" ]] || req_re="${lead}${req// /$lspace}${lsep}${val}"
+                break
+            done
         fi
-        kb_ere_match "$up" "${lead}REQUESTED[[:space:]]+BY${val}" && by=1
-        kb_ere_match "$up" "${lead}BELOW-BAR[[:space:]]+REASON${val}" && reason=1
+        if [[ $div_at -lt 0 ]]; then
+            # The divider: the line's text once the lead and trail decoration are cut, in any case.
+            rest="$up"
+            kb_ere_match "$rest" "$lead" && rest="${rest:${#BASH_REMATCH[0]}}"
+            kb_ere_match "$rest" "$trail" && rest="${rest:0:${#rest}-${#BASH_REMATCH[0]}}"
+            if [[ "$rest" == "${div^^}" ]]; then
+                div_at=$n
+            elif ! kb_is_blank "$line"; then
+                text_above=1
+            fi
+        fi
+        n=$((n + 1))
     done <<<"$1"
-    local need="the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: IMPACT: RUNTIME | SECURITY | REQUESTED | BELOW-BAR — REQUESTED also needs a 'REQUESTED BY: <who, when, the ask>' line, BELOW-BAR a 'BELOW-BAR REASON: <why it is filed anyway>' line. Nothing was sent."
+    # A requirement line counts wherever it sits; it is looked for once the kind is known.
+    if [[ -n "$req_re" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            kb_ere_match "${line^^}" "$req_re" && { have_req=1; break; }
+        done <<<"$1"
+    fi
+    local clauses="" kk
+    for kk in $alt; do
+        [[ -z "${need_line[$kk]}" ]] || clauses="${clauses:+$clauses, }$kk also needs a '${need_line[$kk]}: ${need_text[$kk]}' line"
+    done
+    local need="the filing bar (README.md § kbcard create-card — the filing bar) needs one line in the description: $label: $kinds${clauses:+ — $clauses}. $tail"
     case "$kind" in
-        "") echo "kbcard: create-card: the card's description states no IMPACT line — $need" >&2; return 2 ;;
-        REQUESTED) [[ -n "$by" ]] || { echo "kbcard: create-card: IMPACT is REQUESTED and no non-empty 'REQUESTED BY:' line names the ask — $need" >&2; return 2; } ;;
-        BELOW-BAR) [[ -n "$reason" ]] || { echo "kbcard: create-card: IMPACT is BELOW-BAR and no non-empty 'BELOW-BAR REASON:' line says why it is filed anyway — $need" >&2; return 2; } ;;
+        "") echo "kbcard: $verb: the card's description states no $label line — $need" >&2; return 2 ;;
+        *) if [[ -n "${need_line[$kind]}" && -z "$have_req" ]]; then
+               echo "kbcard: $verb: $label is $kind and no non-empty '${need_line[$kind]}:' line is in the description — $need" >&2; return 2
+           fi ;;
     esac
+    local d1="D1 (README.md § Plain-language card text): write a plain-language summary first, then the line '$div', then the agent detail below it — paths, card numbers and the $label line. $tail"
+    if [[ $div_at -lt 0 ]]; then
+        echo "kbcard: $verb: the description has no '$div' line — $d1" >&2; return 2
+    fi
+    if [[ -z "$text_above" ]]; then
+        echo "kbcard: $verb: the description has no plain-language text above the '$div' line — $d1" >&2; return 2
+    fi
+    if [[ $kind_at -lt $div_at ]]; then
+        echo "kbcard: $verb: the $label line sits above the '$div' line — move it below. $d1" >&2; return 2
+    fi
     return 0
+}
+
+# _kbc_norm_ws <outvar> <text>: <text> with every run of the six ASCII blanks folded to ONE space
+# and the ends trimmed — the working copy the title rules match against, and so the shape of the
+# suggested rewrite.
+_kbc_norm_ws() {
+    local LC_ALL=C _nw="$2"
+    _nw="${_nw//[$' \t\r\n\v\f']/ }"
+    while [[ "$_nw" == *"  "* ]]; do _nw="${_nw//  / }"; done
+    _nw="${_nw# }"; _nw="${_nw% }"
+    printf -v "$1" '%s' "$_nw"
+}
+
+# _kbc_ere_leftmost <text> <ere> <boundary> <ignore_case>: find the LEFTMOST match of one rule
+# pattern, setting _KBC_TOK (the matched token) and _KBC_TOK_AT (its byte offset); rc 1 when there
+# is none. <boundary> is the rule file's: `word` (no letter, digit or `_` on either side), `start`
+# (at offset 0 only) or `none`. Leftmost is what a PCRE reader's first match reports, so a second
+# reader finds the same token at the same place; the scan is per offset because a bash ERE reports
+# no offsets. The unanchored test runs first, so a title that passes costs one match per pattern.
+_kbc_ere_leftmost() {
+    local LC_ALL=C text="$1" ere="$2" bnd="$3" icase="$4" any tail end="" i n hit=1 was=0
+    # The word tail always consumes ONE boundary character, the space appended at the end
+    # included. A zero-width `$` alternative instead tied a token ending in a non-word character
+    # (`--x-` then end) with the token one shorter (`--x` then `-`), and glibc gave group 1 the
+    # shorter. With the length fixed, the longest token wins, and it never takes the appended space.
+    case "$bnd" in
+        word)  any="(^|[^A-Za-z0-9_])($ere)([^A-Za-z0-9_]|\$)"; tail="^($ere)[^A-Za-z0-9_]"; end=" " ;;
+        start) any="^($ere)"; tail="$any" ;;
+        *)     any="($ere)"; tail="^($ere)" ;;
+    esac
+    shopt -q nocasematch && was=1
+    if [[ "$icase" == true ]]; then shopt -s nocasematch; else shopt -u nocasematch; fi
+    if [[ "$text" =~ $any ]]; then
+        n=${#text}
+        for ((i = 0; i < n; i++)); do
+            [[ "$bnd" == start && $i -gt 0 ]] && break
+            if [[ "$bnd" == word && $i -gt 0 ]] && kb_ere_match "${text:i-1:1}" '^[A-Za-z0-9_]$'; then continue; fi
+            if [[ "${text:i}$end" =~ $tail ]]; then _KBC_TOK="${BASH_REMATCH[1]}"; _KBC_TOK_AT=$i; hit=0; break; fi
+        done
+    fi
+    if [[ $was == 1 ]]; then shopt -s nocasematch; else shopt -u nocasematch; fi
+    return $hit
+}
+
+# _kbc_title_findings <title>: run T1-T6 from the loaded rule file over <title>, printing one line
+# per finding — `L<TAB>id<TAB>length<TAB>limit` for a length rule, `F<TAB>id<TAB>token` for a
+# token — and a last `R<TAB>rewrite` line. Rules run in file order and checks in list order; each
+# token found is cut from the working copy (replaced by a space, blanks folded) before the next
+# match is looked for, so a token is reported once, under the first check that finds it, and what
+# is left at the end IS the suggested rewrite. rc 2 when the file holds a check this reader cannot
+# apply (an unknown kind, or a pattern that matches the empty string) — refused, never passed.
+_kbc_title_findings() {
+    local LC_ALL=C trimmed w id kind bnd icase arg len
+    trimmed="$(_kbc_trim_blank "$1")"
+    _kbc_norm_ws w "$1"
+    while IFS=$'\x1f' read -r id kind bnd icase arg; do
+        case "$kind" in
+            max_length)
+                len="$(jq -rn --arg t "$trimmed" '$t | length')"
+                [[ "$len" -le "$arg" ]] || printf 'L\t%s\t%s\t%s\n' "$id" "$len" "$arg" ;;
+            prefix)
+                if [[ "$w" == "$arg"* ]]; then
+                    printf 'F\t%s\t%s\n' "$id" "$arg"
+                    _kbc_norm_ws w " ${w:${#arg}}"
+                fi ;;
+            ere)
+                while _kbc_ere_leftmost "$w" "$arg" "$bnd" "$icase"; do
+                    if [[ -z "$_KBC_TOK" ]]; then
+                        echo "kbcard: $KBC_TEXT_RULES: rule $id pattern '$arg' matches the empty string — the title rules cannot be applied" >&2
+                        return 2
+                    fi
+                    printf 'F\t%s\t%s\n' "$id" "$_KBC_TOK"
+                    _kbc_norm_ws w "${w:0:_KBC_TOK_AT} ${w:_KBC_TOK_AT+${#_KBC_TOK}}"
+                done ;;
+            *)
+                echo "kbcard: $KBC_TEXT_RULES: rule $id has a check of kind '$kind', which this kbcard cannot apply — update kbcard with the rule file" >&2
+                return 2 ;;
+        esac
+    done < <(jq -r '.title.rules[] | .id as $id | .checks[]
+                    | if .kind == "prefix" then (.values[] as $v | [$id, "prefix", "", "false", $v])
+                      else [$id, .kind, (.boundary // ""), ((.ignore_case // false) | tostring), (.ere // (.limit | tostring) // "")] end
+                    | join("\u001f")' <<<"$_KBC_RULES")
+    printf 'R\t%s\n' "$w"
+}
+
+# _kbc_title_bar <verb> <title> [tail]: the plain-language title rules, T1-T6 (README.md
+# § Plain-language card text). rc 0 when the title passes or the board env opts out
+# (KB_TITLE_BAR=off — for boards that mirror external titles); rc 2 with the refusal otherwise,
+# decided before any request. The refusal names each rule broken with its offending tokens, and
+# suggests a rewrite: the title with those tokens cut out, plus the tokens as one line ready to
+# paste under the description's Technical notes.
+_kbc_title_bar() {
+    local verb="$1" title="$2" tail="${3:-nothing was sent.}"
+    _kbc_bar_state KB_TITLE_BAR "$verb" "the title rules" && return 0
+    _kbc_rules || return 2
+    local findings
+    findings="$(_kbc_title_findings "$title")" || return 2
+    [[ "$findings" == R$'\t'* && "$findings" != *$'\n'* ]] && return 0
+    local -A summary=() hint=() toks=()
+    local order="" id s h kind a b c rewrite="" all="" rlen limit=""
+    while IFS=$'\x1f' read -r id s h; do summary[$id]="$s"; hint[$id]="$h"; done \
+        < <(jq -r '.title.rules[] | [.id, (.summary // ""), (.hint // "")] | join("\u001f")' <<<"$_KBC_RULES")
+    local lines=()
+    while IFS=$'\t' read -r kind a b c; do
+        case "$kind" in
+            L) lines+=("  $a (${summary[$a]}): the title is $b characters, over the limit of $c — shorten it"); limit="$c" ;;
+            F) [[ " $order " == *" $a "* ]] || order="${order:+$order }$a"
+               toks[$a]="${toks[$a]:+${toks[$a]}, }$b"; all="${all:+$all, }$b" ;;
+            R) rewrite="$a" ;;
+        esac
+    done <<<"$findings"
+    for id in $order; do
+        lines+=("  $id (${summary[$id]}): ${toks[$id]}${hint[$id]:+ — ${hint[$id]}}")
+    done
+    {
+        echo "kbcard: $verb: the title breaks the plain-language card rules (README.md § Plain-language card text) — $tail"
+        printf '%s\n' "${lines[@]}"
+        if [[ -n "$all" ]]; then
+            if [[ -n "$rewrite" ]]; then
+                rlen="$(jq -rn --arg t "$rewrite" '$t | length')"
+                if [[ -z "$limit" ]]; then
+                    limit="$(jq -r '[.title.rules[].checks[] | select(.kind == "max_length") | .limit] | min // empty' <<<"$_KBC_RULES")"
+                fi
+                echo "  suggested title: $rewrite"
+                [[ -z "$limit" || "$rlen" -le "$limit" ]] || echo "    (still $rlen characters, over the limit of $limit — shorten it)"
+            else
+                echo "  suggested title: nothing is left once those are cut — write the title in plain words"
+            fi
+            echo "  technical notes line (paste it below the description's Technical notes divider): $all"
+        fi
+    } >&2
+    return 2
+}
+
+# _kbc_tag_guard <flag> <csv>: rc 2 when a member of a --tags / --add-tags value is a tag the rule
+# file keeps out of the tag list — a data tag (tags are for filtering; the data has a field), or
+# `type:` on a board whose env maps a native card type. Members are compared after the blank trim,
+# case-sensitively, by prefix. Removing such a tag (--remove-tags) is never refused: it is how a
+# card is moved off one.
+_kbc_tag_guard() {
+    local flag="$1" csv="$2" native="" var id rest member m prefix use scope
+    [[ -n "$csv" ]] || return 0
+    _kbc_rules || return 2
+    if [[ "${KB_TYPING_MODE:-}" != tags ]]; then
+        for var in "${!KB_TYPE_@}"; do
+            id="${!var}"
+            if kb_is_uint "$id" && [[ "$id" -gt 0 ]]; then native="$var"; break; fi
+        done
+    fi
+    rest="$csv,"
+    while [[ -n "$rest" ]]; do
+        member="${rest%%,*}"; rest="${rest#*,}"
+        m="$(_kbc_trim_blank "$member")"
+        while IFS=$'\x1f' read -r scope prefix use; do
+            [[ "$scope" == all || -n "$native" ]] || continue
+            [[ "$m" == "$prefix"* ]] || continue
+            if [[ "$scope" == all ]]; then
+                echo "kbcard: $flag: '$m' is a data tag, and tags are for filtering — use $use instead. Nothing was sent." >&2
+            else
+                echo "kbcard: $flag: '$m' is refused on this board, whose env maps a native card type ($native) — use $use instead. Nothing was sent." >&2
+            fi
+            return 2
+        done < <(jq -r '.tags | (.refused_prefixes[] | ["all", .prefix, .use_instead]),
+                               (.refused_on_native_type_boards[] | ["native", .prefix, .use_instead])
+                        | join("\u001f")' <<<"$_KBC_RULES")
+    done
+    return 0
+}
+
+# _kbc_option_field <flag> <key> <csv> <fields-json>: the payload member a --component / --risk
+# value writes, checked against the option set the BOARD defines for <key> (the `field list` read).
+# Prints `{"<key>": …}` — an array for a multi_select field, a string for an enum — or refuses at
+# rc 2 with nothing written: no such field on the board, a field with no option set, more than one
+# value for an enum, or a value outside the set (named, with the set).
+_kbc_option_field() {
+    local flag="$1" key="$2" csv="$3" fields="$4" fld type vals n bad opts
+    fld="$(jq -c --arg k "$key" 'map(select(.key == $k)) | .[0] // empty' <<<"$fields")"
+    if [[ -z "$fld" ]]; then
+        echo "kbcard: $flag: board $KB_BOARD_ID has no '$key' custom field, so there is nothing to write it to — nothing was written" >&2
+        _kbc_field_enumerate "$fields"
+        return 2
+    fi
+    type="$(jq -r '.type' <<<"$fld")"
+    if ! _kbc_field_type_takes_options "$type"; then
+        echo "kbcard: $flag: the '$key' field on board $KB_BOARD_ID is type '$type', which has no option set to check the value against — nothing was written" >&2
+        return 2
+    fi
+    vals="$(jq -nc --arg c "$csv" '$c | split(",") | map(sub("^[ \t\r\n]+"; "") | sub("[ \t\r\n]+$"; ""))
+                                  | reduce .[] as $v ([]; if index([$v]) then . else . + [$v] end)')"
+    opts="$(jq -r '[(.options // [])[] | .value] | join(", ")' <<<"$fld")"
+    if jq -e 'any(. == "")' <<<"$vals" >/dev/null; then
+        echo "kbcard: $flag has an empty value (check for a stray comma) — the options of '$key' are: ${opts:-none}" >&2
+        return 2
+    fi
+    n="$(jq 'length' <<<"$vals")"
+    if [[ "$type" == enum && "$n" -gt 1 ]]; then
+        echo "kbcard: $flag takes ONE value: '$key' is a single-choice (enum) field — its options are: ${opts:-none}" >&2
+        return 2
+    fi
+    bad="$(jq -r --argjson v "$vals" '[(.options // [])[] | .value] as $o | $v - $o | join(", ")' <<<"$fld")"
+    if [[ -n "$bad" ]]; then
+        echo "kbcard: $flag: '$bad' is not an option of the '$key' field on board $KB_BOARD_ID — its options are: ${opts:-none}. Nothing was written." >&2
+        return 2
+    fi
+    jq -nc --arg k "$key" --arg t "$type" --argjson v "$vals" 'if $t == "enum" then {($k): $v[0]} else {($k): $v} end'
+}
+
+# _kbc_option_payload <component-csv> <risk>: the payload members for --component / --risk, from ONE
+# read of the board's custom fields. Prints `{}` when neither flag was passed (and reads nothing).
+# rc 1 when the field read fails, rc 2 when a value is refused (both: nothing written).
+_kbc_option_payload() {
+    local component="$1" risk="$2" fields out='{}' part
+    [[ -n "$component" || -n "$risk" ]] || { printf '{}'; return 0; }
+    fields="$(_kbc_fetch_fields)" || return 1
+    if [[ -n "$component" ]]; then
+        part="$(_kbc_option_field --component component "$component" "$fields")" || return 2
+        out="$(jq -c --argjson p "$part" '. + $p' <<<"$out")"
+    fi
+    if [[ -n "$risk" ]]; then
+        part="$(_kbc_option_field --risk risk "$risk" "$fields")" || return 2
+        out="$(jq -c --argjson p "$part" '. + $p' <<<"$out")"
+    fi
+    printf '%s' "$out"
 }
 
 # _kbc_require_ref_int <flag> <value>: a correlation value (--pr / --issue) must name ONE
@@ -1860,6 +2204,7 @@ _kbc_patch_tags() {
 
 cmd_create_card() {
     local type="" name="" name_file="" column="backlog" desc="" desc_file="" tags="" ext_id="" dl="" pr="" pr_url="" issue="" issue_url="" version="" origin="" triaged="" swimlane=""
+    local component="" risk=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
@@ -1878,6 +2223,8 @@ cmd_create_card() {
             --issue-url) kb_require_value "$1" "${2:-}" || return 2; issue_url="$2"; shift 2 ;;
             --version) kb_require_value "$1" "${2:-}" || return 2; version="$2"; shift 2 ;;
             --origin) kb_require_value "$1" "${2:-}" || return 2; origin="$2"; shift 2 ;;
+            --component) kb_require_value "$1" "${2:-}" || return 2; component="$2"; shift 2 ;;
+            --risk) kb_require_value "$1" "${2:-}" || return 2; risk="$2"; shift 2 ;;
             --triaged) triaged=1; shift ;;
             *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
         esac
@@ -1887,12 +2234,17 @@ cmd_create_card() {
     # question about the RESOLVED name, not about which of the two flags carried it.
     _kbc_text_arg name name "" "$name" "$name_file" verbatim || return 2
     _kbc_text_arg desc description "" "$desc" "$desc_file" verbatim || return 2
-    # --tags is checked RAW, here: the `type:` / `triaged` appends below make it non-blank.
+    # --tags is checked RAW, here: the `type:` / `triaged` appends below make it non-blank, and the
+    # `type:<alias>` this verb appends itself is not the caller's tag.
     _kbc_text_arg tags tags "" "$tags" "" verbatim || return 2
+    _kbc_tag_guard --tags "$tags" || return 2
+    _kbc_text_arg component component "" "$component" "" verbatim || return 2
+    _kbc_text_arg risk risk "" "$risk" "" verbatim || return 2
     [[ -z "$name" ]] && { echo "kbcard: --name or --name-file required" >&2; return 2; }
     [[ -z "$type" ]] && { echo "kbcard: --type required" >&2; return 2; }
     _kbc_require_type_alias "$type" || return 2
     if [[ -n "$ext_id" ]]; then _kbc_require_ext_id "$ext_id" || return 2; fi
+    _kbc_title_bar create-card "$name" || return 2
     # Read on the RESOLVED description, so --description and --description-file are one text.
     _kbc_mint_bar "$desc" || return 2
 
@@ -1920,6 +2272,14 @@ cmd_create_card() {
     # A new card has no stored payload, so the pr_number/pr_url invariant is decided here, from
     # this call's keys alone, before the POST.
     _kbc_pr_named_guard "create-card on board $KB_BOARD_ID" '{}' "$payload_json" >/dev/null || return 2
+    # --component / --risk are checked against the board's own option sets: the one read before
+    # the POST, made only when either flag was passed. A refusal is rc 2 and an unreadable field
+    # set rc 1 — no card is created either way.
+    if [[ -n "$component" || -n "$risk" ]]; then
+        local opt_json
+        opt_json="$(_kbc_option_payload "$component" "$risk")" || return $?
+        payload_json="$(jq -nc --argjson a "$payload_json" --argjson b "$opt_json" '$a + $b')"
+    fi
 
     # The whole tag list is known at birth, so a plain CSV→array split is all this needs
     # (patch has to read-merge-write instead — see _kbc_patch_tags).
@@ -3194,6 +3554,7 @@ cmd_patch() {
     local name="" name_file="" tags="" type="" ext_id="" origin="" add_tags="" remove_tags=""
     local assign="" unassign="" steal=""
     local block="" block_file="" unblock="" clear="" partial=""
+    local component="" risk=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) kb_require_value "$1" "${2:-}" || return 2; task_ref="$2"; shift 2 ;;
@@ -3218,6 +3579,8 @@ cmd_patch() {
             --type) kb_require_value "$1" "${2:-}" || return 2; type="$2"; shift 2 ;;
             --external-id) kb_require_value "$1" "${2:-}" || return 2; ext_id="$2"; shift 2 ;;
             --origin) kb_require_value "$1" "${2:-}" || return 2; origin="$2"; shift 2 ;;
+            --component) kb_require_value "$1" "${2:-}" || return 2; component="$2"; shift 2 ;;
+            --risk) kb_require_value "$1" "${2:-}" || return 2; risk="$2"; shift 2 ;;
             --assign) kb_require_value "$1" "${2:-}" || return 2; assign="$2"; shift 2 ;;
             --block-reason) kb_require_value "$1" "${2:-}" || return 2; block="$2"; shift 2 ;;
             --block-reason-file) kb_require_value "$1" "${2:-}" || return 2; block_file="$2"; shift 2 ;;
@@ -3243,6 +3606,15 @@ cmd_patch() {
     _kbc_text_arg tags tags "" "$tags" "" verbatim || return 2
     _kbc_text_arg add_tags add-tags "" "$add_tags" "" verbatim || return 2
     _kbc_text_arg remove_tags remove-tags "" "$remove_tags" "" verbatim || return 2
+    _kbc_text_arg component component "" "$component" "" verbatim || return 2
+    _kbc_text_arg risk risk "" "$risk" "" verbatim || return 2
+    # The text rules read ONLY the value this call writes: a patch that sets no name is never held
+    # to the title rules, so `patch --column` on an old card is never refused for its old title.
+    if [[ -n "$name" ]]; then _kbc_title_bar patch "$name" || return 2; fi
+    if [[ -n "$desc" ]]; then _kbc_mint_bar "$desc" patch || return 2; fi
+    # RAW, before --partial / --triaged join add_tags below: those are this verb's own tags.
+    _kbc_tag_guard --tags "$tags" || return 2
+    _kbc_tag_guard --add-tags "$add_tags" || return 2
     _kbc_partial_preflight patch "$column" "$partial" || return 2
     # The delta is the SERVER's to apply (kanban card#10923) and the board refuses `tags` beside
     # it, so a flag that rewrites the whole list cannot share the call. --triaged only ever adds,
@@ -3371,6 +3743,13 @@ cmd_patch() {
     # answers `need-card`, and _kbc_ref_pair_guard reads the card once for both checks.
     local pr_need
     pr_need="$(_kbc_pr_named_guard "patch on task $task_ref" null "$payload_json")" || return 2
+    # --component / --risk: one read of the board's field set, before any card read or write — a
+    # value outside the option set is rc 2 and an unreadable field set rc 1, nothing written.
+    if [[ -n "$component" || -n "$risk" ]]; then
+        local opt_json
+        opt_json="$(_kbc_option_payload "$component" "$risk")" || return $?
+        payload_json="$(jq -nc --argjson a "$payload_json" --argjson b "$opt_json" '$a + $b')"
+    fi
 
     local task; task="$(resolve_task "$task_ref")"
     # --partial with no --column marks the card where it is, so it must already be finished.
@@ -6174,6 +6553,46 @@ cmd_field() {
     esac
 }
 
+# cmd_title_check / cmd_description_check: the create-card / patch text checks as a DRY RUN — the
+# same validators, no request ever (main loads the board env without a token for them). rc 0 when
+# the text passes or the board env opts out of that check (said on stderr), rc 2 with the same
+# refusal create-card prints otherwise.
+cmd_title_check() {
+    local name="" name_file=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) kb_require_value "$1" "${2:-}" || return 2; name="$2"; shift 2 ;;
+            --name-file) kb_require_value "$1" "${2:-}" || return 2; name_file="$2"; shift 2 ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+    _kbc_text_arg name name title-check "$name" "$name_file" verbatim || return 2
+    if [[ "${KB_TITLE_BAR:-}" == off ]]; then
+        echo "kbcard: title-check: KB_TITLE_BAR=off in ${KB_BOARD_ENV:-the board env} — this board does not apply the title rules, so create-card and patch would accept this title" >&2
+        return 0
+    fi
+    _kbc_title_bar title-check "$name" "this was a dry run; no request is ever sent." || return 2
+    echo "kbcard: title-check: the title passes the plain-language card rules" >&2
+}
+
+cmd_description_check() {
+    local desc="" desc_file=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --description) kb_require_value "$1" "${2:-}" || return 2; desc="$2"; shift 2 ;;
+            --description-file) kb_require_value "$1" "${2:-}" || return 2; desc_file="$2"; shift 2 ;;
+            *) echo "kbcard: unknown arg '$1'" >&2; return 2 ;;
+        esac
+    done
+    _kbc_text_arg desc description description-check "$desc" "$desc_file" verbatim || return 2
+    if [[ "${KB_MINT_BAR:-}" == off ]]; then
+        echo "kbcard: description-check: KB_MINT_BAR=off in ${KB_BOARD_ENV:-the board env} — this board does not apply the filing bar or D1, so create-card and patch would accept this description" >&2
+        return 0
+    fi
+    _kbc_mint_bar "$desc" description-check "This was a dry run; no request is ever sent." || return 2
+    echo "kbcard: description-check: the description passes the filing bar and D1" >&2
+}
+
 main() {
     # Optional global `--board NAME` before the subcommand selects the board env.
     local board_name=""
@@ -6185,8 +6604,11 @@ main() {
         board_name="$2"
         shift 2
     fi
-    # Resolves board env + host env + token; sets KB_API / KB_BOARD_ID / KB_TOKEN.
-    kb_load_config "$board_name" || exit 2
+    # Resolves board env + host env + token; sets KB_API / KB_BOARD_ID / KB_TOKEN. The two dry-run
+    # checks send no request, so they read the board env (for its opt-outs) and no token.
+    local no_token=""
+    case "${1:-}" in title-check|description-check) no_token=--no-token ;; esac
+    kb_load_config "$board_name" ${no_token:+"$no_token"} || exit 2
 
     # NO ARGUMENTS is a help request; an EMPTY first argument is a failed expansion. One
     # `-z "$cmd"` answered both with the usage block at rc 0, so `kbcard "$VERB" move --task N
@@ -6253,6 +6675,8 @@ main() {
         delete)      cmd_delete "$@" ;;
         field)       cmd_field "$@" ;;
         owner-migrate) cmd_owner_migrate "$@" ;;
+        title-check) cmd_title_check "$@" ;;
+        description-check) cmd_description_check "$@" ;;
         *) echo "kbcard: unknown command '$cmd'" >&2; exit 2 ;;
     esac
 }

@@ -26,8 +26,9 @@ jobs:
         # Gate at hard errors only for now; tighten to `-S warning` once a clean
         # run confirms the existing scripts are warning-clean. Non-shell helpers
         # (e.g. bin/*.py shims) are filtered out — shellcheck cannot parse them
-        # (SC1071); they are syntax-checked in the python-shims step below.
-        run: ./bin/_shellcheck-pinned -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py'; find tests -maxdepth 1 -type f -name '*.sh')
+        # (SC1071); they are syntax-checked in the python-shims step below. So are
+        # the JSON data files (bin/_card-text-rules.json), which kbcard-selftest parses.
+        run: ./bin/_shellcheck-pinned -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py' ! -name '*.json'; find tests -maxdepth 1 -type f -name '*.sh')
       - name: python shims compile clean
         # `compile()` — NOT `py_compile`, and NOT `ast.parse` (card#7207).
         #

@@ -6,7 +6,7 @@
 #
 # WHY THIS EXISTS (card#6911). CI's shellcheck step names the population once:
 #
-#     run: shellcheck -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py'; find tests -maxdepth 1 -type f -name '*.sh')
+#     run: shellcheck -S error $(find bin hooks -maxdepth 1 -type f ! -name '*.py' ! -name '*.json'; find tests -maxdepth 1 -type f -name '*.sh')
 #          ^ the `run:` prefix is ci.yml's own and is also load-bearing HERE: a comment line
 #            whose first word is `shellcheck` is parsed as a shellcheck DIRECTIVE (SC1072/SC1073,
 #            watched red on this very line), so quoting the command needs it kept.
@@ -45,17 +45,19 @@
 # from inside a `run:` string — so the restatement here cannot be deleted, only GUARDED
 # (canon #16). These two constants are the guard's needles; `_ci_shellcheck_drift` below is the
 # guard, and `verdict-through-truncating-reader-selftest.sh` runs it with planted controls.
-_SSL_FIND_SHIPPED="find bin hooks -maxdepth 1 -type f ! -name '*.py'"
+_SSL_FIND_SHIPPED="find bin hooks -maxdepth 1 -type f ! -name '*.py' ! -name '*.json'"
 _SSL_FIND_SELFTESTS="find tests -maxdepth 1 -type f -name '*.sh'"
 
 # _shipped_shell_files <root> — the SHIPPED shell: `bin/` + `hooks/`, one level, minus the
 # python shims (shellcheck cannot parse them — SC1071 — which is why CI's own expression
-# excludes them by name rather than by extension-guessing). Relative paths, C-collated. A
+# excludes them by name rather than by extension-guessing) and the JSON data files (the
+# card-text rule file kbcard reads, which shellcheck reports as an unparseable script).
+# Relative paths, C-collated. A
 # directory is excluded by `-type f`; `bin/__pycache__` is the one that appears. CI's own
 # syntax gate was minting it until card#7207 (it ran `py_compile bin/*.py`); a hand-run of the
 # same command still can, which is why the exclusion is by TYPE and not by that name.
 _shipped_shell_files() {
-    ( cd "$1" && find bin hooks -maxdepth 1 -type f ! -name '*.py' 2>/dev/null | LC_ALL=C sort )
+    ( cd "$1" && find bin hooks -maxdepth 1 -type f ! -name '*.py' ! -name '*.json' 2>/dev/null | LC_ALL=C sort )
 }
 
 # _selftest_shell_files <root> — the other half of CI's expression: `tests/*.sh`, one level.
