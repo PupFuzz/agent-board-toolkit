@@ -659,6 +659,8 @@ eq "witness: the extraction stopped at the function (it did not swallow the call
    "$(has 'spent_refusal' "$RX_SRC")"
 eval "$RX_SRC"
 _adopt_fn "$PRC" resp_detail
+# resp_excerpt takes the NAME of the variable holding the body (card#12177), so every row below
+# passes a name.
 
 MP_TOKEN='parity-stub-token'
 token_file="$TMP/mp-token"; printf '%s' "$MP_TOKEN" > "$token_file"
@@ -769,7 +771,7 @@ eq "witness: the corpus really feeds control bytes IN" "true" \
 
 for _i in "${!MP_BODIES[@]}"; do
     _l="${MP_LABELS[$_i]}"; _b="${MP_BODIES[$_i]}"
-    _x="$(resp_excerpt "$_b")"; _d="$(_mp_detail "$_b")"
+    _x="$(resp_excerpt _b)"; _d="$(_mp_detail "$_b")"
     eq "the two renderers agree on [$_l]"                  "$_d" "$_x"
     eq "…and NEITHER emits a byte a terminal acts on [$_l]" "0|0" "$(_mp_ctl "$_d")|$(_mp_ctl "$_x")"
     # ⭐ PER-ROW VACUITY, derived from the row itself: a row that carried a control byte in must
@@ -787,11 +789,11 @@ unset _i _l _b _x _d _n _mp_in _mp_rows _mp_longest _mp_ndl_max
 # it would turn legitimate localised text into mojibake — and it is not restated here. If a copy
 # ever starts stripping C1, this reds and that reason gets re-argued instead of silently lost.
 _mp_c1() { LC_ALL=C printf '%s' "$1" | tr -dc '\233' | wc -c | tr -d ' '; }
-_mp_c1_body="$(printf 'a\233b')"
+_mp_c1_body="$(printf 'a\233b')"; _mp_utf8='café €50'
 eq "declared limit: the C1 CSI byte survives promote's copy"   "1" "$(_mp_c1 "$(_mp_detail "$_mp_c1_body")")"
-eq "declared limit: …and next-dl's, identically"               "1" "$(_mp_c1 "$(resp_excerpt "$_mp_c1_body")")"
+eq "declared limit: …and next-dl's, identically"               "1" "$(_mp_c1 "$(resp_excerpt _mp_c1_body)")"
 eq "declared limit: …and the UTF-8 row is untouched by both"   "true|true" \
-   "$(has 'café €50' "$(_mp_detail 'café €50')")|$(has 'café €50' "$(resp_excerpt 'café €50')")"
+   "$(has 'café €50' "$(_mp_detail "$_mp_utf8")")|$(has 'café €50' "$(resp_excerpt _mp_utf8)")"
 
 # ⭐ THE CONTROL, DRIVEN FROM BOTH ENDS. Every row above would pass just as well for two copies
 # that had BOTH lost the scrub — which is the state this branch shipped in round 6 minus one copy.
@@ -809,8 +811,8 @@ eq "control: the scrub stage really came out of next-dl's copy" "true|false|true
    "$(has "$_mp_needle" "$RX_SRC")|$(has "$_mp_needle" "$RX_NAIVE")|$(has 'rx_naive() {' "$RX_NAIVE")"
 eval "$RX_NAIVE"
 eq "control: unscrubbed, next-dl's copy LEAKS the ESC sequence" "true" \
-   "$([[ "$(_mp_ctl "$(rx_naive "$_mp_esc")")" -gt 0 ]] && echo true || echo false)"
-eq "control: …while the shipped copy emits none"                "0" "$(_mp_ctl "$(resp_excerpt "$_mp_esc")")"
+   "$([[ "$(_mp_ctl "$(rx_naive _mp_esc)")" -gt 0 ]] && echo true || echo false)"
+eq "control: …while the shipped copy emits none"                "0" "$(_mp_ctl "$(resp_excerpt _mp_esc)")"
 RD_SRC="$(_fn_src "$PRC" resp_detail)"
 RD_NAIVE="$(printf '%s\n' "$RD_SRC" | sed "s/| tr -d '[^']*' //; s/^resp_detail()/rd_naive()/")"
 eq "control: the scrub stage really came out of promote's copy" "true|false|true" \
@@ -888,19 +890,27 @@ eq "an over-bound body is cut and says so" "true" \
    "$(has "[truncated at $API_ERR_EXCERPT_MAX bytes]" "$(kb_render_refusal 422 "$_rr_long")")"
 eq "no prefix of a straddling token survives the cut" "false" \
    "$(has "${RR_TOKEN:0:8}" "$(kb_render_refusal 422 "$_rr_straddle")")"
+# The rows above reach kb_render_refusal_var through the by-value wrapper, whose own variable is
+# `_kbrr_body`. A caller's variable named `body` — the name the lib's own callers use — must be
+# READ, not shadowed by the function's local of the same name (card#12177).
+# shellcheck disable=SC2034  # read by name, through kb_render_refusal_var
+body="${RR_BODIES[1]}"
+eq "by name: a caller variable named \`body\` is read, and masked" \
+   "$(kb_render_refusal 422 "${RR_BODIES[1]}")" "$(kb_render_refusal_var 422 body)"
+unset body
 
 # ⭐ THE CONTROL, from the lib's end: its mask stage cut out must make a token row DISAGREE with
 # promote's and leak — otherwise the rows above are comparing two copies that could both have lost it.
 echo "== control: a lib copy without its mask, or with its own bound, is caught =="
-RR_SRC="$(_fn_src "$LIB" kb_render_refusal)"
-RR_NAIVE="$(printf '%s\n' "$RR_SRC" | sed '/KB_TOKEN/d; s/^kb_render_refusal()/rr_naive()/')"
+RR_SRC="$(_fn_src "$LIB" kb_render_refusal_var)"
+RR_NAIVE="$(printf '%s\n' "$RR_SRC" | sed 's/kb_mask_token body "\${KB_TOKEN:-}" "\$body"; //; s/^kb_render_refusal_var()/rr_naive()/')"
 eq "control: the mask line really came out" "true|false|true" \
    "$(has 'KB_TOKEN' "$RR_SRC")|$(has 'KB_TOKEN' "$RR_NAIVE")|$(has 'rr_naive() {' "$RR_NAIVE")"
 eval "$RR_NAIVE"
 eq "control: unmasked, the lib copy LEAKS the token" "true" \
-   "$(has "$RR_TOKEN" "$(rr_naive 422 "${RR_BODIES[1]}")")"
+   "$(_rr_b="${RR_BODIES[1]}"; has "$RR_TOKEN" "$(rr_naive 422 _rr_b)")"
 eq "control: …and the comparison sees the disagreement" "false" \
-   "$([[ "$(rr_naive 422 "${RR_BODIES[1]}")" == "$(_rr_promote 422 "${RR_BODIES[1]}")" ]] && echo true || echo false)"
+   "$([[ "$(_rr_b="${RR_BODIES[1]}"; rr_naive 422 _rr_b)" == "$(_rr_promote 422 "${RR_BODIES[1]}")" ]] && echo true || echo false)"
 _rr_saved="$KB_API_ERR_EXCERPT_MAX"; KB_API_ERR_EXCERPT_MAX=$(( _rr_saved - 1 ))
 eq "control: a lib bound one byte off disagrees on the over-bound row" "false" \
    "$([[ "$(kb_render_refusal 422 "$_rr_long")" == "$(_rr_promote 422 "$_rr_long")" ]] && echo true || echo false)"
