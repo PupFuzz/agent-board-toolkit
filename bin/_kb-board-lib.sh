@@ -1368,8 +1368,8 @@ KB_API_RC_TRANSPORT=7
 # ⛔ AND NO NON-2xx BODY IS EVER IN A TRACED WORD (card#12177). xtrace prints an assignment with
 # its value, so `out=…`, `resp=…` and `KB_API_ERR_RESP=…` each printed that echoed token under
 # `bash -x`. xtrace is suspended from the capture until the answer is classified and restored on
-# every path. A 2xx body is printed on stdout, and the caller's `x="$(kb_api …)"` traces it there,
-# out of this function's reach.
+# every path. A 2xx body is NOT covered: it is traced by this function's own closing printf and
+# again at the caller's `x="$(kb_api …)"`.
 kb_api() {
     local method="$1" path="$2" body="${3:-}"
     KB_API_ERR_RESP=""

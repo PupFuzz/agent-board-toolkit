@@ -69,9 +69,9 @@
 #     path is held only by § 6's message rule, which does not look at traces.
 #   * A server that ECHOES the request's Authorization header into its response body (a debug
 #     error page, measured once — card#9301) hands the token back in a body. § 9 holds the
-#     non-2xx body on the two paths it drives. NOT held, and still traced: any body answered
-#     with a 1xx–3xx status, which callers capture through `$(…)` and xtrace prints at that
-#     assignment; and EVERY body kb_api_status returns, refusals included, since it crosses on
+#     non-2xx body on the two paths it drives. NOT held, and still traced: any body the tool
+#     counts as success (1xx–3xx in promote-released-cards, 2xx in kb_api and next-dl), traced
+#     where it is printed and captured; and EVERY body kb_api_status returns, refusals included, since it crosses on
 #     stdout the same way (its callers: `grep -n 'kb_api_status ' bin/`).
 #   * The standalone bins that cannot source the lib — promote-released-cards, card-completeness,
 #     agent-board-toolkit-runtime-check — suspend xtrace by hand (`case $- in *x*) V=x; set +x`),
