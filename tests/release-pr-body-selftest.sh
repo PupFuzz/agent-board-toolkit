@@ -1768,23 +1768,27 @@ eq "…and GITHUB_REPOSITORY outranks it"                 "$(printf 'acme/widget
 
 # THE ORIGIN FALLBACK names <owner>/<repo> and nothing else of the URL (card#12169). The repo it
 # derives is the verifier's argv, so a credential left in it — a `?access_token=` query, a `#`
-# fragment, or a whole unmatched `user:token@` URL — is handed to another program and to whatever
-# it logs. RED when: the URL is not cut at its first `?` / `#` before the slug is taken, or a URL
-# the slug pattern does not match is passed through whole instead of yielding nothing.
+# fragment, or `user:token@` userinfo — is handed to another program and to whatever it logs.
+# RED when: the URL is not cut at its first `?` / `#` before the slug is taken, one trailing `/`
+# is not dropped, or an answer outside GitHub's owner/repo charset is returned instead of nothing.
 RV_SECRET='URLSECRET-0rigin-T0K'
 for _u in "https://github.com/acme/gizmo.git?access_token=$RV_SECRET" \
           "https://github.com/acme/gizmo#$RV_SECRET" \
+          "https://u:$RV_SECRET@github.com/acme/gizmo/" 'https://github.com/acme/gizmo.git/' \
           'git@github.com:acme/gizmo.git' 'https://github.com/acme/gizmo'; do
   g -C "$RVR" remote set-url origin "$_u"
   _rv "$RV_MID" GITHUB_REPOSITORY=
   eq "origin [$_u]: the verifier is asked acme/gizmo#<pr>" "$(printf 'acme/gizmo#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
   eq "…and the credential is in no output and no call"    "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
 done
-g -C "$RVR" remote set-url origin "https://u:$RV_SECRET@github.com/acme/gizmo/"
-_rv "$RV_MID" GITHUB_REPOSITORY=
-eq "an origin the slug pattern does not match names no repo" "Review: 0 of 3 bundled changes have an independent review record; not measured: #11, #12, #13." "$RV_LINE"
-eq "…the verifier was never called"                     "" "$RV_CALLS"
-eq "…and the credential is in no output"                "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
+for _u in "https://u:$RV_SECRET@git.example.com/gizmo" "https://user:$RV_SECRET@github.com/acme" \
+          "https://user:$RV_SECRET/@github.com"; do
+  g -C "$RVR" remote set-url origin "$_u"
+  _rv "$RV_MID" GITHUB_REPOSITORY=
+  eq "origin [$_u] names no repo" "Review: 0 of 3 bundled changes have an independent review record; not measured: #11, #12, #13." "$RV_LINE"
+  eq "…the verifier was never called"                     "" "$RV_CALLS"
+  eq "…and the credential is in no output"                "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
+done
 g -C "$RVR" remote set-url origin git@github.com:acme/gadget.git
 unset _u RV_SECRET
 

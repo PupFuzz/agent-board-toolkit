@@ -449,8 +449,9 @@ echo "== 15. THE ORIGIN FALLBACK names <owner>/<repo> and nothing else of the UR
 # every request path, so whatever survives the parse is leaked to both. The origin is set through
 # git's environment config in a PLAIN DIRECTORY — no `git init`, for the reason § 10 gives.
 # RED when: the URL is not cut at its first `?` / `#` before the slug is taken (query and fragment
-# rows), or a URL the slug pattern does not match is passed through whole instead of yielding
-# nothing (the userinfo + trailing-slash row).
+# rows), one trailing `/` is not dropped (trailing-slash rows), or an answer outside GitHub's
+# owner/repo charset is returned instead of nothing (the userinfo refusal rows — `[^/:]+` alone
+# matches across the `user:` colon when the path has one segment).
 URL_SECRET='URLSECRET-0rigin-T0K'
 # origin_run <origin-url> — the real oracle from a plain directory whose only repo source is the
 # origin; captures rc/out/err like `run`.
@@ -467,16 +468,20 @@ leaked() { has "$URL_SECRET" "$out$err$(cat "$CALL_LOG" "$ARGV_LOG" "$TMP_STDIN_
 for _u in "https://github.com/acme/widget.git?access_token=$URL_SECRET" \
           "https://github.com/acme/widget#$URL_SECRET" \
           "https://github.com/acme/widget.git?x=a/$URL_SECRET" \
+          "https://u:$URL_SECRET@github.com/acme/widget/" 'https://github.com/acme/widget.git/' \
           'git@github.com:acme/widget.git' 'https://github.com/acme/widget'; do
   origin_run "$_u"
   eq "origin [$_u] → COMPLETE, rc 0"            "0|COMPLETE" "$rc|$(verdict 9606)"
   eq "  … the request path is /repos/acme/widget/pulls?" "true" "$(has "/repos/acme/widget/pulls?" "$(cat "$CALL_LOG")")"
   eq "  … and the credential is in no output and no request" "false" "$(leaked)"
 done
-origin_run "https://u:$URL_SECRET@github.com/acme/widget/"
-eq "an origin the slug pattern does not match → rc 2"  "2"     "$rc"
-eq "  … refusing to guess, not reading the URL as a repo" "true" "$(has 'Refusing to guess the population' "$err")"
-eq "  … and the credential is in no output and no request" "false" "$(leaked)"
+for _u in "https://u:$URL_SECRET@git.example.com/widget" "https://user:$URL_SECRET@github.com/acme" \
+          "https://user:$URL_SECRET/@github.com"; do
+  origin_run "$_u"
+  eq "origin [$_u] names no repo → rc 2"          "2"     "$rc"
+  eq "  … refusing to guess, not reading the URL as a repo" "true" "$(has 'Refusing to guess the population' "$err")"
+  eq "  … and the credential is in no output and no request" "false" "$(leaked)"
+done
 eq "  … (control: the leak probe sees a credential that IS printed)" "true" \
    "$(out="x$URL_SECRET"; leaked)"
 unset -f origin_run leaked

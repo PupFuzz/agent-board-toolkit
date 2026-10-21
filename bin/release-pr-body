@@ -1084,20 +1084,22 @@ bundle_lines() {
 # repo_from_origin_url <url>: the `<owner>/<repo>` an origin remote URL names, or nothing.
 # `git@host:owner/repo(.git)`, `https://host/owner/repo(.git)`, `ssh://git@host/owner/repo`.
 # The answer is printed and handed on — card-completeness's request paths, release-pr-body's
-# verifier argument — so a query, a fragment or an unmatched URL must not reach it (card#12169):
-# the URL is cut at its first `?` or `#` (an `?access_token=` query or a fragment
-# can carry a credential), and a URL the slug pattern does not match yields nothing rather than
-# passing through whole — `sed -n …p`, because a plain `sed s` prints a non-matching line as-is,
-# `user:token@` userinfo included.
+# verifier argument — so it must carry nothing else of the URL (card#12169). The URL is cut at its
+# first `?` or `#` (a query or fragment can carry a token) and one trailing `/` is dropped; the
+# answer is then only ever text in GitHub's owner/repo charset, `[A-Za-z0-9-]+/[A-Za-z0-9._-]+`
+# (under LC_ALL=C, so a range is ASCII), with a repo other than `.` or `..`, and anything else is
+# nothing. The charset is what keeps userinfo out: it has no `@`, and `[^/:]` alone matched across
+# the `user:` colon of `https://user:TOK@host/widget`. `sed -n …p`, because a plain `sed s` prints
+# a non-matching line as-is.
 # `bin/card-completeness` carries its own copy of this function for the same question;
 # tests/mirror-pair-parity-selftest.sh § 10 keeps the copies in step by requiring the same answer
 # over one corpus of origin URLs.
 repo_from_origin_url() {
   local url="${1%%[?#]*}" slug=""
-  case "$url" in
-    *:*|*/*) slug="$(printf '%s' "${url%.git}" | sed -nE 's#^.*[:/]([^/:]+/[^/]+)$#\1#p')" ;;
-  esac
-  [ -z "$slug" ] || printf '%s\n' "$slug"
+  url="${url%/}"
+  slug="$(printf '%s' "${url%.git}" | LC_ALL=C sed -nE 's#^.*[:/]([A-Za-z0-9-]+/[A-Za-z0-9._-]+)$#\1#p')"
+  case "$slug" in ''|*/.|*/..) return 0 ;; esac
+  printf '%s\n' "$slug"
 }
 
 # --- the review sentence: one line, first under `## Bundled` (card#11149, rt#557) -------------
