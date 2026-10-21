@@ -34,6 +34,8 @@
 #          through every lib-sourcing bin that resolves one and the runtime check.
 #   § 8    The same pasted path under `bash -v` / `bash -xv` (card#11224): verbose mode echoes
 #          every line a sourced env file holds, so the pair suspends `-v` too.
+#   § 9    A REFUSAL body that echoes the token, under `bash -x` (card#12177): kbcard's move
+#          (kb_api → kb_stage_write → kb_render_refusal_var) and next-dl's claim (resp_excerpt).
 #
 # WHAT A GREEN RUN DOES NOT COVER — read before citing it:
 #   * § 4 IS A HEURISTIC OVER COMMON SHAPES, NOT A PROOF. The gate on a leak is the `bash -x`
@@ -66,9 +68,11 @@
 #     nameref (`local -n`). § 7 and § 8 drive the bins they name; a token-path line on another
 #     path is held only by § 6's message rule, which does not look at traces.
 #   * A server that ECHOES the request's Authorization header into its response body (a debug
-#     error page, measured once — card#9301) puts the token into the traced response variables.
-#     That is a body the server sent back, not an expansion of the token, and nothing here
-#     suppresses it; the stub never echoes.
+#     error page, measured once — card#9301) hands the token back in a body. § 9 holds the
+#     non-2xx body on the two paths it drives. NOT held, and still traced: any body answered
+#     with a 1xx–3xx status, which callers capture through `$(…)` and xtrace prints at that
+#     assignment; and EVERY body kb_api_status returns, refusals included, since it crosses on
+#     stdout the same way (its callers: `grep -n 'kb_api_status ' bin/`).
 #   * The standalone bins that cannot source the lib — promote-released-cards, card-completeness,
 #     agent-board-toolkit-runtime-check — suspend xtrace by hand (`case $- in *x*) V=x; set +x`),
 #     which § 4 reads as a region. The `bash -x` legs of the first two live in their own selftests
@@ -1049,5 +1053,52 @@ eq "in-process -v: kb_resolve_env does not echo the board env's pasted value" "f
 eq "in-process -v: kb_load_host_env does not echo the host env's pasted value" "false" "$(_contains "$PH" "$TMP/v8in.err")"
 eq "in-process -v: control — a file sourced after them IS echoed (verbose resumed)" "true" \
     "$(_contains 'echo marker-after-resolve' "$TMP/v8in.err")"
+
+echo "== § 9. a REFUSAL body that echoes the token is not traced (card#12177) =="
+# A server that echoes the request's Authorization header into its error body hands the token
+# back. Before card#12177 that body was traced raw: kb_api's `out=`, `resp=` and
+# `KB_API_ERR_RESP=`, kb_render_refusal's call line and `local`, and next-dl's `resp=`, `body=`
+# and `resp_excerpt` call line. Each leg drives a 401 carrying the token through the real bin
+# under `bash -x` and counts the token over stdout and stderr together. THE CONTROLS: the refusal
+# was rendered with the token MASKED (so the body was read and rendered); the renderer's call line
+# is in the trace, carrying the variable NAME — which proves tracing resumed after the capture in
+# the SAME shell (the write runs inside a `$(…)`, so a later line from the parent would not); and
+# the traced run exits as the plain one does.
+kb_stub_board_config dev 42 'export KB_STAGE_BACKLOG=48' 'export KB_STAGE_IN_PROGRESS=84'
+printf '%s\n' "$TOK" > "$KB_STUB_TOKEN_FILE"
+export X9_ECHO="{\"message\":\"Unauthenticated.\",\"headers\":{\"Authorization\":\"Bearer $TOK\"}}"
+kb_stub_route() {
+    case "$1 $2" in
+        "PATCH "*/tasks/505.json*)           printf '401\n%s' "$X9_ECHO" ;;
+        "POST "*/dl-sequence/claim.json)     printf '401\n%s' "$X9_ECHO" ;;
+        "GET "*/tasks/505.json*)
+            printf '200\n{"data":{"id":505,"name":"probe","workflow_stage_id":48,"tags":[],"comments":[]}}' ;;
+    esac
+}
+export -f kb_stub_route
+# _x9_leg <label> <rendered-needle> <traced-call-line> <bin> <args…>
+_x9_leg() {
+    local label="$1" needle="$2" call="$3" bin="$4"; shift 4
+    local rc_plain=0 rc_x=0 n
+    kb_stub_reset
+    bash "$bin" "$@" >/dev/null 2>&1 || rc_plain=$?
+    kb_stub_reset
+    bash -x "$bin" "$@" >"$TMP/x9.all" 2>&1 || rc_x=$?
+    n="$({ grep -oF "$TOK" "$TMP/x9.all" || true; } | wc -l | tr -d ' ')"
+    eq "$label: the token appears 0 times in the traced run's stdout+stderr" "0" "$n"
+    eq "$label: control — the refusal was rendered, token masked" "true" "$(_contains "$needle" "$TMP/x9.all")"
+    eq "$label: control — tracing resumed after the capture: \`$call\` is traced" "true" \
+        "$(grep -qxE "\\++ $call" "$TMP/x9.all" && echo true || echo false)"
+    eq "$label: the traced run exits as the plain one does ($rc_plain)" "$rc_plain" "$rc_x"
+}
+_x9_leg "kbcard move (kb_stage_write)" 'answered HTTP 401, server said: {"message":"Unauthenticated.","headers":{"Authorization":"Bearer ***"}}' \
+    'kb_render_refusal_var 401 KB_API_ERR_RESP' "$KBC" --board dev move --task 505 --column in_progress
+eq "kbcard move: control — the PATCH was really sent" "true" \
+    "$([[ "$(kb_stub_count PATCH /tasks/505.json)" -ge 1 ]] && echo true || echo false)"
+_x9_leg "next-dl claim" 'Response: {"message":"Unauthenticated.","headers":{"Authorization":"Bearer ***"}}' \
+    'resp_excerpt body' "$ROOT/bin/next-dl" --board dev
+eq "next-dl claim: control — the claim was really sent" "1" "$(kb_stub_count POST /boards/42/dl-sequence/claim.json)"
+unset -f _x9_leg
+unset X9_ECHO
 
 _summary "xtrace-token-selftest"

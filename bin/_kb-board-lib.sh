@@ -1354,8 +1354,8 @@ KB_API_RC_TRANSPORT=7
 # at the top of every call, so it never carries an earlier call's body. It is a global for the
 # reason KB_HTTP is one, and it has the same subshell limit: it is readable by code that runs in
 # the SAME shell as kb_api — kb_stage_write reads it that way — and never by a caller that
-# captured kb_api through `$(…)`. It is RAW: kb_render_refusal is the only thing that may put it
-# in front of an operator.
+# captured kb_api through `$(…)`. It is RAW: kb_render_refusal_var, handed its NAME, is the only
+# thing that may put it in front of an operator.
 #
 # ⛔ THE BEARER TOKEN IS MASKED OUT OF EVERY BODY THIS FUNCTION RENDERS (card#9777) — the
 # KB_API_ERRBODY echo and both KB_LOG_FILE lines. A server that renders debug output echoes the
@@ -1364,6 +1364,12 @@ KB_API_RC_TRANSPORT=7
 # DURABLE. The FAILED-CURL line is included because a transfer cut off mid-body (a --max-time
 # expiry) leaves the part of the body already read in $out beside curl's error text. The mask is
 # kb_mask_token; an empty token masks nothing.
+#
+# ⛔ AND NO NON-2xx BODY IS EVER IN A TRACED WORD (card#12177). xtrace prints an assignment with
+# its value, so `out=…`, `resp=…` and `KB_API_ERR_RESP=…` each printed that echoed token under
+# `bash -x`. xtrace is suspended from the capture until the answer is classified and restored on
+# every path. A 2xx body is printed on stdout, and the caller's `x="$(kb_api …)"` traces it there,
+# out of this function's reach.
 kb_api() {
     local method="$1" path="$2" body="${3:-}"
     KB_API_ERR_RESP=""
@@ -1376,11 +1382,13 @@ kb_api() {
     # /dev/fd process-substitution path that native mingw64/Git-Bash curl can't open (#34).
     # The header is built untraced and fed as a variable (kb_xtrace_off, card#11204).
     kb_xtrace_off _kbx; hdr="$(kb_auth_header "$KB_TOKEN")"; kb_xtrace_restore _kbx
-    local t0="${EPOCHREALTIME:-}"
+    local t0="${EPOCHREALTIME:-}" _kbb
+    kb_xtrace_off _kbb
     out="$(curl "${args[@]}" -H @- -w $'\n__HTTP__%{http_code}' "$KB_API$path" 2>&1 <<<"$hdr")" || {
         kb_debug_request "$method" "$KB_API$path" 000 "$t0"
         local out_shown; kb_xtrace_off _kbx; kb_mask_token out_shown "${KB_TOKEN:-}" "$out"; kb_xtrace_restore _kbx
         [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path FAILED-CURL $out_shown" >> "$KB_LOG_FILE"
+        kb_xtrace_restore _kbb
         echo "$(_kb_prog): curl failed on $method $path" >&2
         # NOT rc 1 — nothing was read here, while rc 1 below means the server answered.
         KB_HTTP="000"; return "$KB_API_RC_TRANSPORT"
@@ -1389,14 +1397,17 @@ kb_api() {
     kb_debug_request "$method" "$KB_API$path" "$KB_HTTP" "$t0"
     local resp="${out%__HTTP__*}"
     if [[ ! "$KB_HTTP" =~ ^2 ]]; then
+        # shellcheck disable=SC2034  # read by name: kb_stage_write hands it to kb_render_refusal_var
         KB_API_ERR_RESP="$resp"
         local resp_shown; kb_xtrace_off _kbx; kb_mask_token resp_shown "${KB_TOKEN:-}" "$resp"; kb_xtrace_restore _kbx
+        kb_xtrace_restore _kbb
         [[ -n "${KB_LOG_FILE:-}" ]] && echo "$(date -u +%FT%TZ) $method $path HTTP-$KB_HTTP $resp_shown" >> "$KB_LOG_FILE"
         [[ "${KB_API_QUIET:-}" == 1 ]] || echo "$(_kb_prog): HTTP $KB_HTTP on $method $path" >&2
         [[ "${KB_API_ERRBODY:-}" == 1 ]] && echo "$resp_shown" >&2
         # The server ANSWERED: rc 1, the outcome is known, and KB_HTTP names it.
         return 1
     fi
+    kb_xtrace_restore _kbb
     printf '%s' "$resp"
 }
 
@@ -1466,9 +1477,31 @@ KB_API_ERR_EXCERPT_MAX=400
 # promote-released-cards may not source this lib (docs/CONSOLIDATION-PLAN.md § Stage D), so the
 # two texts stay two; tests/mirror-pair-parity-selftest.sh § 8 drives both over one corpus and
 # reds on any row where their output differs, envelope included.
+#
+# ⛔ PASS THE BODY BY NAME — kb_render_refusal_var <status> <varname> (card#12177). A body passed
+# as an ARGUMENT is in the words xtrace prints, at the caller's call line and at this function's
+# own `local`, so under `bash -x` an echoed token is traced before the mask ever runs. The by-name
+# form reads the variable with xtrace suspended until the mask has run. kb_render_refusal
+# <status> <body> is kept for vendored callers (this lib's symbols are consumer surface,
+# VERSIONING.md) and delegates; its argument is traced as before.
 kb_render_refusal() {
-    local LC_ALL=C status="$1" body="${2-}" _kbx
-    kb_xtrace_off _kbx; kb_mask_token body "${KB_TOKEN:-}" "$body"; kb_xtrace_restore _kbx
+    local _kbrr_body="${2-}"
+    kb_render_refusal_var "$1" _kbrr_body
+}
+kb_render_refusal_var() {
+    local _kbrr_x _kbrr_ok=""
+    # A BODY passed where the name goes would make `${!2}` print that body in bash's own
+    # "invalid variable name" error and end the shell, so the name is checked first, untraced.
+    local LC_ALL=C
+    kb_xtrace_off _kbrr_x; [[ ! "${2-}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || _kbrr_ok=1; kb_xtrace_restore _kbrr_x
+    [[ -n "$_kbrr_ok" ]] || {
+        printf '%s: kb_render_refusal_var: argument 2 must be the NAME of the variable holding the body\n' "$(_kb_prog)" >&2
+        return 2
+    }
+    # `local body=` expands its value before it declares the local, so a caller whose own variable
+    # is named `body` is read rather than shadowed.
+    kb_xtrace_off _kbrr_x; local body="${!2-}"; kb_mask_token body "${KB_TOKEN:-}" "$body"; kb_xtrace_restore _kbrr_x
+    local status="$1"
     body="$(printf '%s' "$body" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
     body="${body# }"; body="${body% }"
     if [[ -z "$body" ]]; then printf 'HTTP %s, and the server sent no body' "$status"; return 0; fi
@@ -1516,7 +1549,7 @@ kb_stage_write() {
     local KB_API_QUIET=1 KB_API_ERRBODY=""
     kb_api "$method" "$path" "$body" || rc=$?
     if [[ "$rc" -eq 1 ]]; then
-        echo "$(_kb_prog): $method $path answered $(kb_render_refusal "${KB_HTTP:-}" "${KB_API_ERR_RESP-}")" >&2
+        echo "$(_kb_prog): $method $path answered $(kb_render_refusal_var "${KB_HTTP:-}" KB_API_ERR_RESP)" >&2
     fi
     return "$rc"
 }
@@ -1970,7 +2003,7 @@ kb_owner_claim() {
             notes+=("$(_kb_prog): owner NOT assigned on $label — the write DID NOT COMPLETE (no HTTP status came back), so whether it landed is UNKNOWN. The card was moved.")
             KB_OWNER_NOTE="$(printf '%s\n' "${notes[@]}")"; return 0 ;;
         *)
-            notes+=("$(_kb_prog): owner NOT assigned on $label — $(kb_render_refusal "$http" "$body"). The card was moved; its assignee is unchanged.")
+            notes+=("$(_kb_prog): owner NOT assigned on $label — $(kb_render_refusal_var "$http" body). The card was moved; its assignee is unchanged.")
             KB_OWNER_NOTE="$(printf '%s\n' "${notes[@]}")"; return 0 ;;
     esac
     # `me` is a jq-validated positive integer, so splicing it into the predicate is safe. stderr is
@@ -1997,7 +2030,7 @@ kb_owner_claim() {
         if [[ "$http" == 000 ]]; then
             notes+=("$(_kb_prog): owner comment UNVERIFIED on $label — the POST DID NOT COMPLETE (no HTTP status came back), so whether the record of the replaced holder, $prev, is on the card is UNKNOWN. The card IS assigned to $who")
         elif [[ "$http" != 2* ]]; then
-            notes+=("$(_kb_prog): owner comment NOT posted on $label — $(kb_render_refusal "$http" "$body"). The card IS assigned to $who; the holder it replaced, $prev, is recorded only in this line")
+            notes+=("$(_kb_prog): owner comment NOT posted on $label — $(kb_render_refusal_var "$http" body). The card IS assigned to $who; the holder it replaced, $prev, is recorded only in this line")
         elif ! kb_is_uint "$cid"; then
             notes+=("$(_kb_prog): owner comment UNVERIFIED on $label — the POST answered success with no comment id to look for, so the record of the replaced holder, $prev, is UNMEASURED")
         else
