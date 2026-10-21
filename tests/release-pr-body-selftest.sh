@@ -1766,6 +1766,28 @@ eq "the repo falls back to the origin remote"           "$(printf 'acme/gadget#%
 _rv "$RV_MID"
 eq "…and GITHUB_REPOSITORY outranks it"                 "$(printf 'acme/widget#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
 
+# THE ORIGIN FALLBACK names <owner>/<repo> and nothing else of the URL (card#12169). The repo it
+# derives is the verifier's argv, so a credential left in it — a `?access_token=` query, a `#`
+# fragment, or a whole unmatched `user:token@` URL — is handed to another program and to whatever
+# it logs. RED when: the URL is not cut at its first `?` / `#` before the slug is taken, or a URL
+# the slug pattern does not match is passed through whole instead of yielding nothing.
+RV_SECRET='URLSECRET-0rigin-T0K'
+for _u in "https://github.com/acme/gizmo.git?access_token=$RV_SECRET" \
+          "https://github.com/acme/gizmo#$RV_SECRET" \
+          'git@github.com:acme/gizmo.git' 'https://github.com/acme/gizmo'; do
+  g -C "$RVR" remote set-url origin "$_u"
+  _rv "$RV_MID" GITHUB_REPOSITORY=
+  eq "origin [$_u]: the verifier is asked acme/gizmo#<pr>" "$(printf 'acme/gizmo#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+  eq "…and the credential is in no output and no call"    "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
+done
+g -C "$RVR" remote set-url origin "https://u:$RV_SECRET@github.com/acme/gizmo/"
+_rv "$RV_MID" GITHUB_REPOSITORY=
+eq "an origin the slug pattern does not match names no repo" "Review: 0 of 3 bundled changes have an independent review record; not measured: #11, #12, #13." "$RV_LINE"
+eq "…the verifier was never called"                     "" "$RV_CALLS"
+eq "…and the credential is in no output"                "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
+g -C "$RVR" remote set-url origin git@github.com:acme/gadget.git
+unset _u RV_SECRET
+
 echo "== a merge-train range is bundled and reviewed per PR, not per commit (card#11580) =="
 # THE DEFECT (measured on agent-board-framework v0.64.0): a range carrying a merge-train commit
 # listed the train's PRs as raw branch-commit subjects with no PR number, and the Review: sentence's

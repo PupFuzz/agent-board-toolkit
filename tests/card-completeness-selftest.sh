@@ -443,4 +443,43 @@ eq "a window over the cap is UNMEASURED"       "UNMEASURED" "$(verdict 9451)"
 eq "  … naming the cap"                        "true"  "$(has "${cap}-commit cap" "$(detail 9451)")"
 eq "  … and looked up NO commit"               "false" "$(has '/commits/' "$(cat "$CALL_LOG")")"
 
+echo "== 15. THE ORIGIN FALLBACK names <owner>/<repo> and nothing else of the URL (card#12169) =="
+# An origin URL can carry a credential the repo name must never carry: a `?access_token=` query,
+# a `#` fragment, or `user:token@` userinfo. REPO is printed in every UNMEASURED label and sent in
+# every request path, so whatever survives the parse is leaked to both. The origin is set through
+# git's environment config in a PLAIN DIRECTORY — no `git init`, for the reason § 10 gives.
+# RED when: the URL is not cut at its first `?` / `#` before the slug is taken (query and fragment
+# rows), or a URL the slug pattern does not match is passed through whole instead of yielding
+# nothing (the userinfo + trailing-slash row).
+URL_SECRET='URLSECRET-0rigin-T0K'
+# origin_run <origin-url> — the real oracle from a plain directory whose only repo source is the
+# origin; captures rc/out/err like `run`.
+origin_run() {
+  prs '[]'
+  rc=0
+  out="$(cd "$noorigin" && env -u GITHUB_REPOSITORY GIT_CONFIG_COUNT=1 \
+      GIT_CONFIG_KEY_0=remote.origin.url GIT_CONFIG_VALUE_0="$1" \
+      "$CC" "${RH[@]}" --cards 9606 2>"$TMP/err")" || rc=$?
+  err="$(cat "$TMP/err")"
+}
+# leaked — true when the URL credential is in any output or any request (argv, URL, stdin).
+leaked() { has "$URL_SECRET" "$out$err$(cat "$CALL_LOG" "$ARGV_LOG" "$TMP_STDIN_LOG")"; }
+for _u in "https://github.com/acme/widget.git?access_token=$URL_SECRET" \
+          "https://github.com/acme/widget#$URL_SECRET" \
+          "https://github.com/acme/widget.git?x=a/$URL_SECRET" \
+          'git@github.com:acme/widget.git' 'https://github.com/acme/widget'; do
+  origin_run "$_u"
+  eq "origin [$_u] → COMPLETE, rc 0"            "0|COMPLETE" "$rc|$(verdict 9606)"
+  eq "  … the request path is /repos/acme/widget/pulls?" "true" "$(has "/repos/acme/widget/pulls?" "$(cat "$CALL_LOG")")"
+  eq "  … and the credential is in no output and no request" "false" "$(leaked)"
+done
+origin_run "https://u:$URL_SECRET@github.com/acme/widget/"
+eq "an origin the slug pattern does not match → rc 2"  "2"     "$rc"
+eq "  … refusing to guess, not reading the URL as a repo" "true" "$(has 'Refusing to guess the population' "$err")"
+eq "  … and the credential is in no output and no request" "false" "$(leaked)"
+eq "  … (control: the leak probe sees a credential that IS printed)" "true" \
+   "$(out="x$URL_SECRET"; leaked)"
+unset -f origin_run leaked
+unset _u URL_SECRET
+
 _summary "card-completeness-selftest"
