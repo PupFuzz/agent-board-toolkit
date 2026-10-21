@@ -948,7 +948,7 @@ _need -x "$CCB"
 RFO_A="$(_fn_src "$CCB" repo_from_origin_url)"
 RFO_B="$(_fn_src "$RPB" repo_from_origin_url)"
 eq "control: both copies extracted with a body" "true" \
-   "$([[ "$RFO_A" == *'sed -nE'* && "$RFO_B" == *'sed -nE'* ]] && echo true || echo false)"
+   "$([[ "$RFO_A" == *'%%[/?#]'* && "$RFO_B" == *'%%[/?#]'* ]] && echo true || echo false)"
 _rfo() { ( eval "$1"; repo_from_origin_url "$2" ); }
 _rfo_corpus=('git@github.com:acme/widget.git' 'https://github.com/acme/widget.git' 'https://github.com/acme/widget'
     'ssh://git@github.com/acme/widget' 'ssh://git@github.com:22/acme/widget.git' 'https://github.com/acme/widget/'
@@ -976,15 +976,19 @@ eq "value: userinfo before a one-segment path, and a dot repo, yield nothing" \
    "|||||" \
    "$(_rfo_val 'https://u:T@host/widget' 'https://user:TOK@github.com/acme' \
        'https://user:TOK/@github.com' 'git@github.com:acme/..git' 'https://github.com/acme/.')"
-# Userinfo is dropped (up to the LAST `@`) BEFORE the `?`/`#` cut, or a password holding `/` and
-# then `?` or `#` is cut into the slug; and an origin holding whitespace or a control character
-# (git config values may hold a newline) is nothing, because `sed` matches line by line.
-eq "value: a password holding / then ? or # still yields the repo after its @" \
-   "acme/widget|acme/widget|" \
-   "$(_rfo_val 'https://user:TOK/abc#1@github.com/acme/widget' 'https://user:TOK/abc?1@github.com/acme/widget')"
-eq "value: a fragment-cut password with no repo after it, and a multi-line origin, yield nothing" \
-   "|||" \
-   "$(_rfo_val 'https://TOK/abc#@github.com' $'https://github.com/acme/widget\n/TOK/x' $'https://u:x/TOK\n@github.com/acme/widget')"
+# The answer comes from PATH bytes only (card#12169, review rounds 2-3): the authority of a
+# `scheme://` URL is discarded whole, from after `//` to the first `/`, `?` or `#`, so userinfo and
+# port never reach it; the path is cut at its first `?`/`#`, so an `@`, `/` or `:` in a query or
+# fragment never moves it; an origin holding whitespace or a control character is nothing.
+eq "value: a query or fragment holding @, / or : leaves the path's repo" \
+   "acme/widget|acme/widget|acme/widget|acme/widget|" \
+   "$(_rfo_val 'https://github.com/acme/widget#x@h/o/ghp_SECRET1' 'https://github.com/acme/widget?t=a@b/c/SECRET2' \
+       'https://github.com/acme/widget?redirect=git@github.com:acme/SECRET3' 'https://github.com/acme/widget#@/a/SECRET4')"
+eq "value: a password holding / then ? or #, a port before one segment, a dash owner, a multi-line origin: nothing" \
+   "|||||||||" \
+   "$(_rfo_val 'https://user:TOK/abc#1@github.com/acme/widget' 'https://user:TOK/abc?1@github.com/acme/widget' \
+       'https://TOK/abc#@github.com' 'https://host:8443/widget' 'ssh://user:TOK@host:22/widget' \
+       'https://github.com/-rf/widget' $'https://github.com/acme/widget\n/TOK/x' $'https://u:x/TOK\n@github.com/acme/widget' 'acme/widget')"
 unset -f _rfo_val
 echo "== control: a copy that keeps the .git suffix is caught by the corpus =="
 RFO_MUT="${RFO_B//\$\{url%.git\}/\$url}"

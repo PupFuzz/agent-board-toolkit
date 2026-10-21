@@ -1769,14 +1769,15 @@ eq "…and GITHUB_REPOSITORY outranks it"                 "$(printf 'acme/widget
 # THE ORIGIN FALLBACK names <owner>/<repo> and nothing else of the URL (card#12169). The repo it
 # derives is the verifier's argv, so a credential left in it — a `?access_token=` query, a `#`
 # fragment, or `user:token@` userinfo — is handed to another program and to whatever it logs.
-# RED when: the URL is not cut at its first `?` / `#` before the slug is taken, one trailing `/`
-# is not dropped, userinfo is not dropped before that cut, an origin holding a newline is not
-# refused, or an answer outside GitHub's owner/repo charset is returned instead of nothing.
+# RED when: the answer is taken from anything but PATH bytes (a `scheme://` authority not
+# discarded whole, or the path not cut at its first `?`/`#`), one trailing `/` is not dropped, an
+# origin holding a newline is not refused, or an owner/repo outside GitHub's charset is returned.
 RV_SECRET='URLSECRET-0rigin-T0K'
 for _u in "https://github.com/acme/gizmo.git?access_token=$RV_SECRET" \
           "https://github.com/acme/gizmo#$RV_SECRET" \
           "https://u:$RV_SECRET@github.com/acme/gizmo/" 'https://github.com/acme/gizmo.git/' \
-          "https://user:$RV_SECRET/abc#1@github.com/acme/gizmo" "https://user:$RV_SECRET/abc?1@github.com/acme/gizmo" \
+          "https://github.com/acme/gizmo#x@h/o/$RV_SECRET" "https://github.com/acme/gizmo?t=a@b/c/$RV_SECRET" \
+          "https://github.com/acme/gizmo?redirect=git@github.com:acme/$RV_SECRET" "https://github.com/acme/gizmo#@/a/$RV_SECRET" \
           'git@github.com:acme/gizmo.git' 'https://github.com/acme/gizmo'; do
   g -C "$RVR" remote set-url origin "$_u"
   _rv "$RV_MID" GITHUB_REPOSITORY=
@@ -1785,6 +1786,8 @@ for _u in "https://github.com/acme/gizmo.git?access_token=$RV_SECRET" \
 done
 for _u in "https://u:$RV_SECRET@git.example.com/gizmo" "https://user:$RV_SECRET@github.com/acme" \
           "https://user:$RV_SECRET/@github.com" "https://$RV_SECRET/abc#@github.com" \
+          "https://user:$RV_SECRET/abc#1@github.com/acme/gizmo" "https://user:$RV_SECRET/abc?1@github.com/acme/gizmo" \
+          'https://host:8443/gizmo' "ssh://user:$RV_SECRET@host:22/gizmo" 'https://github.com/-rf/gizmo' \
           "https://github.com/acme/gizmo"$'\n'"/$RV_SECRET/x" "https://u:x/$RV_SECRET"$'\n''@github.com/acme/gizmo'; do
   g -C "$RVR" config remote.origin.url "$_u"
   _rv "$RV_MID" GITHUB_REPOSITORY=

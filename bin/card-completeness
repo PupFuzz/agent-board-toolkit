@@ -236,26 +236,43 @@ require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 # repo_from_origin_url <url>: the `<owner>/<repo>` an origin remote URL names, or nothing.
 # `git@host:owner/repo(.git)`, `https://host/owner/repo(.git)`, `ssh://git@host/owner/repo`.
 # The answer is printed and handed on — card-completeness's request paths, release-pr-body's
-# verifier argument — so it must carry nothing else of the URL (card#12169). In order: an origin
-# holding whitespace or a control character anywhere is nothing (git config values may hold a
-# newline, and `sed` matches line by line); everything up to the LAST `@` is dropped (userinfo,
-# before the cut below so a password holding `/` and `?` or `#` cannot become the slug; a URL with
-# no `@` is unchanged, and an `@` outside userinfo can only lose the answer, never move it); the
-# URL is cut at its first `?` or `#` (a query or fragment can carry a token) and one trailing `/`
-# is dropped. The answer is then a single line in GitHub's owner/repo charset,
-# `[A-Za-z0-9-]+/[A-Za-z0-9._-]+` (under LC_ALL=C, so a range is ASCII), with a repo other than `.`
-# or `..`, and anything else is nothing. `sed -n …p`, because a plain `sed s` prints a
-# non-matching line as-is.
+# verifier argument — so it must carry nothing else of the URL (card#12169). The parse is
+# POSITIONAL: the answer can only come from PATH bytes before the path's first `?` or `#`, which
+# cannot be userinfo, host, port, query or fragment. The path is, for `scheme://…`, what follows
+# the authority — after `//` up to its first `/`, `?` or `#`, discarded whole; for scp-like
+# `[user@]host:path` (no `/` before the first `:`), what follows that `:`; for an absolute local
+# path, all of it. Anything else (a relative path, an invalid scheme) is nothing, as is an origin
+# holding whitespace or a control character (a git config value can hold a newline). Then one
+# trailing `/` and a `.git` are dropped, and the last two segments are the answer only when they
+# are GitHub's charset: an owner of letters, digits and `-` starting with a letter or digit, a repo
+# of letters, digits, `.`, `_` and `-` other than `.` or `..`. The sets are spelled out, never a
+# range, because a bash bracket range is a collation range under a UTF-8 locale.
 # `bin/release-pr-body` carries its own copy of this function for the same question;
 # tests/mirror-pair-parity-selftest.sh § 10 keeps the copies in step by requiring the same answer
 # over one corpus of origin URLs.
 repo_from_origin_url() {
-  local url="${1##*@}" slug=""
-  case "$1" in *[[:space:][:cntrl:]]*) return 0 ;; esac
-  url="${url%%[?#]*}"; url="${url%/}"
-  slug="$(printf '%s' "${url%.git}" | LC_ALL=C sed -nE 's#^.*[:/]([A-Za-z0-9-]+/[A-Za-z0-9._-]+)$#\1#p')"
-  case "$slug" in ''|*/.|*/..) return 0 ;; esac
-  printf '%s\n' "$slug"
+  local url="$1" owner repo
+  local al='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ' dg='0123456789'
+  case "$url" in *[[:space:][:cntrl:]]*) return 0 ;; esac
+  case "$url" in
+    *://*)
+      case "${url%%://*}" in ''|[!$al]*|*[!$al$dg+.-]*) return 0 ;; esac
+      url="${url#*://}"
+      url="${url#"${url%%[/?#]*}"}"
+      ;;
+    /*) ;;
+    *:*)
+      case "${url%%:*}" in */*) return 0 ;; esac
+      url="${url#*:}"
+      ;;
+    *) return 0 ;;
+  esac
+  url="${url%%[?#]*}"; url="${url%/}"; url="${url%.git}"
+  case "$url" in */*) ;; *) return 0 ;; esac
+  repo="${url##*/}"; owner="${url%/*}"; owner="${owner##*/}"
+  case "$owner" in ''|[!$al$dg]*|*[!$al$dg-]*) return 0 ;; esac
+  case "$repo" in ''|.|..|*[!$al$dg._-]*) return 0 ;; esac
+  printf '%s/%s\n' "$owner" "$repo"
 }
 
 USAGE="Usage: card-completeness --repo OWNER/REPO --cards LIST --release-head REV --integration BRANCH [--api BASE]"

@@ -448,12 +448,11 @@ echo "== 15. THE ORIGIN FALLBACK names <owner>/<repo> and nothing else of the UR
 # a `#` fragment, or `user:token@` userinfo. REPO is printed in every UNMEASURED label and sent in
 # every request path, so whatever survives the parse is leaked to both. The origin is set through
 # git's environment config in a PLAIN DIRECTORY — no `git init`, for the reason § 10 gives.
-# RED when: the URL is not cut at its first `?` / `#` before the slug is taken (query and fragment
-# rows), one trailing `/` is not dropped (trailing-slash rows), userinfo is not dropped before that
-# cut (a password holding `/` then `?`/`#`), an origin holding a newline is not refused (`sed`
-# matches line by line), or an answer outside GitHub's owner/repo charset is returned instead of
-# nothing (the userinfo refusal rows — `[^/:]+` alone matches across the `user:` colon when the
-# path has one segment).
+# RED when: the answer is taken from anything but PATH bytes — a `scheme://` authority (userinfo,
+# host, port) not discarded whole, from after `//` to its first `/`, `?` or `#` (the password and
+# port rows); the path not cut at its first `?`/`#` (the query and fragment rows, including those
+# holding `@`, `/` or `:`) — or one trailing `/` is not dropped (trailing-slash rows), an origin
+# holding a newline is not refused, or an owner/repo outside GitHub's charset is returned (`-rf`).
 URL_SECRET='URLSECRET-0rigin-T0K'
 # origin_run <origin-url> — the real oracle from a plain directory whose only repo source is the
 # origin; captures rc/out/err like `run`.
@@ -471,7 +470,8 @@ for _u in "https://github.com/acme/widget.git?access_token=$URL_SECRET" \
           "https://github.com/acme/widget#$URL_SECRET" \
           "https://github.com/acme/widget.git?x=a/$URL_SECRET" \
           "https://u:$URL_SECRET@github.com/acme/widget/" 'https://github.com/acme/widget.git/' \
-          "https://user:$URL_SECRET/abc#1@github.com/acme/widget" "https://user:$URL_SECRET/abc?1@github.com/acme/widget" \
+          "https://github.com/acme/widget#x@h/o/$URL_SECRET" "https://github.com/acme/widget?t=a@b/c/$URL_SECRET" \
+          "https://github.com/acme/widget?redirect=git@github.com:acme/$URL_SECRET" "https://github.com/acme/widget#@/a/$URL_SECRET" \
           'git@github.com:acme/widget.git' 'https://github.com/acme/widget'; do
   origin_run "$_u"
   eq "origin [$_u] → COMPLETE, rc 0"            "0|COMPLETE" "$rc|$(verdict 9606)"
@@ -480,6 +480,8 @@ for _u in "https://github.com/acme/widget.git?access_token=$URL_SECRET" \
 done
 for _u in "https://u:$URL_SECRET@git.example.com/widget" "https://user:$URL_SECRET@github.com/acme" \
           "https://user:$URL_SECRET/@github.com" "https://$URL_SECRET/abc#@github.com" \
+          "https://user:$URL_SECRET/abc#1@github.com/acme/widget" "https://user:$URL_SECRET/abc?1@github.com/acme/widget" \
+          'https://host:8443/widget' "ssh://user:$URL_SECRET@host:22/widget" 'https://github.com/-rf/widget' \
           "https://github.com/acme/widget"$'\n'"/$URL_SECRET/x" "https://u:x/$URL_SECRET"$'\n''@github.com/acme/widget'; do
   origin_run "$_u"
   eq "origin [$_u] names no repo → rc 2"          "2"     "$rc"
