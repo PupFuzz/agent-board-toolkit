@@ -1390,25 +1390,33 @@ resp_detail() {
   # (measured, bash 5.2.21) — without it $API_ERR_EXCERPT_MAX stops being one number and the
   # excerpt cuts at a different place per runner locale. Same class
   # tests/locale-range-guard-selftest.sh owns, same reason uint_ok carries its own pin.
-  local LC_ALL=C all status body
+  local LC_ALL=C all status body _rdx
+  # xtrace is suspended from the read through the mask, and restored before EVERY return: until
+  # the mask has run, $all and $body hold the server's raw body, and a server that echoes the
+  # Authorization header puts the token in it, so a `bash -x` run would print it (card#12177).
+  # Same inline idiom as the token's own read above, since this bin may not source the lib.
+  case $- in *x*) _rdx=x; set +x ;; *) _rdx= ;; esac
   # ONE read, AND IT KEEPS ITS OWN OUTCOME. A `$(… 2>/dev/null || true)` here would collapse
   # "the server sent no body" into "this tool could not read back its own record" — which is
   # the read-outcome-collapse class (tests/read-outcome-collapse-selftest.sh), and it is the
   # SAME defect this card fixes one layer up, so re-minting it inside the fix would be absurd.
   # The status and the body are then split by parameter expansion, not by a second reader.
   all="$(cat "$API_ERR_FILE" 2>&1)" || {
+    [ -z "$_rdx" ] || set -x
     printf 'this tool could not read back its own record of the response (%s)' "$all"
     return 0
   }
-  [ -n "$all" ] || { printf 'no HTTP outcome was recorded for this call'; return 0; }
+  [ -n "$all" ] || { [ -z "$_rdx" ] || set -x; printf 'no HTTP outcome was recorded for this call'; return 0; }
   status="${all%%$'\n'*}"
   if [ "$status" = "000" ]; then
+    [ -z "$_rdx" ] || set -x
     printf 'the request DID NOT COMPLETE, so no HTTP status came back at all and whether the server received it is UNKNOWN (curl reported the transport error above)'
     return 0
   fi
   # A file holding ONLY the status line leaves status == all, i.e. the server sent no body.
   if [ "$status" = "$all" ]; then body=""; else body="${all#*$'\n'}"; fi
   body="${body//"$TOKEN"/***}"
+  [ -z "$_rdx" ] || set -x
   # One log LINE: newlines/tabs to spaces, then C0 controls AND DEL dropped, runs squeezed.
   # ⚠ C0 AND DEL, NOT C1 — the set below is `\000-\010\013\014\016-\037\177`, so 0x80-0x9F
   # (C1, including 0x9B CSI) SURVIVES. That is a limit of this scrub, stated rather than claimed
