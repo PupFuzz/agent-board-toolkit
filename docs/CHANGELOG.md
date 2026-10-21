@@ -6,9 +6,41 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **card#12169** — ⚠ **Acceptance narrowing (minor at minimum, per [`../VERSIONING.md`](../VERSIONING.md) § Bump sizing): origin forms that `bin/card-completeness` and `bin/release-pr-body` used to resolve to a credential-free `<owner>/<repo>` are now refused.** Each shape below resolved before, with no `--repo` and no `$GITHUB_REPOSITORY`, and `card-completeness` ran to its verdict:
+  - a bracketed scp host (`git@[::1]:acme/widget`);
+  - a remote-helper prefix (`persistent-https::https://github.com/acme/widget`);
+  - a relative path (`acme/widget`);
+  - an origin with leading or trailing whitespace (` https://github.com/acme/widget`);
+  - an authority whose port is not a number (`https://user:T@github.com:acme/widget`, and `https://user:T/abc#1@github.com/acme/widget`, whose authority runs to the first `/`, so host `user` and port `T`);
+  - an scp user holding `:` (`user:T@github.com:acme/widget`, whose host is `user` under the scp rule that the host is everything before the first `:`).
+
+  For the last three shapes the old answer was not the repo the remote names. They are listed anyway because the old run completed. Now `card-completeness` exits `2` ("Refusing to guess the population"), and `release-pr-body` exits `0` but reports every bundled PR as not measured without calling the verifier. Both fail loudly. The workaround is to pass `--repo <owner>/<repo>` to `card-completeness`, or set `GITHUB_REPOSITORY=<owner>/<repo>` for either tool. The cause is the positional parse under `### Security` below.
+
 ### Security
 
-- **card#12169** — **`bin/card-completeness` and `bin/release-pr-body` no longer carry a credential from the `origin` remote URL into the repo name they derive.** With no `--repo` and no `$GITHUB_REPOSITORY`, both read `<owner>/<repo>` from `remote.origin.url` through `repo_from_origin_url`. The result is printed in `card-completeness`'s UNMEASURED labels, sent in every request path, and is `release-pr-body`'s review-verifier argument. The old parse took the last two `/`- or `:`-separated pieces of the WHOLE string, so it leaked from every URL component: a query or fragment (`https://github.com/acme/widget.git?access_token=T` gave `acme/widget.git?access_token=T`; `…/widget#x@h/o/T` gave `o/T`), userinfo before a one-segment path (`https://user:T@git.example.com/widget` gave `T@git.example.com/widget`), a port (`https://host:8443/widget` gave `8443/widget`), and a URL it did not match, which `sed` passed through whole (`https://user:T@github.com/acme/widget/`). The parse is now positional: the answer can only come from PATH bytes before the path's first `?` or `#`, which cannot be userinfo, host, port, query or fragment. For `scheme://…` the authority (after `//`, up to its first `/`, `?` or `#`) is discarded whole; for scp-like `[user@]host:path` the path is what follows the first `:`; an absolute local path is all path; a relative path or an invalid scheme yields no answer, as does an origin holding whitespace or a control character. One trailing `/` and a `.git` are dropped, and the last two path segments are the answer only in GitHub's charset — an owner of letters, digits and `-` starting with a letter or digit, a repo of letters, digits, `.`, `_` and `-` other than `.` or `..`. Answers match Python's `urllib.parse.urlsplit` path split on every input checked, and are unchanged from the previous release for ordinary `https://`, `ssh://`, scp-like, `file://` and absolute-path origins. A trailing-slash origin (`…/widget/`, `…/widget.git/`) now resolves where it used to yield the whole URL. Exit status for an origin that yields no answer: `card-completeness` exited `6` (UNMEASURED — GitHub answers `404` to the leaked request paths, measured for a whole-URL path, `T@git.example.com/widget` and `TOK/@github.com`) and now exits `2`, refusing to guess the repo; `release-pr-body` still exits `0` and now reports every bundled PR as not measured without calling the verifier. Not a narrowing for sizing (the old run already failed). The two copies stay separate on purpose — both tools are vendored standalone and source nothing (`docs/CONSOLIDATION-PLAN.md` § Stage D) — and `tests/mirror-pair-parity-selftest.sh` § 10 holds them to the same answer, and to the expected value, over these origins. Vendoring repos should re-vendor both tools. `tests/card-completeness-selftest.sh` § 15 and `tests/release-pr-body-selftest.sh` drive the real tools with these origins and assert the credential is in no output, no request and no verifier call (red before the fix).
+- **card#12169** — **`bin/card-completeness` and `bin/release-pr-body` no longer carry a credential from the `origin` remote URL into the repo name they derive.** With no `--repo` and no `$GITHUB_REPOSITORY`, both read `<owner>/<repo>` from `remote.origin.url` through `repo_from_origin_url`. The result is printed in `card-completeness`'s UNMEASURED labels, sent in every request path, and is `release-pr-body`'s review-verifier argument. The old parse took the last two `/`- or `:`-separated pieces of the WHOLE string, so it leaked from every URL component:
+  - a query or fragment (`https://github.com/acme/widget.git?access_token=T` gave `acme/widget.git?access_token=T`; `…/widget#x@h/o/T` gave `o/T`);
+  - userinfo before a one-segment path (`https://user:T@git.example.com/widget` gave `T@git.example.com/widget`);
+  - a port (`https://host:8443/widget` gave `8443/widget`);
+  - and a URL it did not match, which `sed` passed through whole (`https://user:T@github.com/acme/widget/`).
+
+  The parse is now positional: the answer can only come from PATH bytes before the path's first `?` or `#`, which cannot be userinfo, host, port, query or fragment.
+  - For `scheme://…`, the authority (after `//`, up to its first `/`, `?` or `#`) is discarded whole.
+  - For scp-like `[user@]host:path`, the path is what follows the first `:`.
+  - An absolute local path is all path.
+  - A relative path or an invalid scheme yields no answer, as does an origin holding whitespace or a control character.
+
+  One trailing `/` and a `.git` are then dropped. The last two path segments are the answer only in GitHub's charset: an owner of letters, digits, `-` and `_` starting with a letter or digit (`_` because Enterprise Managed User handles carry it, e.g. `mona-cat_octo`), and a repo of letters, digits, `.`, `_` and `-` other than `.` or `..`. For ordinary `https://`, `ssh://`, scp-like, `file://` and absolute-path origins the answer is unchanged from the previous release; the shapes it now refuses are under `### Changed` above. A trailing-slash origin (`…/widget/`, `…/widget.git/`) now resolves where it used to yield the whole URL.
+
+  One-off check during review, not a CI control: the two copies, the previous release's parse and a Python `urllib.parse.urlsplit` reference were compared over three populations. These were the review corpora, the selftest origin rows, and a generated set (each of ten host prefixes — `https`, `ssh`, scp-like, `file://`, absolute path, with and without userinfo or port — × four owners × five repos × with or without `.git`). The copies and the reference agreed on every input. Where the previous release's answer differs, the input either leaked, gave a value that is not a GitHub `<owner>/<repo>`, or is a shape listed under `### Changed` above.
+
+  Exit status for an origin that now yields no answer, other than the narrowed shapes:
+  - `card-completeness` exited `6` (UNMEASURED — GitHub answers `404` to the leaked request paths, measured for a whole-URL path, `T@git.example.com/widget` and `TOK/@github.com`) and now exits `2`, refusing to guess the repo.
+  - `release-pr-body` still exits `0` and now reports every bundled PR as not measured without calling the verifier.
+
+  The two copies stay separate on purpose — both tools are vendored standalone and source nothing (`docs/CONSOLIDATION-PLAN.md` § Stage D). `tests/mirror-pair-parity-selftest.sh` § 10 holds them to the same answer, and to the expected value, over these origins. `tests/card-completeness-selftest.sh` § 15 and `tests/release-pr-body-selftest.sh` drive the real tools with these origins and assert the credential is in no output, no request and no verifier call (red before the fix). Vendoring repos should re-vendor both tools.
 
 ## [0.48.0] - 2026-10-17
 

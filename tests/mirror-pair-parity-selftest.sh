@@ -989,6 +989,13 @@ eq "value: a password holding / then ? or #, a port before one segment, a dash o
    "$(_rfo_val 'https://user:TOK/abc#1@github.com/acme/widget' 'https://user:TOK/abc?1@github.com/acme/widget' \
        'https://TOK/abc#@github.com' 'https://host:8443/widget' 'ssh://user:TOK@host:22/widget' \
        'https://github.com/-rf/widget' $'https://github.com/acme/widget\n/TOK/x' $'https://u:x/TOK\n@github.com/acme/widget' 'acme/widget')"
+eq "value: an owner holding _ after its first character resolves (an EMU handle)" \
+   "mona-cat_octo/widget|" "$(_rfo_val 'https://github.com/mona-cat_octo/widget')"
+# DECLARED NARROWINGS (docs/CHANGELOG.md, card#12169): the base resolved these two and this parse
+# refuses them — a bracketed scp host and a remote-helper `<transport>::<url>` prefix. Pinned as
+# refused so a later change to either is a decision, not a drift.
+eq "value: declared narrowings — bracketed scp host, remote-helper prefix — yield nothing" \
+   "||" "$(_rfo_val 'git@[::1]:acme/widget' 'persistent-https::https://github.com/acme/widget')"
 unset -f _rfo_val
 echo "== control: a copy that keeps the .git suffix is caught by the corpus =="
 RFO_MUT="${RFO_B//\$\{url%.git\}/\$url}"

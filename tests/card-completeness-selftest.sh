@@ -490,6 +490,12 @@ for _u in "https://u:$URL_SECRET@git.example.com/widget" "https://user:$URL_SECR
 done
 eq "  … (control: the leak probe sees a credential that IS printed)" "true" \
    "$(out="x$URL_SECRET"; leaked)"
+# An owner may hold `_` after its first character: GitHub Enterprise Managed User handles do
+# (`mona-cat_octo`, docs.github.com "Username considerations for external authentication").
+# RED when: the owner charset drops `_`.
+origin_run 'https://github.com/mona-cat_octo/widget'
+eq "origin [https://github.com/mona-cat_octo/widget] → COMPLETE, rc 0" "0|COMPLETE" "$rc|$(verdict 9606)"
+eq "  … the request path is /repos/mona-cat_octo/widget/pulls?" "true" "$(has "/repos/mona-cat_octo/widget/pulls?" "$(cat "$CALL_LOG")")"
 unset -f origin_run leaked
 unset _u URL_SECRET
 

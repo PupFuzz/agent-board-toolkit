@@ -1795,6 +1795,11 @@ for _u in "https://u:$RV_SECRET@git.example.com/gizmo" "https://user:$RV_SECRET@
   eq "…the verifier was never called"                     "" "$RV_CALLS"
   eq "…and the credential is in no output"                "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
 done
+# An Enterprise Managed User owner holds `_` (`mona-cat_octo`). RED when: the owner charset drops `_`.
+g -C "$RVR" config remote.origin.url 'https://github.com/mona-cat_octo/gizmo'
+_rv "$RV_MID" GITHUB_REPOSITORY=
+eq "origin [https://github.com/mona-cat_octo/gizmo]: the verifier is asked mona-cat_octo/gizmo#<pr>" \
+   "$(printf 'mona-cat_octo/gizmo#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
 g -C "$RVR" remote set-url origin git@github.com:acme/gadget.git
 unset _u RV_SECRET
 
