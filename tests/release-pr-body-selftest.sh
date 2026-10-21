@@ -1770,11 +1770,13 @@ eq "…and GITHUB_REPOSITORY outranks it"                 "$(printf 'acme/widget
 # derives is the verifier's argv, so a credential left in it — a `?access_token=` query, a `#`
 # fragment, or `user:token@` userinfo — is handed to another program and to whatever it logs.
 # RED when: the URL is not cut at its first `?` / `#` before the slug is taken, one trailing `/`
-# is not dropped, or an answer outside GitHub's owner/repo charset is returned instead of nothing.
+# is not dropped, userinfo is not dropped before that cut, an origin holding a newline is not
+# refused, or an answer outside GitHub's owner/repo charset is returned instead of nothing.
 RV_SECRET='URLSECRET-0rigin-T0K'
 for _u in "https://github.com/acme/gizmo.git?access_token=$RV_SECRET" \
           "https://github.com/acme/gizmo#$RV_SECRET" \
           "https://u:$RV_SECRET@github.com/acme/gizmo/" 'https://github.com/acme/gizmo.git/' \
+          "https://user:$RV_SECRET/abc#1@github.com/acme/gizmo" "https://user:$RV_SECRET/abc?1@github.com/acme/gizmo" \
           'git@github.com:acme/gizmo.git' 'https://github.com/acme/gizmo'; do
   g -C "$RVR" remote set-url origin "$_u"
   _rv "$RV_MID" GITHUB_REPOSITORY=
@@ -1782,8 +1784,9 @@ for _u in "https://github.com/acme/gizmo.git?access_token=$RV_SECRET" \
   eq "…and the credential is in no output and no call"    "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
 done
 for _u in "https://u:$RV_SECRET@git.example.com/gizmo" "https://user:$RV_SECRET@github.com/acme" \
-          "https://user:$RV_SECRET/@github.com"; do
-  g -C "$RVR" remote set-url origin "$_u"
+          "https://user:$RV_SECRET/@github.com" "https://$RV_SECRET/abc#@github.com" \
+          "https://github.com/acme/gizmo"$'\n'"/$RV_SECRET/x" "https://u:x/$RV_SECRET"$'\n''@github.com/acme/gizmo'; do
+  g -C "$RVR" config remote.origin.url "$_u"
   _rv "$RV_MID" GITHUB_REPOSITORY=
   eq "origin [$_u] names no repo" "Review: 0 of 3 bundled changes have an independent review record; not measured: #11, #12, #13." "$RV_LINE"
   eq "…the verifier was never called"                     "" "$RV_CALLS"

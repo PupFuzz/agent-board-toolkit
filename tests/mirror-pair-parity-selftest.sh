@@ -976,6 +976,15 @@ eq "value: userinfo before a one-segment path, and a dot repo, yield nothing" \
    "|||||" \
    "$(_rfo_val 'https://u:T@host/widget' 'https://user:TOK@github.com/acme' \
        'https://user:TOK/@github.com' 'git@github.com:acme/..git' 'https://github.com/acme/.')"
+# Userinfo is dropped (up to the LAST `@`) BEFORE the `?`/`#` cut, or a password holding `/` and
+# then `?` or `#` is cut into the slug; and an origin holding whitespace or a control character
+# (git config values may hold a newline) is nothing, because `sed` matches line by line.
+eq "value: a password holding / then ? or # still yields the repo after its @" \
+   "acme/widget|acme/widget|" \
+   "$(_rfo_val 'https://user:TOK/abc#1@github.com/acme/widget' 'https://user:TOK/abc?1@github.com/acme/widget')"
+eq "value: a fragment-cut password with no repo after it, and a multi-line origin, yield nothing" \
+   "|||" \
+   "$(_rfo_val 'https://TOK/abc#@github.com' $'https://github.com/acme/widget\n/TOK/x' $'https://u:x/TOK\n@github.com/acme/widget')"
 unset -f _rfo_val
 echo "== control: a copy that keeps the .git suffix is caught by the corpus =="
 RFO_MUT="${RFO_B//\$\{url%.git\}/\$url}"
