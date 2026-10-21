@@ -235,15 +235,45 @@ require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
 
 # repo_from_origin_url <url>: the `<owner>/<repo>` an origin remote URL names, or nothing.
 # `git@host:owner/repo(.git)`, `https://host/owner/repo(.git)`, `ssh://git@host/owner/repo`.
+# The answer is printed and handed on — card-completeness's request paths, release-pr-body's
+# verifier argument — so it must carry nothing else of the URL (card#12169). The parse is
+# POSITIONAL: the answer can only come from PATH bytes before the path's first `?` or `#`, which
+# cannot be userinfo, host, port, query or fragment. The path is, for `scheme://…`, what follows
+# the authority — after `//` up to its first `/`, `?` or `#`, discarded whole; for scp-like
+# `[user@]host:path` (no `/` before the first `:`), what follows that `:`; for an absolute local
+# path, all of it. Anything else (a relative path, an invalid scheme) is nothing, as is an origin
+# holding whitespace or a control character (a git config value can hold a newline). Then one
+# trailing `/` and a `.git` are dropped, and the last two segments are the answer only when they
+# are GitHub's charset: an owner of letters, digits, `-` and `_` (an Enterprise Managed User handle
+# is `mona-cat_octo`) starting with a letter or digit, a repo of letters, digits, `.`, `_` and `-`
+# other than `.` or `..`. The sets are spelled out, never a
+# range, because a bash bracket range is a collation range under a UTF-8 locale.
 # `bin/release-pr-body` carries its own copy of this function for the same question;
 # tests/mirror-pair-parity-selftest.sh § 10 keeps the copies in step by requiring the same answer
 # over one corpus of origin URLs.
 repo_from_origin_url() {
-  local url="$1" slug=""
+  local url="$1" owner repo
+  local al='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ' dg='0123456789'
+  case "$url" in *[[:space:][:cntrl:]]*) return 0 ;; esac
   case "$url" in
-    *:*|*/*) slug="$(printf '%s' "${url%.git}" | sed -E 's#^.*[:/]([^/:]+/[^/]+)$#\1#')" ;;
+    *://*)
+      case "${url%%://*}" in ''|[!$al]*|*[!$al$dg+.-]*) return 0 ;; esac
+      url="${url#*://}"
+      url="${url#"${url%%[/?#]*}"}"
+      ;;
+    /*) ;;
+    *:*)
+      case "${url%%:*}" in */*) return 0 ;; esac
+      url="${url#*:}"
+      ;;
+    *) return 0 ;;
   esac
-  case "$slug" in */*) printf '%s\n' "$slug" ;; esac
+  url="${url%%[?#]*}"; url="${url%/}"; url="${url%.git}"
+  case "$url" in */*) ;; *) return 0 ;; esac
+  repo="${url##*/}"; owner="${url%/*}"; owner="${owner##*/}"
+  case "$owner" in ''|[!$al$dg]*|*[!$al${dg}_-]*) return 0 ;; esac
+  case "$repo" in ''|.|..|*[!$al$dg._-]*) return 0 ;; esac
+  printf '%s/%s\n' "$owner" "$repo"
 }
 
 USAGE="Usage: card-completeness --repo OWNER/REPO --cards LIST --release-head REV --integration BRANCH [--api BASE]"

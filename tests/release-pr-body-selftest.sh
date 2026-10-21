@@ -1766,6 +1766,43 @@ eq "the repo falls back to the origin remote"           "$(printf 'acme/gadget#%
 _rv "$RV_MID"
 eq "…and GITHUB_REPOSITORY outranks it"                 "$(printf 'acme/widget#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
 
+# THE ORIGIN FALLBACK names <owner>/<repo> and nothing else of the URL (card#12169). The repo it
+# derives is the verifier's argv, so a credential left in it — a `?access_token=` query, a `#`
+# fragment, or `user:token@` userinfo — is handed to another program and to whatever it logs.
+# RED when: the answer is taken from anything but PATH bytes (a `scheme://` authority not
+# discarded whole, or the path not cut at its first `?`/`#`), one trailing `/` is not dropped, an
+# origin holding a newline is not refused, or an owner/repo outside GitHub's charset is returned.
+RV_SECRET='URLSECRET-0rigin-T0K'
+for _u in "https://github.com/acme/gizmo.git?access_token=$RV_SECRET" \
+          "https://github.com/acme/gizmo#$RV_SECRET" \
+          "https://u:$RV_SECRET@github.com/acme/gizmo/" 'https://github.com/acme/gizmo.git/' \
+          "https://github.com/acme/gizmo#x@h/o/$RV_SECRET" "https://github.com/acme/gizmo?t=a@b/c/$RV_SECRET" \
+          "https://github.com/acme/gizmo?redirect=git@github.com:acme/$RV_SECRET" "https://github.com/acme/gizmo#@/a/$RV_SECRET" \
+          'git@github.com:acme/gizmo.git' 'https://github.com/acme/gizmo'; do
+  g -C "$RVR" remote set-url origin "$_u"
+  _rv "$RV_MID" GITHUB_REPOSITORY=
+  eq "origin [$_u]: the verifier is asked acme/gizmo#<pr>" "$(printf 'acme/gizmo#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+  eq "…and the credential is in no output and no call"    "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
+done
+for _u in "https://u:$RV_SECRET@git.example.com/gizmo" "https://user:$RV_SECRET@github.com/acme" \
+          "https://user:$RV_SECRET/@github.com" "https://$RV_SECRET/abc#@github.com" \
+          "https://user:$RV_SECRET/abc#1@github.com/acme/gizmo" "https://user:$RV_SECRET/abc?1@github.com/acme/gizmo" \
+          'https://host:8443/gizmo' "ssh://user:$RV_SECRET@host:22/gizmo" 'https://github.com/-rf/gizmo' \
+          "https://github.com/acme/gizmo"$'\n'"/$RV_SECRET/x" "https://u:x/$RV_SECRET"$'\n''@github.com/acme/gizmo'; do
+  g -C "$RVR" config remote.origin.url "$_u"
+  _rv "$RV_MID" GITHUB_REPOSITORY=
+  eq "origin [$_u] names no repo" "Review: 0 of 3 bundled changes have an independent review record; not measured: #11, #12, #13." "$RV_LINE"
+  eq "…the verifier was never called"                     "" "$RV_CALLS"
+  eq "…and the credential is in no output"                "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
+done
+# An Enterprise Managed User owner holds `_` (`mona-cat_octo`). RED when: the owner charset drops `_`.
+g -C "$RVR" config remote.origin.url 'https://github.com/mona-cat_octo/gizmo'
+_rv "$RV_MID" GITHUB_REPOSITORY=
+eq "origin [https://github.com/mona-cat_octo/gizmo]: the verifier is asked mona-cat_octo/gizmo#<pr>" \
+   "$(printf 'mona-cat_octo/gizmo#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+g -C "$RVR" remote set-url origin git@github.com:acme/gadget.git
+unset _u RV_SECRET
+
 echo "== a merge-train range is bundled and reviewed per PR, not per commit (card#11580) =="
 # THE DEFECT (measured on agent-board-framework v0.64.0): a range carrying a merge-train commit
 # listed the train's PRs as raw branch-commit subjects with no PR number, and the Review: sentence's
