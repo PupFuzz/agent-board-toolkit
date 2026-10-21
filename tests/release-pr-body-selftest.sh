@@ -205,6 +205,30 @@ if [[ "$rc" -ne 0 ]]; then ok "non-zero exit on unfetchable origin (rc=$rc)"; el
 contains     "error names the fetch + the override" "$out" "cannot fetch origin"
 not_contains "no body emitted on a wrong baseline"  "$out" "## Bundled"
 
+echo "== a fetch failure never prints git's own message, which can quote the origin URL (card#12170) =="
+# git strips userinfo from its `unable to access '<url>'` line but keeps the query and fragment
+# (measured, git 2.43.0), so an origin carrying `?access_token=` had the token printed by the
+# tool's refusal. The origin here is an unreachable loopback port, so the read fails in transport
+# — the case git's message quotes the URL in. Both legs are driven: each runs its own fetch.
+g -C "$W" remote set-url origin 'https://127.0.0.1:9/o/r.git?access_token=QSECRET#FRAGSECRET'
+rc=0; out="$( (cd "$W" && "$BIN" --version 0.3.0) 2>&1 )" || rc=$?
+eq "base-leg fetch failure → rc 2"                  "2"     "$rc"
+eq "…does not print the query secret"               "false" "$(has 'QSECRET' "$out")"
+eq "…nor the fragment secret"                       "false" "$(has 'FRAGSECRET' "$out")"
+eq "…names the failed fetch"                        "true"  "$(has "cannot fetch origin/'main'" "$out")"
+eq "…and the command that shows git's message"      "true"  "$(has 'git fetch --tags origin main' "$out")"
+rc=0; out="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0) 2>&1 )" || rc=$?
+eq "head-leg fetch failure → rc 2"                  "2"     "$rc"
+eq "…does not print the query secret"               "false" "$(has 'QSECRET' "$out")"
+eq "…nor the fragment secret"                       "false" "$(has 'FRAGSECRET' "$out")"
+eq "…names the failed fetch"                        "true"  "$(has "cannot fetch origin/'dev'" "$out")"
+eq "…and the command that shows git's message"      "true"  "$(has 'git fetch origin dev' "$out")"
+# CONTROL — the fixture's precondition: git itself DOES print the secret for this origin, so the
+# cells above are about the tool withholding it, not about a URL git would never have quoted.
+eq "control: git's own fetch error quotes the secret" "true" \
+   "$(has 'QSECRET' "$(g -C "$W" fetch --quiet origin dev 2>&1 || true)")"
+g -C "$W" remote set-url origin "$T/nonexistent.git"
+
 echo "== offline takes BOTH overrides now — one per range leg (card#7517) =="
 # Each explicit flag skips ITS OWN leg's fetch, and nothing else's. `--base` alone used to be a
 # complete offline override only because the head leg silently fell back to the local ref, which
