@@ -659,6 +659,8 @@ eq "witness: the extraction stopped at the function (it did not swallow the call
    "$(has 'spent_refusal' "$RX_SRC")"
 eval "$RX_SRC"
 _adopt_fn "$PRC" resp_detail
+# resp_excerpt takes the NAME of the variable holding the body (card#12177), so every row below
+# passes a name.
 
 MP_TOKEN='parity-stub-token'
 token_file="$TMP/mp-token"; printf '%s' "$MP_TOKEN" > "$token_file"
@@ -769,7 +771,7 @@ eq "witness: the corpus really feeds control bytes IN" "true" \
 
 for _i in "${!MP_BODIES[@]}"; do
     _l="${MP_LABELS[$_i]}"; _b="${MP_BODIES[$_i]}"
-    _x="$(resp_excerpt "$_b")"; _d="$(_mp_detail "$_b")"
+    _x="$(resp_excerpt _b)"; _d="$(_mp_detail "$_b")"
     eq "the two renderers agree on [$_l]"                  "$_d" "$_x"
     eq "…and NEITHER emits a byte a terminal acts on [$_l]" "0|0" "$(_mp_ctl "$_d")|$(_mp_ctl "$_x")"
     # ⭐ PER-ROW VACUITY, derived from the row itself: a row that carried a control byte in must
@@ -787,11 +789,11 @@ unset _i _l _b _x _d _n _mp_in _mp_rows _mp_longest _mp_ndl_max
 # it would turn legitimate localised text into mojibake — and it is not restated here. If a copy
 # ever starts stripping C1, this reds and that reason gets re-argued instead of silently lost.
 _mp_c1() { LC_ALL=C printf '%s' "$1" | tr -dc '\233' | wc -c | tr -d ' '; }
-_mp_c1_body="$(printf 'a\233b')"
+_mp_c1_body="$(printf 'a\233b')"; _mp_utf8='café €50'
 eq "declared limit: the C1 CSI byte survives promote's copy"   "1" "$(_mp_c1 "$(_mp_detail "$_mp_c1_body")")"
-eq "declared limit: …and next-dl's, identically"               "1" "$(_mp_c1 "$(resp_excerpt "$_mp_c1_body")")"
+eq "declared limit: …and next-dl's, identically"               "1" "$(_mp_c1 "$(resp_excerpt _mp_c1_body)")"
 eq "declared limit: …and the UTF-8 row is untouched by both"   "true|true" \
-   "$(has 'café €50' "$(_mp_detail 'café €50')")|$(has 'café €50' "$(resp_excerpt 'café €50')")"
+   "$(has 'café €50' "$(_mp_detail "$_mp_utf8")")|$(has 'café €50' "$(resp_excerpt _mp_utf8)")"
 
 # ⭐ THE CONTROL, DRIVEN FROM BOTH ENDS. Every row above would pass just as well for two copies
 # that had BOTH lost the scrub — which is the state this branch shipped in round 6 minus one copy.
@@ -809,8 +811,8 @@ eq "control: the scrub stage really came out of next-dl's copy" "true|false|true
    "$(has "$_mp_needle" "$RX_SRC")|$(has "$_mp_needle" "$RX_NAIVE")|$(has 'rx_naive() {' "$RX_NAIVE")"
 eval "$RX_NAIVE"
 eq "control: unscrubbed, next-dl's copy LEAKS the ESC sequence" "true" \
-   "$([[ "$(_mp_ctl "$(rx_naive "$_mp_esc")")" -gt 0 ]] && echo true || echo false)"
-eq "control: …while the shipped copy emits none"                "0" "$(_mp_ctl "$(resp_excerpt "$_mp_esc")")"
+   "$([[ "$(_mp_ctl "$(rx_naive _mp_esc)")" -gt 0 ]] && echo true || echo false)"
+eq "control: …while the shipped copy emits none"                "0" "$(_mp_ctl "$(resp_excerpt _mp_esc)")"
 RD_SRC="$(_fn_src "$PRC" resp_detail)"
 RD_NAIVE="$(printf '%s\n' "$RD_SRC" | sed "s/| tr -d '[^']*' //; s/^resp_detail()/rd_naive()/")"
 eq "control: the scrub stage really came out of promote's copy" "true|false|true" \
@@ -888,19 +890,27 @@ eq "an over-bound body is cut and says so" "true" \
    "$(has "[truncated at $API_ERR_EXCERPT_MAX bytes]" "$(kb_render_refusal 422 "$_rr_long")")"
 eq "no prefix of a straddling token survives the cut" "false" \
    "$(has "${RR_TOKEN:0:8}" "$(kb_render_refusal 422 "$_rr_straddle")")"
+# The rows above reach kb_render_refusal_var through the by-value wrapper, whose own variable is
+# `_kbrr_body`. A caller's variable named `body` — the name the lib's own callers use — must be
+# READ, not shadowed by the function's local of the same name (card#12177).
+# shellcheck disable=SC2034  # read by name, through kb_render_refusal_var
+body="${RR_BODIES[1]}"
+eq "by name: a caller variable named \`body\` is read, and masked" \
+   "$(kb_render_refusal 422 "${RR_BODIES[1]}")" "$(kb_render_refusal_var 422 body)"
+unset body
 
 # ⭐ THE CONTROL, from the lib's end: its mask stage cut out must make a token row DISAGREE with
 # promote's and leak — otherwise the rows above are comparing two copies that could both have lost it.
 echo "== control: a lib copy without its mask, or with its own bound, is caught =="
-RR_SRC="$(_fn_src "$LIB" kb_render_refusal)"
-RR_NAIVE="$(printf '%s\n' "$RR_SRC" | sed '/KB_TOKEN/d; s/^kb_render_refusal()/rr_naive()/')"
+RR_SRC="$(_fn_src "$LIB" kb_render_refusal_var)"
+RR_NAIVE="$(printf '%s\n' "$RR_SRC" | sed 's/kb_mask_token body "\${KB_TOKEN:-}" "\$body"; //; s/^kb_render_refusal_var()/rr_naive()/')"
 eq "control: the mask line really came out" "true|false|true" \
    "$(has 'KB_TOKEN' "$RR_SRC")|$(has 'KB_TOKEN' "$RR_NAIVE")|$(has 'rr_naive() {' "$RR_NAIVE")"
 eval "$RR_NAIVE"
 eq "control: unmasked, the lib copy LEAKS the token" "true" \
-   "$(has "$RR_TOKEN" "$(rr_naive 422 "${RR_BODIES[1]}")")"
+   "$(_rr_b="${RR_BODIES[1]}"; has "$RR_TOKEN" "$(rr_naive 422 _rr_b)")"
 eq "control: …and the comparison sees the disagreement" "false" \
-   "$([[ "$(rr_naive 422 "${RR_BODIES[1]}")" == "$(_rr_promote 422 "${RR_BODIES[1]}")" ]] && echo true || echo false)"
+   "$([[ "$(_rr_b="${RR_BODIES[1]}"; rr_naive 422 _rr_b)" == "$(_rr_promote 422 "${RR_BODIES[1]}")" ]] && echo true || echo false)"
 _rr_saved="$KB_API_ERR_EXCERPT_MAX"; KB_API_ERR_EXCERPT_MAX=$(( _rr_saved - 1 ))
 eq "control: a lib bound one byte off disagrees on the over-bound row" "false" \
    "$([[ "$(kb_render_refusal 422 "$_rr_long")" == "$(_rr_promote 422 "$_rr_long")" ]] && echo true || echo false)"
@@ -948,16 +958,55 @@ _need -x "$CCB"
 RFO_A="$(_fn_src "$CCB" repo_from_origin_url)"
 RFO_B="$(_fn_src "$RPB" repo_from_origin_url)"
 eq "control: both copies extracted with a body" "true" \
-   "$([[ "$RFO_A" == *'sed -E'* && "$RFO_B" == *'sed -E'* ]] && echo true || echo false)"
+   "$([[ "$RFO_A" == *'%%[/?#]'* && "$RFO_B" == *'%%[/?#]'* ]] && echo true || echo false)"
 _rfo() { ( eval "$1"; repo_from_origin_url "$2" ); }
 _rfo_corpus=('git@github.com:acme/widget.git' 'https://github.com/acme/widget.git' 'https://github.com/acme/widget'
     'ssh://git@github.com/acme/widget' 'ssh://git@github.com:22/acme/widget.git' 'https://github.com/acme/widget/'
-    '/srv/git/acme/widget.git' 'widget' '')
+    '/srv/git/acme/widget.git' 'widget' ''
+    'https://github.com/acme/widget.git?access_token=T' 'https://github.com/acme/widget#T'
+    'https://github.com/acme/widget?x=a/b' 'https://u:T@github.com/acme/widget/'
+    'https://u:T@host/widget' 'https://user:TOK@github.com/acme' 'https://user:TOK/@github.com'
+    'https://github.com/acme/widget.git/' 'git@github.com:acme/..git' 'https://github.com/acme/.')
 for _v in "${_rfo_corpus[@]}"; do
     eq "repo_from_origin_url agrees on [$_v]" "$(_rfo "$RFO_A" "$_v")" "$(_rfo "$RFO_B" "$_v")"
 done
 eq "witness: the corpus holds an origin that yields a repo and one that yields none" "acme/widget|" \
    "$(_rfo "$RFO_A" 'git@github.com:acme/widget.git')|$(_rfo "$RFO_A" 'widget')"
+# Agreement alone would pass two copies that leak the same credential, so the card#12169 rows are
+# held to their VALUE as well: a query or fragment is cut before the slug is taken, one trailing `/`
+# is dropped, and an answer outside GitHub's owner/repo charset — `user:TOK@…` userinfo before a
+# one-segment path, a password ending in `/`, a `.` or `..` repo — is nothing.
+_rfo_val() { local _v _o=""; for _v in "$@"; do _o="$_o$(_rfo "$RFO_A" "$_v")|"; done; printf '%s' "$_o"; }
+eq "value: a query, a fragment and a trailing slash still yield the slug" \
+   "acme/widget|acme/widget|acme/widget|acme/widget|acme/widget|acme/widget|" \
+   "$(_rfo_val 'https://github.com/acme/widget.git?access_token=T' 'https://github.com/acme/widget#T' \
+       'https://github.com/acme/widget?x=a/b' 'https://u:T@github.com/acme/widget/' \
+       'https://github.com/acme/widget/' 'https://github.com/acme/widget.git/')"
+eq "value: userinfo before a one-segment path, and a dot repo, yield nothing" \
+   "|||||" \
+   "$(_rfo_val 'https://u:T@host/widget' 'https://user:TOK@github.com/acme' \
+       'https://user:TOK/@github.com' 'git@github.com:acme/..git' 'https://github.com/acme/.')"
+# The answer comes from PATH bytes only (card#12169, review rounds 2-3): the authority of a
+# `scheme://` URL is discarded whole, from after `//` to the first `/`, `?` or `#`, so userinfo and
+# port never reach it; the path is cut at its first `?`/`#`, so an `@`, `/` or `:` in a query or
+# fragment never moves it; an origin holding whitespace or a control character is nothing.
+eq "value: a query or fragment holding @, / or : leaves the path's repo" \
+   "acme/widget|acme/widget|acme/widget|acme/widget|" \
+   "$(_rfo_val 'https://github.com/acme/widget#x@h/o/ghp_SECRET1' 'https://github.com/acme/widget?t=a@b/c/SECRET2' \
+       'https://github.com/acme/widget?redirect=git@github.com:acme/SECRET3' 'https://github.com/acme/widget#@/a/SECRET4')"
+eq "value: a password holding / then ? or #, a port before one segment, a dash owner, a multi-line origin: nothing" \
+   "|||||||||" \
+   "$(_rfo_val 'https://user:TOK/abc#1@github.com/acme/widget' 'https://user:TOK/abc?1@github.com/acme/widget' \
+       'https://TOK/abc#@github.com' 'https://host:8443/widget' 'ssh://user:TOK@host:22/widget' \
+       'https://github.com/-rf/widget' $'https://github.com/acme/widget\n/TOK/x' $'https://u:x/TOK\n@github.com/acme/widget' 'acme/widget')"
+eq "value: an owner holding _ after its first character resolves (an EMU handle)" \
+   "mona-cat_octo/widget|" "$(_rfo_val 'https://github.com/mona-cat_octo/widget')"
+# DECLARED NARROWINGS (docs/CHANGELOG.md, card#12169): the base resolved these two and this parse
+# refuses them — a bracketed scp host and a remote-helper `<transport>::<url>` prefix. Pinned as
+# refused so a later change to either is a decision, not a drift.
+eq "value: declared narrowings — bracketed scp host, remote-helper prefix — yield nothing" \
+   "||" "$(_rfo_val 'git@[::1]:acme/widget' 'persistent-https::https://github.com/acme/widget')"
+unset -f _rfo_val
 echo "== control: a copy that keeps the .git suffix is caught by the corpus =="
 RFO_MUT="${RFO_B//\$\{url%.git\}/\$url}"
 eq "control: the mutation applied" "false" "$([[ "$RFO_MUT" == "$RFO_B" ]] && echo true || echo false)"

@@ -111,8 +111,10 @@
 # which is the exact defect class this tool exists to end.
 #
 # A READ HAS THREE OUTCOMES. Present, absent, and UNREADABLE are three different facts, and
-# the poll below keeps them apart: `git ls-remote`'s status is the gate and its stderr is
-# kept, so a remote that cannot be reached is never scored as a tag that is not there. Both
+# the poll below keeps them apart: `git ls-remote`'s status is the gate, so a remote that
+# cannot be reached is never scored as a tag that is not there. git's own error text is NOT
+# printed, because it can quote the remote's URL with a credential in it; the refusal names the
+# `git ls-remote` command that shows it instead (card#12170). Both
 # still REFUSE at the bound — a release that cannot be confirmed must not be reported as
 # shipped, so the rc is 1 either way and no caller has to learn a new one — but the messages
 # make opposite claims, and only one of them is about the tag.
@@ -132,7 +134,7 @@
 # error, or the range could not be classified.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.48.0'
+ABTK_TOOL_VERSION='0.49.0'
 
 # A bracket range is a COLLATION range and en_US.UTF-8 widens `[0-9]` to non-ASCII digits
 # (card#5409); exported so the greps below inherit it, not just this shell.
@@ -297,25 +299,28 @@ fi
 # one of two copies of a read ends up unbounded.
 LS_REMOTE=("${LS_BASE[@]}" "refs/tags/${TAG}" "refs/tags/${TAG}^{}")
 
-# git's stderr is kept, not discarded — it is the only thing that says WHY a read failed, and
-# a refusal that cannot name its own cause is what card#6579's review caught here.
-ERRF="$(mktemp "${TMPDIR:-/tmp}/release-tag-check.XXXXXX")" || die "cannot create a temporary file for the remote's error output"
-trap 'rm -f "$ERRF"' EXIT
-
-# _read_fault <rc> — git's own reason for a failed read, collapsed to ONE line (a GitHub
-# annotation keeps only the first) and never left empty. ONE owner for both readers below — the
-# poll and the cause-naming second look — because a second copy of a refusal's wording is how
-# the very defect this round fixed survived: a message corrected on one branch of a shape and
-# not the other.
+# GIT'S OWN ERROR TEXT IS NEVER PRINTED (card#12170). It is the best account of WHY a read
+# failed, but git strips only userinfo from its `unable to access '<url>'` line and keeps the
+# query and fragment (measured, git 2.43.0), so a remote carrying `?access_token=…` had its token
+# relayed into this tool's `::error::` annotation. A refusal still names its cause (card#6579):
+# the read that failed, its rc, and the exact command that shows git's message to whoever runs
+# it at their own terminal. Masking the URL in free text instead was rejected (fw#1330): git's
+# wording is not a contract, and a masker is one more parser that has to be right.
+#
+# _read_fault <rc> <command…> — that refusal, as ONE line (a GitHub annotation keeps only the
+# first). ONE owner for both readers below — the poll and the cause-naming second look — because
+# a second copy of a refusal's wording is how a message corrected on one branch of a shape
+# survives on the other.
 _read_fault() {
-  local rc="$1" msg
-  msg="$(tr '\n' ' ' < "$ERRF" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')"
+  local rc="$1"; shift
+  local cmd msg
+  cmd="$(printf '%q ' "$@")"; cmd="${cmd% }"
   if [ "$rc" -eq 124 ] && [ "$BOUNDED" -eq 1 ]; then
-    msg="the read was KILLED after ${READ_BOUND}s with no answer from ${REMOTE}${msg:+ (${msg})}"
-  elif [ -z "$msg" ]; then
-    msg="git ls-remote exited ${rc} and printed nothing"
+    msg="the read was KILLED after ${READ_BOUND}s with no answer from ${REMOTE}"
+  else
+    msg="git ls-remote exited ${rc}"
   fi
-  printf '%s' "$msg"
+  printf "%s; git's own message is not shown because it can quote the remote's URL and any credential in it — to see it, run: %s" "$msg" "$cmd"
 }
 
 # A READ HAS THREE OUTCOMES, NOT TWO (the class `tests/read-outcome-collapse-selftest.sh`
@@ -326,22 +331,22 @@ _read_fault() {
 # `v0.28.0 does not exist on <remote> after 4s … The release merged and was NOT tagged — check
 # the auto-tag-version workflow run`, and sent the operator to a workflow run that was green,
 # with git's own error text discarded by the `2>/dev/null`. REFUSING was right; naming that
-# cause was not. The rc is therefore the gate, git's stderr is kept, and an unreadable remote
-# gets its own refusal that claims nothing about whether the tag exists.
+# cause was not. The rc is therefore the gate, and an unreadable remote gets its own refusal
+# that claims nothing about whether the tag exists and names the read that failed.
 #
 # _remote_tag_sha — sets REMOTE_TAG_SHA and REMOTE_READ_ERR, and returns which outcome it was:
 #   0  PRESENT    — REMOTE_TAG_SHA is the commit $TAG points at on the remote
 #   1  ABSENT     — the remote ANSWERED and carries no $TAG
-#   2  UNREADABLE — the read did not complete; REMOTE_READ_ERR carries git's own message
+#   2  UNREADABLE — the read did not complete; REMOTE_READ_ERR names it (see _read_fault)
 # An annotated tag yields both `refs/tags/X` (the tag object) and `refs/tags/X^{}` (the commit);
 # the dereferenced line is authoritative, so it is preferred whenever present. The two awk
 # passes read $out, a string already in memory — they have no third outcome to lose.
 _remote_tag_sha() {
   local out deref plain rc=0
   REMOTE_TAG_SHA=""; REMOTE_READ_ERR=""
-  out="$("${LS_REMOTE[@]}" 2>"$ERRF")" || rc=$?
+  out="$("${LS_REMOTE[@]}" 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    REMOTE_READ_ERR="$(_read_fault "$rc")"
+    REMOTE_READ_ERR="$(_read_fault "$rc" git ls-remote --tags "$REMOTE" "refs/tags/${TAG}")"
     return 2
   fi
   deref="$(printf '%s\n' "$out" | awk -v t="refs/tags/${TAG}^{}" '$2 == t { print $1; exit }')"
@@ -361,16 +366,16 @@ _remote_tag_sha() {
 #
 #   0  ANSWERED    — TAGS_AT_COMMIT is the (possibly EMPTY) space-separated set of names, and
 #                    empty is a measured "no tag of any name", not a failed look
-#   2  UNREADABLE  — TAGS_READ_ERR carries git's own message; the cause stays unmeasured
+#   2  UNREADABLE  — TAGS_READ_ERR names the failed read; the cause stays unmeasured
 # The `^{}` spelling is stripped and names deduped: an annotated tag stores the tag object's sha
 # on `refs/tags/X` and the commit's on `refs/tags/X^{}`, and the question is about names. A tag
 # name cannot contain `^` (git-check-ref-format), so trimming at it cannot truncate a real name.
 _tags_at_commit() {
   local out rc=0
   TAGS_AT_COMMIT=""; TAGS_READ_ERR=""
-  out="$("${LS_BASE[@]}" 2>"$ERRF")" || rc=$?
+  out="$("${LS_BASE[@]}" 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    TAGS_READ_ERR="$(_read_fault "$rc")"
+    TAGS_READ_ERR="$(_read_fault "$rc" git ls-remote --tags "$REMOTE")"
     return 2
   fi
   TAGS_AT_COMMIT="$(printf '%s\n' "$out" \

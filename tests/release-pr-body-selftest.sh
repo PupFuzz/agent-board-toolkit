@@ -205,6 +205,30 @@ if [[ "$rc" -ne 0 ]]; then ok "non-zero exit on unfetchable origin (rc=$rc)"; el
 contains     "error names the fetch + the override" "$out" "cannot fetch origin"
 not_contains "no body emitted on a wrong baseline"  "$out" "## Bundled"
 
+echo "== a fetch failure never prints git's own message, which can quote the origin URL (card#12170) =="
+# git strips userinfo from its `unable to access '<url>'` line but keeps the query and fragment
+# (measured, git 2.43.0), so an origin carrying `?access_token=` had the token printed by the
+# tool's refusal. The origin here is an unreachable loopback port, so the read fails in transport
+# — the case git's message quotes the URL in. Both legs are driven: each runs its own fetch.
+g -C "$W" remote set-url origin 'https://127.0.0.1:9/o/r.git?access_token=QSECRET#FRAGSECRET'
+rc=0; out="$( (cd "$W" && "$BIN" --version 0.3.0) 2>&1 )" || rc=$?
+eq "base-leg fetch failure → rc 2"                  "2"     "$rc"
+eq "…does not print the query secret"               "false" "$(has 'QSECRET' "$out")"
+eq "…nor the fragment secret"                       "false" "$(has 'FRAGSECRET' "$out")"
+eq "…names the failed fetch"                        "true"  "$(has "cannot fetch origin/'main'" "$out")"
+eq "…and the command that shows git's message"      "true"  "$(has 'git fetch --tags origin main' "$out")"
+rc=0; out="$( (cd "$W" && "$BIN" --version 0.3.0 --base v0.1.0) 2>&1 )" || rc=$?
+eq "head-leg fetch failure → rc 2"                  "2"     "$rc"
+eq "…does not print the query secret"               "false" "$(has 'QSECRET' "$out")"
+eq "…nor the fragment secret"                       "false" "$(has 'FRAGSECRET' "$out")"
+eq "…names the failed fetch"                        "true"  "$(has "cannot fetch origin/'dev'" "$out")"
+eq "…and the command that shows git's message"      "true"  "$(has 'git fetch origin dev' "$out")"
+# CONTROL — the fixture's precondition: git itself DOES print the secret for this origin, so the
+# cells above are about the tool withholding it, not about a URL git would never have quoted.
+eq "control: git's own fetch error quotes the secret" "true" \
+   "$(has 'QSECRET' "$(g -C "$W" fetch --quiet origin dev 2>&1 || true)")"
+g -C "$W" remote set-url origin "$T/nonexistent.git"
+
 echo "== offline takes BOTH overrides now — one per range leg (card#7517) =="
 # Each explicit flag skips ITS OWN leg's fetch, and nothing else's. `--base` alone used to be a
 # complete offline override only because the head leg silently fell back to the local ref, which
@@ -1765,6 +1789,43 @@ _rv "$RV_MID" GITHUB_REPOSITORY=
 eq "the repo falls back to the origin remote"           "$(printf 'acme/gadget#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
 _rv "$RV_MID"
 eq "…and GITHUB_REPOSITORY outranks it"                 "$(printf 'acme/widget#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+
+# THE ORIGIN FALLBACK names <owner>/<repo> and nothing else of the URL (card#12169). The repo it
+# derives is the verifier's argv, so a credential left in it — a `?access_token=` query, a `#`
+# fragment, or `user:token@` userinfo — is handed to another program and to whatever it logs.
+# RED when: the answer is taken from anything but PATH bytes (a `scheme://` authority not
+# discarded whole, or the path not cut at its first `?`/`#`), one trailing `/` is not dropped, an
+# origin holding a newline is not refused, or an owner/repo outside GitHub's charset is returned.
+RV_SECRET='URLSECRET-0rigin-T0K'
+for _u in "https://github.com/acme/gizmo.git?access_token=$RV_SECRET" \
+          "https://github.com/acme/gizmo#$RV_SECRET" \
+          "https://u:$RV_SECRET@github.com/acme/gizmo/" 'https://github.com/acme/gizmo.git/' \
+          "https://github.com/acme/gizmo#x@h/o/$RV_SECRET" "https://github.com/acme/gizmo?t=a@b/c/$RV_SECRET" \
+          "https://github.com/acme/gizmo?redirect=git@github.com:acme/$RV_SECRET" "https://github.com/acme/gizmo#@/a/$RV_SECRET" \
+          'git@github.com:acme/gizmo.git' 'https://github.com/acme/gizmo'; do
+  g -C "$RVR" remote set-url origin "$_u"
+  _rv "$RV_MID" GITHUB_REPOSITORY=
+  eq "origin [$_u]: the verifier is asked acme/gizmo#<pr>" "$(printf 'acme/gizmo#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+  eq "…and the credential is in no output and no call"    "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
+done
+for _u in "https://u:$RV_SECRET@git.example.com/gizmo" "https://user:$RV_SECRET@github.com/acme" \
+          "https://user:$RV_SECRET/@github.com" "https://$RV_SECRET/abc#@github.com" \
+          "https://user:$RV_SECRET/abc#1@github.com/acme/gizmo" "https://user:$RV_SECRET/abc?1@github.com/acme/gizmo" \
+          'https://host:8443/gizmo' "ssh://user:$RV_SECRET@host:22/gizmo" 'https://github.com/-rf/gizmo' \
+          "https://github.com/acme/gizmo"$'\n'"/$RV_SECRET/x" "https://u:x/$RV_SECRET"$'\n''@github.com/acme/gizmo'; do
+  g -C "$RVR" config remote.origin.url "$_u"
+  _rv "$RV_MID" GITHUB_REPOSITORY=
+  eq "origin [$_u] names no repo" "Review: 0 of 3 bundled changes have an independent review record; not measured: #11, #12, #13." "$RV_LINE"
+  eq "…the verifier was never called"                     "" "$RV_CALLS"
+  eq "…and the credential is in no output"                "false" "$(has "$RV_SECRET" "$RV_OUT$RV_ERR$RV_CALLS")"
+done
+# An Enterprise Managed User owner holds `_` (`mona-cat_octo`). RED when: the owner charset drops `_`.
+g -C "$RVR" config remote.origin.url 'https://github.com/mona-cat_octo/gizmo'
+_rv "$RV_MID" GITHUB_REPOSITORY=
+eq "origin [https://github.com/mona-cat_octo/gizmo]: the verifier is asked mona-cat_octo/gizmo#<pr>" \
+   "$(printf 'mona-cat_octo/gizmo#%s\n' 11 12 13)" "$(printf '%s\n' "$RV_CALLS" | sort)"
+g -C "$RVR" remote set-url origin git@github.com:acme/gadget.git
+unset _u RV_SECRET
 
 echo "== a merge-train range is bundled and reviewed per PR, not per commit (card#11580) =="
 # THE DEFECT (measured on agent-board-framework v0.64.0): a range carrying a merge-train commit

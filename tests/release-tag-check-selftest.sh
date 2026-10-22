@@ -155,7 +155,10 @@ g -C "$R" push -q --delete origin v0.28.0 && g -C "$R" tag -d v0.28.0 >/dev/null
 #   <refuse-after>        reads N+1.. are refused; 0 refuses none. A refusal is a REAL non-zero
 #                         read, git's own stderr reaching the tool — and the cheapest path this
 #                         helper has (no upload-pack, no objects), so a refused poll is over in
-#                         milliseconds and cannot eat the tool's own --timeout.
+#                         milliseconds and cannot eat the tool's own --timeout. Its message quotes
+#                         a URL carrying QSECRET/FRAGSECRET, the shape git's own transport errors
+#                         take, so every refusing arm can assert neither reaches the tool's output
+#                         (card#12170).
 #   <arrive-before-read>  v0.28.0 is created on that remote immediately before that read is
 #                         served — a REAL ref found by a real `ls-remote` — or `never`.
 #   <hang-seconds>        serve nothing and sleep instead, so the read never answers; 0 serves
@@ -175,7 +178,7 @@ _counting_remote() {
 n=\$(( \$(cat "$count" 2>/dev/null || echo 0) + 1 )); printf '%s' "\$n" > "$count"
 if [ "\$n" -eq 1 ]; then date +%s > "$count.read1"; fi
 if [ "\$n" -le "$refuse_first" ] || { [ "$refuse_after" -gt 0 ] && [ "\$n" -gt "$refuse_after" ]; }; then
-  echo "fixture: read \$n refused" >&2; exit 1
+  echo "fixture: read \$n refused by https://127.0.0.1:9/o/r.git?access_token=QSECRET#FRAGSECRET/" >&2; exit 1
 fi
 if [ "$arrive" != never ] && [ "\$n" -ge "$arrive" ]; then
   git --git-dir="$remote" update-ref refs/tags/v0.28.0 "$RELEASE_SHA"
@@ -414,7 +417,10 @@ OUT="$( (cd "$R2" && GIT_ALLOW_PROTOCOL=ext "$BIN" --before "$TF_BEFORE" --after
 eq "an unreadable follow-up look → still rc 1"  "1"    "$RC"
 eq "…the absence itself is still reported"      "true" "$(has 'release-0.28.0 does not exist' "$OUT")"
 eq "…the CAUSE is named as unmeasured"          "true" "$(has 'CAUSE here is unmeasured' "$OUT")"
-eq "…quoting the follow-up read's own error"    "true" "$(has 'read 2 refused' "$OUT")"
+# git's own text is withheld (card#12170): the helper's refusal quotes a token-bearing URL.
+eq "…NOT quoting the follow-up read's own error" "false" "$(has 'read 2 refused' "$OUT")"
+eq "…so neither secret it carried is printed"   "false" "$(has 'SECRET' "$OUT")"
+eq "…naming the second look's command instead"  "true" "$(has "git ls-remote --tags ext::$T/follow-up-remote" "$OUT")"
 eq "…and it does NOT pick a cause anyway"       "false" "$(has 'merged and was NOT tagged' "$OUT")"
 eq "…nor claim the commit carries another tag"  "false" "$(has 'IS tagged on' "$OUT")"
 # CONTROL — the same helper re-written to refuse nothing serves BOTH reads, and the verdict is
@@ -493,7 +499,10 @@ run "$BEFORE_SHA" "$RELEASE_SHA" --remote "$T/no-such-remote.git" --timeout 2 --
 eq "unreadable remote → rc 1 (still fail-closed)" "1"    "$RC"
 eq "…names the READ as the thing that failed"     "true" "$(has 'could NOT READ' "$OUT")"
 eq "…and says the tag is UNMEASURED"              "true" "$(has 'UNMEASURED, not absent' "$OUT")"
-eq "…quoting git's OWN error text"                "true" "$(has 'does not appear to be a git repository' "$OUT")"
+# git's own text is WITHHELD, not quoted (card#12170): it can carry the remote's URL with a
+# credential in its query. The refusal names the command that shows it instead.
+eq "…and does NOT quote git's own error text"     "false" "$(has 'does not appear to be a git repository' "$OUT")"
+eq "…naming the command that shows git's message" "true" "$(has "git ls-remote --tags $T/no-such-remote.git refs/tags/v0.28.0" "$OUT")"
 eq "…and reporting how many polls failed"         "true" "$(has 'poll(s) failed' "$OUT")"
 eq "…and it does NOT claim the tag is absent"     "false" "$(has 'does not exist on' "$OUT")"
 eq "…nor that the release was not tagged"         "false" "$(has 'merged and was NOT tagged' "$OUT")"
@@ -507,6 +516,28 @@ eq "…and each failed poll said so as it happened" "true" "$(has 'NOT evidence 
 run "$BEFORE_SHA" "$RELEASE_SHA" --timeout 2 --interval 1
 eq "control: the same push, remote readable → rc 0" "0"  "$RC"
 eq "control: …and it confirms the tag"            "true" "$(has "v0.28.0 present at $RELEASE_SHA" "$OUT")"
+
+# ── A REMOTE URL'S CREDENTIAL NEVER REACHES THE LOG (card#12170) ────────────────────────────
+# git strips userinfo from its `unable to access '<url>'` line but keeps the query and fragment
+# (measured, git 2.43.0), and this tool used to relay that line into its `::error::` annotation.
+# The remote is an unreachable loopback port, so each read fails in transport — the case git's
+# message quotes the URL in. This arm drives the POLL with a real git transport error; the
+# cause-naming second look is driven by the follow-up arm above, whose helper's refusal quotes the
+# same token-bearing URL.
+echo "== a remote URL carrying a token is never printed (card#12170) =="
+LEAKY='https://127.0.0.1:9/o/r.git?access_token=QSECRET#FRAGSECRET'
+g -C "$R" remote add leaky "$LEAKY"
+run "$BEFORE_SHA" "$RELEASE_SHA" --remote leaky --timeout 0 --read-timeout 5
+eq "poll on a token-bearing URL → rc 1"           "1"     "$RC"
+eq "…does not print the query secret"             "false" "$(has 'QSECRET' "$OUT")"
+eq "…nor the fragment secret"                     "false" "$(has 'FRAGSECRET' "$OUT")"
+eq "…names the failed read"                       "true"  "$(has 'could NOT READ leaky' "$OUT")"
+eq "…and the command that shows git's message"    "true"  "$(has 'git ls-remote --tags leaky refs/tags/v0.28.0' "$OUT")"
+# CONTROL — git itself DOES print the secret for this remote, so the cells above are about the
+# tool withholding it, not about a URL git would never have quoted.
+eq "control: git's own ls-remote error quotes the secret" "true" \
+   "$(has 'QSECRET' "$(g -C "$R" ls-remote --tags leaky 2>&1 || true)")"
+g -C "$R" remote remove leaky
 
 # A MEASURED ABSENCE STAYS A MEASURED ABSENCE. The tag verdict must not be weakened just
 # because the third state now exists: with the tag really gone and the remote answering, the
@@ -555,6 +586,7 @@ eq "…while still counting the polls that failed"  "true" "$(has 'could not rea
 # all-failed verdict — refusing every read reds `…states the absence is MEASURED` above, since
 # that is the UNREADABLE branch and it prints no such caveat at all.)
 eq "…naming HOW MANY of them failed"              "true" "$(has '(1 of ' "$OUT")"
+eq "…without printing the failed read's secret"   "false" "$(has 'SECRET' "$OUT")"
 # CONTROL — the SAME helper, re-driven. Its one refusal is already spent, so every read now
 # answers: identical transport, identical remote, identical binary, differing in exactly the
 # failed poll under test. A run with NO failed poll must carry no such caveat, or the clause

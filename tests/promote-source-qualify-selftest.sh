@@ -463,11 +463,11 @@ _fold_census() {
 # figure lives in leg 2's arithmetic, which recomputes it from `_FOLD_CENSUS_EXPECTED` on every
 # run. Read it there, or run this file; do not copy it back up here.
 #
-# THE MIRROR SET — 3, and legs 1 and 3 pin which function each of them lives in:
+# THE MIRROR SET — legs 1 and 3 pin which function each of them lives in:
 #   * bin/adopt-to-dl x1            `_ata_canon_source`
 #   * bin/promote-released-cards x2 `src_canon` (shell) and the jq `canon_source`
 #
-# REAL FOLDS THAT ARE NOT MIRRORS — 10. None of them takes a repo slug:
+# REAL FOLDS THAT ARE NOT MIRRORS. None of them takes a repo slug:
 #   * bin/_kb-board-lib.sh x3 — `_kb_looks_like_pasted_secret` folds a candidate TOKEN before
 #     matching known credential prefixes, and its awk env-file parser folds a KEY NAME twice for
 #     the case-insensitive lookup;
@@ -483,7 +483,7 @@ _fold_census() {
 #   * bin/_shellcheck-pinned x1 — folds `uname -s` into a release-asset name;
 #   * bin/release-artifacts-check x1 — folds a CHANGELOG heading for its section selector.
 #
-# ADMITTED AND NOT A LOWERCASE FOLD AT ALL — 11. This is the price of the polarity, paid openly:
+# ADMITTED AND NOT A LOWERCASE FOLD AT ALL. This is the price of the polarity, paid openly:
 #   * bin/_kb-board-lib.sh x2 and bin/agent-board-toolkit-runtime-check x2 — `local v="${1-}" lc`
 #     and the `case "$lc" in` that reads it: a VARIABLE NAMED `lc`, in the two files that
 #     genuinely fold beside it. Admitted rather than excluded, because narrowing `lc` to a
@@ -506,6 +506,12 @@ _fold_census() {
 #     `.../PULL/<N>` URL (`pull-case`). It tells the operator the segment must be lower-case, which
 #     is what KB_JQ_PR_URL_REF reads; nothing is folded;
 #   * bin/_kbc-stale-blocker.py x1 — `answered lower down` in the module docstring.
+#   * bin/card-completeness x1 and bin/release-pr-body x1 — `local al='abc…xyzABC…XYZ'` in
+#     `repo_from_origin_url` (card#12169): the ASCII letters written out as a `case`-pattern SET for
+#     GitHub's owner/repo charset, nothing folded. They are spelled out rather than written `A-Za-z`
+#     because a bash bracket range is a collation range under a UTF-8 locale
+#     (tests/locale-range-guard-selftest.sh). Admitted by the `ABCDEFGHIJKLMNOPQRSTUVWXYZ` arm;
+#     splitting the literal to dodge it would be weakening the check to go green, so it is declared;
 #
 # ⛔ NO LANGUAGE CENSUS ANY MORE, AND THAT IS A DELETION, NOT AN OMISSION. The predecessor
 # derived the set of LANGUAGES under `bin/` first, purely to bound a per-language construct
@@ -525,17 +531,17 @@ eq "the bins naming canonicalizeSource are exactly the two that mirror it" \
 # LEG 2 — the whole population, per file, as ONE assertion, so a miss names the file that moved.
 _FOLD_CENSUS_EXPECTED="$(printf '%s\n' '_kb-board-lib.sh=5' '_kbc-stale-blocker.py=1' \
                                        '_shellcheck-pinned=1' 'adopt-to-dl=1' \
-                                       'agent-board-toolkit-runtime-check=5' \
+                                       'agent-board-toolkit-runtime-check=5' 'card-completeness=1' \
                                        'gitignore-secret-family-check=2' 'kbcard=6' \
                                        'promote-released-cards=2' 'release-artifacts-check=1' \
-                                       'release-pr-body=2')"
+                                       'release-pr-body=3')"
 eq "every line under bin/ this predicate admits, attributed per file" \
    "$_FOLD_CENSUS_EXPECTED" "$(_fold_census "$BINDIR")"
 # …and this is the arithmetic that pins the census TOTAL: it sums the per-file expectations above
 # and compares them against one number, so a file added to leg 2 without that number moving reds
 # here. ⚠ WHAT IT DOES NOT DO is check the declaration's prose groups against that total — prose
 # does not red on its own — which is exactly why no group figures are written up there any more.
-eq "the per-file census sums to the declared total" "26" \
+eq "the per-file census sums to the declared total" "28" \
    "$(printf '%s\n' "$_FOLD_CENSUS_EXPECTED" | awk -F= '{ n += $2 } END { print n+0 }')"
 
 # LEG 3 — each mirror is WHERE its census says it is. Leg 2's counts alone are satisfied by two

@@ -123,7 +123,7 @@
 # to every reader of this body (card#8538).
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.48.0'
+ABTK_TOOL_VERSION='0.49.0'
 
 die() { echo "release-pr-body: $*" >&2; exit 2; }
 
@@ -844,9 +844,14 @@ fi
 # fetch leaves FETCH_HEAD naming two branches with no way to tell which line is
 # whose. The base leg runs FIRST so its FETCH_HEAD is consumed before the head
 # leg's fetch overwrites it.
+#
+# GIT'S OWN FETCH ERROR IS NOT PRINTED (card#12170): git strips userinfo from its `unable to
+# access '<url>'` line but keeps the query and fragment (measured, git 2.43.0), so an origin
+# carrying `?access_token=…` reached this tool's stderr. Each refusal names the fetch that
+# failed and the command that shows git's message to whoever runs it themselves.
 if [ -z "$BASE" ]; then
-  git fetch --quiet --tags origin "$MAIN_BRANCH" \
-    || die "cannot fetch origin/'$MAIN_BRANCH' — the release baseline is resolved against the remote (the local '$MAIN_BRANCH' ref is stale by design under the branch-off-'$DEV_BRANCH' release flow, so it is NOT a usable fallback); fix network/remote access or pass an explicit --base <tag>"
+  git fetch --quiet --tags origin "$MAIN_BRANCH" 2>/dev/null \
+    || die "cannot fetch origin/'$MAIN_BRANCH' — the release baseline is resolved against the remote (the local '$MAIN_BRANCH' ref is stale by design under the branch-off-'$DEV_BRANCH' release flow, so it is NOT a usable fallback); fix network/remote access or pass an explicit --base <tag>. git's own message is not shown because it can quote the remote's URL and any credential in it — to see it, run: git fetch --tags origin $MAIN_BRANCH"
   MAIN_TIP="$(git rev-parse --verify -q "refs/remotes/origin/$MAIN_BRANCH" || git rev-parse --verify -q FETCH_HEAD)" \
     || die "fetched origin '$MAIN_BRANCH' but cannot resolve its tip"
   LOCAL_TIP="$(git rev-parse --verify -q "refs/heads/$MAIN_BRANCH" || true)"
@@ -868,8 +873,8 @@ else
 fi
 
 if [ -z "$HEAD_REF" ]; then
-  git fetch --quiet origin "$DEV_BRANCH" \
-    || die "cannot fetch origin/'$DEV_BRANCH' — the shipped range's head is resolved against the remote (the local '$DEV_BRANCH' ref lags every merge that lands after a release worktree is cut, and a short range silently drops PRs from the bundled table AND from the shipped-cards manifest); fix network/remote access or pass an explicit --head <ref>"
+  git fetch --quiet origin "$DEV_BRANCH" 2>/dev/null \
+    || die "cannot fetch origin/'$DEV_BRANCH' — the shipped range's head is resolved against the remote (the local '$DEV_BRANCH' ref lags every merge that lands after a release worktree is cut, and a short range silently drops PRs from the bundled table AND from the shipped-cards manifest); fix network/remote access or pass an explicit --head <ref>. git's own message is not shown because it can quote the remote's URL and any credential in it — to see it, run: git fetch origin $DEV_BRANCH"
   if git rev-parse --verify -q "refs/remotes/origin/$DEV_BRANCH" >/dev/null; then
     HEAD_REF="origin/$DEV_BRANCH"      # the readable spelling, when the refspec produced it
   else
@@ -1083,15 +1088,45 @@ bundle_lines() {
 
 # repo_from_origin_url <url>: the `<owner>/<repo>` an origin remote URL names, or nothing.
 # `git@host:owner/repo(.git)`, `https://host/owner/repo(.git)`, `ssh://git@host/owner/repo`.
+# The answer is printed and handed on — card-completeness's request paths, release-pr-body's
+# verifier argument — so it must carry nothing else of the URL (card#12169). The parse is
+# POSITIONAL: the answer can only come from PATH bytes before the path's first `?` or `#`, which
+# cannot be userinfo, host, port, query or fragment. The path is, for `scheme://…`, what follows
+# the authority — after `//` up to its first `/`, `?` or `#`, discarded whole; for scp-like
+# `[user@]host:path` (no `/` before the first `:`), what follows that `:`; for an absolute local
+# path, all of it. Anything else (a relative path, an invalid scheme) is nothing, as is an origin
+# holding whitespace or a control character (a git config value can hold a newline). Then one
+# trailing `/` and a `.git` are dropped, and the last two segments are the answer only when they
+# are GitHub's charset: an owner of letters, digits, `-` and `_` (an Enterprise Managed User handle
+# is `mona-cat_octo`) starting with a letter or digit, a repo of letters, digits, `.`, `_` and `-`
+# other than `.` or `..`. The sets are spelled out, never a
+# range, because a bash bracket range is a collation range under a UTF-8 locale.
 # `bin/card-completeness` carries its own copy of this function for the same question;
 # tests/mirror-pair-parity-selftest.sh § 10 keeps the copies in step by requiring the same answer
 # over one corpus of origin URLs.
 repo_from_origin_url() {
-  local url="$1" slug=""
+  local url="$1" owner repo
+  local al='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ' dg='0123456789'
+  case "$url" in *[[:space:][:cntrl:]]*) return 0 ;; esac
   case "$url" in
-    *:*|*/*) slug="$(printf '%s' "${url%.git}" | sed -E 's#^.*[:/]([^/:]+/[^/]+)$#\1#')" ;;
+    *://*)
+      case "${url%%://*}" in ''|[!$al]*|*[!$al$dg+.-]*) return 0 ;; esac
+      url="${url#*://}"
+      url="${url#"${url%%[/?#]*}"}"
+      ;;
+    /*) ;;
+    *:*)
+      case "${url%%:*}" in */*) return 0 ;; esac
+      url="${url#*:}"
+      ;;
+    *) return 0 ;;
   esac
-  case "$slug" in */*) printf '%s\n' "$slug" ;; esac
+  url="${url%%[?#]*}"; url="${url%/}"; url="${url%.git}"
+  case "$url" in */*) ;; *) return 0 ;; esac
+  repo="${url##*/}"; owner="${url%/*}"; owner="${owner##*/}"
+  case "$owner" in ''|[!$al$dg]*|*[!$al${dg}_-]*) return 0 ;; esac
+  case "$repo" in ''|.|..|*[!$al$dg._-]*) return 0 ;; esac
+  printf '%s/%s\n' "$owner" "$repo"
 }
 
 # --- the review sentence: one line, first under `## Bundled` (card#11149, rt#557) -------------

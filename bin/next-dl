@@ -422,13 +422,20 @@ dl_sequence_call() (
     # mask over it. So a failed read WITHHOLDS the excerpt and says so. An EMPTY but readable
     # token is a different, measured outcome: nothing went out on the wire to find, and the body
     # is quoted whole.
+    # ⛔ IT TAKES THE BODY BY NAME — resp_excerpt <varname> (card#12177). A body passed as an
+    # argument is in the words xtrace prints at the call line, so under `bash -x` an echoed token
+    # was traced there before this mask ran. The variable is read with xtrace suspended until the
+    # mask has run, so a caller passes the NAME of the variable holding the body.
     resp_excerpt() {
-        local tok body _kbx
+        local tok _kbx
         kb_token_file_read tok "$token_file" || {
             printf '[withheld — this tool could not re-read its own token file to mask it out of this body]'
             return 0
         }
-        kb_xtrace_off _kbx; kb_mask_token body "$tok" "$1"; kb_xtrace_restore _kbx
+        kb_xtrace_off _kbx
+        local body="${!1}"
+        kb_mask_token body "$tok" "$body"
+        kb_xtrace_restore _kbx
         # One log LINE: newlines/tabs/CR to spaces, then C0 controls AND DEL dropped, runs squeezed
         # — `resp_detail`'s chain, and the reason it is a chain rather than one `tr` is in that
         # function's own comment. Then, and only then, the cut.
@@ -450,12 +457,18 @@ dl_sequence_call() (
     # clause of this same message says the gap is fine, so the pointer contradicted its own
     # sentence. The volume is why it mattered this round: the transport arm made an ordinary
     # network flake the common producer of this message, where a gateway HTML page had been.
-    # `${2:+…}`, not `${2+…}`: a 2xx with a genuinely empty body is an arm that DID read an answer
-    # and passes "" here, and `${2+…}` (set, however empty) would print a dangling `Response:`
-    # with nothing after it — which reads as a server that said something unquotable rather than
-    # one that said nothing. The omit-the-clause intent the comment above states is `:+`.
-    spent_refusal() {   # <what-happened> [<raw-body>]
-        echo "next-dl: that call CONSUMES a number, so the $label $1 — REFUSING to mint. The offline max+1 scan cannot see a claimed-but-unstamped DL, so a number from it would be at or below the one that may just have been spent: a duplicate DL, which is the one answer an allocator must never give. Falling back here would be that duplicate, $risk. An unread claim simply burns a number: a GAP in the sequence is expected and fine and needs NO recovery action — check the counter with 'next-dl ${project_args[*]} --peek', fix the cause, and retry.${2:+ Response: $(resp_excerpt "$2")}" >&2
+    # The clause is omitted when the NAMED body is empty, not only when no name is passed: a 2xx
+    # with a genuinely empty body is an arm that DID read an answer and names an empty variable
+    # here, and quoting it would print a dangling `Response:` with nothing after it — which reads
+    # as a server that said something unquotable rather than one that said nothing. The test runs
+    # untraced because it expands the body.
+    spent_refusal() {   # <what-happened> [<NAME of the variable holding the raw body>]
+        local _ndx
+        kb_xtrace_off _ndx
+        local quoted=""
+        [[ -z "${2:-}" || -z "${!2}" ]] || quoted=1
+        kb_xtrace_restore _ndx
+        echo "next-dl: that call CONSUMES a number, so the $label $1 — REFUSING to mint. The offline max+1 scan cannot see a claimed-but-unstamped DL, so a number from it would be at or below the one that may just have been spent: a duplicate DL, which is the one answer an allocator must never give. Falling back here would be that duplicate, $risk. An unread claim simply burns a number: a GAP in the sequence is expected and fine and needs NO recovery action — check the counter with 'next-dl ${project_args[*]} --peek', fix the cause, and retry.${quoted:+ Response: $(resp_excerpt "$2")}" >&2
     }
     # The POSITIVE counterpart of spent_refusal, and the ONLY way past the claim's call-site belt.
     # Called by an arm that can prove no number was allocated; see $NDL_NO_SPEND for why the
@@ -492,9 +505,14 @@ dl_sequence_call() (
     IFS=$'\t' read -r api board token_file <<<"$cfg"
     # Auth via stdin herestring (-H @- <<<) so the token never enters argv (#3569) + portable
     # (no /dev/fd process-sub dependency that breaks native mingw64 curl, #34).
+    # xtrace is suspended from the capture through the split below: `resp=` and `body=` would
+    # otherwise trace a body that can carry the echoed token (card#12177).
+    local _ndx
+    kb_xtrace_off _ndx
     resp="$(curl -sS -w $'\n%{http_code}' -X "$method" \
         -H @- -H "Accept: application/json" \
         "$api/boards/$board/$path" 2>/dev/null <<<"$(kb_xtrace_off; kb_token_file_read tok "$token_file" || tok=""; kb_auth_header "$tok")")" || {
+        kb_xtrace_restore _ndx
         # THE TRANSPORT DIED. ONE cause, TWO dispositions, and the parameter — not the prose —
         # decides which (card#10230), exactly as the 2xx-undecodable arm below does. The CAUSE
         # line is unconditional and unchanged: it is still NOT a 404, because nothing was
@@ -517,6 +535,7 @@ dl_sequence_call() (
         exit 3
     }
     http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+    kb_xtrace_restore _ndx
     # `2[0-9][0-9]` is a glob BRACKET RANGE, so it is a COLLATION range: under a UTF-8 locale
     # it admits non-ASCII digits (card#5409). $http is curl's own %{http_code} and is ASCII by
     # construction, so nothing can reach it that this would misclassify — the pin is here
@@ -537,7 +556,7 @@ dl_sequence_call() (
                     # board predating the route.
                     exit 1
                 fi
-                spent_refusal "may ALREADY have allocated a number this response did not carry back" "$body"
+                spent_refusal "may ALREADY have allocated a number this response did not carry back" body
                 exit 3
             }
             printf '%s' "$val" ;;
@@ -554,7 +573,7 @@ dl_sequence_call() (
             nothing_spent
             exit 1 ;;   # NOTHING WAS SPENT: the server ANSWERED, and what it answered is that this route does not exist here — so the POST reached a handler that allocates nothing.
         *)
-            echo "next-dl: the $label is PRESENT but FAILED (HTTP $http) — NOT silently falling back to the offline scan, $risk. Fix the cause (token board-membership? board id? api_base?) and retry. Response: $(resp_excerpt "$body")" >&2
+            echo "next-dl: the $label is PRESENT but FAILED (HTTP $http) — NOT silently falling back to the offline scan, $risk. Fix the cause (token board-membership? board id? api_base?) and retry. Response: $(resp_excerpt body)" >&2
             exit 3 ;;
     esac
 )

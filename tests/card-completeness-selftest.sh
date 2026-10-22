@@ -443,4 +443,60 @@ eq "a window over the cap is UNMEASURED"       "UNMEASURED" "$(verdict 9451)"
 eq "  … naming the cap"                        "true"  "$(has "${cap}-commit cap" "$(detail 9451)")"
 eq "  … and looked up NO commit"               "false" "$(has '/commits/' "$(cat "$CALL_LOG")")"
 
+echo "== 15. THE ORIGIN FALLBACK names <owner>/<repo> and nothing else of the URL (card#12169) =="
+# An origin URL can carry a credential the repo name must never carry: a `?access_token=` query,
+# a `#` fragment, or `user:token@` userinfo. REPO is printed in every UNMEASURED label and sent in
+# every request path, so whatever survives the parse is leaked to both. The origin is set through
+# git's environment config in a PLAIN DIRECTORY — no `git init`, for the reason § 10 gives.
+# RED when: the answer is taken from anything but PATH bytes — a `scheme://` authority (userinfo,
+# host, port) not discarded whole, from after `//` to its first `/`, `?` or `#` (the password and
+# port rows); the path not cut at its first `?`/`#` (the query and fragment rows, including those
+# holding `@`, `/` or `:`) — or one trailing `/` is not dropped (trailing-slash rows), an origin
+# holding a newline is not refused, or an owner/repo outside GitHub's charset is returned (`-rf`).
+URL_SECRET='URLSECRET-0rigin-T0K'
+# origin_run <origin-url> — the real oracle from a plain directory whose only repo source is the
+# origin; captures rc/out/err like `run`.
+origin_run() {
+  prs '[]'
+  rc=0
+  out="$(cd "$noorigin" && env -u GITHUB_REPOSITORY GIT_CONFIG_COUNT=1 \
+      GIT_CONFIG_KEY_0=remote.origin.url GIT_CONFIG_VALUE_0="$1" \
+      "$CC" "${RH[@]}" --cards 9606 2>"$TMP/err")" || rc=$?
+  err="$(cat "$TMP/err")"
+}
+# leaked — true when the URL credential is in any output or any request (argv, URL, stdin).
+leaked() { has "$URL_SECRET" "$out$err$(cat "$CALL_LOG" "$ARGV_LOG" "$TMP_STDIN_LOG")"; }
+for _u in "https://github.com/acme/widget.git?access_token=$URL_SECRET" \
+          "https://github.com/acme/widget#$URL_SECRET" \
+          "https://github.com/acme/widget.git?x=a/$URL_SECRET" \
+          "https://u:$URL_SECRET@github.com/acme/widget/" 'https://github.com/acme/widget.git/' \
+          "https://github.com/acme/widget#x@h/o/$URL_SECRET" "https://github.com/acme/widget?t=a@b/c/$URL_SECRET" \
+          "https://github.com/acme/widget?redirect=git@github.com:acme/$URL_SECRET" "https://github.com/acme/widget#@/a/$URL_SECRET" \
+          'git@github.com:acme/widget.git' 'https://github.com/acme/widget'; do
+  origin_run "$_u"
+  eq "origin [$_u] → COMPLETE, rc 0"            "0|COMPLETE" "$rc|$(verdict 9606)"
+  eq "  … the request path is /repos/acme/widget/pulls?" "true" "$(has "/repos/acme/widget/pulls?" "$(cat "$CALL_LOG")")"
+  eq "  … and the credential is in no output and no request" "false" "$(leaked)"
+done
+for _u in "https://u:$URL_SECRET@git.example.com/widget" "https://user:$URL_SECRET@github.com/acme" \
+          "https://user:$URL_SECRET/@github.com" "https://$URL_SECRET/abc#@github.com" \
+          "https://user:$URL_SECRET/abc#1@github.com/acme/widget" "https://user:$URL_SECRET/abc?1@github.com/acme/widget" \
+          'https://host:8443/widget' "ssh://user:$URL_SECRET@host:22/widget" 'https://github.com/-rf/widget' \
+          "https://github.com/acme/widget"$'\n'"/$URL_SECRET/x" "https://u:x/$URL_SECRET"$'\n''@github.com/acme/widget'; do
+  origin_run "$_u"
+  eq "origin [$_u] names no repo → rc 2"          "2"     "$rc"
+  eq "  … refusing to guess, not reading the URL as a repo" "true" "$(has 'Refusing to guess the population' "$err")"
+  eq "  … and the credential is in no output and no request" "false" "$(leaked)"
+done
+eq "  … (control: the leak probe sees a credential that IS printed)" "true" \
+   "$(out="x$URL_SECRET"; leaked)"
+# An owner may hold `_` after its first character: GitHub Enterprise Managed User handles do
+# (`mona-cat_octo`, docs.github.com "Username considerations for external authentication").
+# RED when: the owner charset drops `_`.
+origin_run 'https://github.com/mona-cat_octo/widget'
+eq "origin [https://github.com/mona-cat_octo/widget] → COMPLETE, rc 0" "0|COMPLETE" "$rc|$(verdict 9606)"
+eq "  … the request path is /repos/mona-cat_octo/widget/pulls?" "true" "$(has "/repos/mona-cat_octo/widget/pulls?" "$(cat "$CALL_LOG")")"
+unset -f origin_run leaked
+unset _u URL_SECRET
+
 _summary "card-completeness-selftest"

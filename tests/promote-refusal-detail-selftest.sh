@@ -590,8 +590,8 @@ echo "== § 10 — UNDER bash -x THE TOKEN IS NOT TRACED (card#11204) =="
 # header built from it are held with xtrace suspended, and api() feeds curl that header as a
 # variable. THE CONTROLS: the move really happened (so the token was used), and the trace was live
 # after the token was in hand (api() is traced). Only a success is driven: on a refusal a server
-# that ECHOES the header puts the token into a body the trace then prints — a body, not an
-# expansion of the token, and outside what this suspension can reach.
+# that ECHOES the header puts the token into a body — a body, not an expansion of the token, and
+# outside what this suspension can reach; resp_detail's own suspension covers it, § 11.
 : > "$PATCH_LOG"
 rc=0
 out="$(cd "$TMP" && bash -x "$PRC" --config "$TMP/release-pr.json" --dls "DL-100" 2>"$TMP/xtrace.err")" || rc=$?
@@ -600,5 +600,35 @@ eq "bash -x: …nor on stdout"                                "false" "$(has "$T
 eq "bash -x: control — the move was really sent"            "true"  "$(has '/tasks/1.json' "$(cat "$PATCH_LOG")")"
 eq "bash -x: control — the trace was live after the token"  "true"  "$(grep -qE '^\++ api ' "$TMP/xtrace.err" && echo true || echo false)"
 eq "bash -x: the traced run still succeeds"                 "0"     "$rc"
+
+echo "== § 11 — UNDER bash -x A REFUSAL BODY ECHOING THE TOKEN IS NOT TRACED (card#12177) =="
+# § 10's residual: a server that echoes the Authorization header into its refusal body hands the
+# token back, and resp_detail held that raw body in traced words (the read, the tests on it and
+# the split) before masking it. It now suspends xtrace from the read through the mask.
+# Driven through BOTH caller shapes — the board read's `die "… $(resp_detail) …"` and the move
+# loop's `echo "… $(resp_detail)"` — at 401. The count is over stdout AND stderr together, so a
+# leak on either surfaces. THE CONTROLS: the stub really served the token (the masked render is
+# on stderr, so the body was read), and the trace RESUMED after the mask (resp_detail's final
+# printf is traced) — so the 0 is not a trace that was simply switched off for the rest of the run.
+_s11_body="{\"message\":\"Unauthenticated.\",\"headers\":{\"Authorization\":\"Bearer $TOKEN_VALUE\"}}"
+_s11_trace() {   # <label> — runs the bin under bash -x, combined trace in $TMP/xtrace11.all
+    : > "$PATCH_LOG"
+    rc=0
+    (cd "$TMP" && bash -x "$PRC" --config "$TMP/release-pr.json" --dls "DL-100") \
+        > "$TMP/xtrace11.all" 2>&1 || rc=$?
+    local all n
+    all="$(cat "$TMP/xtrace11.all")"
+    n="$({ grep -oF "$TOKEN_VALUE" "$TMP/xtrace11.all" || true; } | wc -l | tr -d ' ')"
+    eq "[$1] bash -x: the token appears 0 times in stdout+stderr"   "0"     "$n"
+    eq "[$1] …control: the echoed body WAS rendered, masked"        "true"  "$(has 'Bearer ***' "$all")"
+    eq "[$1] …control: the trace resumed after the mask"            "true"  "$(grep -qF "printf 'HTTP %s, server said: %s' 401" "$TMP/xtrace11.all" && echo true || echo false)"
+}
+STUB_GET_FAIL=1 STUB_GET_STATUS=401 STUB_GET_BODY="$_s11_body" _s11_trace "board read 401"
+eq "[board read 401] …the read-failure die still exits 2"          "2"     "$rc"
+STUB_PATCH_STATUS=401 STUB_PATCH_BODY="$_s11_body" _s11_trace "move 401"
+eq "[move 401] …the refused move still exits 1"                    "1"     "$rc"
+eq "[move 401] …control: the PATCH was really sent"                "true"  "$(has '/tasks/1.json' "$(cat "$PATCH_LOG")")"
+unset -f _s11_trace
+unset _s11_body
 
 _summary "promote-refusal-detail-selftest"
