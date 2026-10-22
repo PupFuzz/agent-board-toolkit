@@ -6,17 +6,21 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-22
+
+**Minor — credential-leak fixes: `bin/card-completeness` and `bin/release-pr-body` keep an `origin` URL's credential out of the repo name they derive, `bin/release-tag-check` and `bin/release-pr-body` no longer print git's own error text from a failed `ls-remote` / `fetch`, and `bash -x` no longer prints the board token from a refused call's error body; the lib gains `kb_render_refusal_var`.** The PRs in `v0.48.0..v0.49.0` that carry a change are #476, #477, #478 and #479, enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.48.0..v0.49.0` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **minor** on two grounds: new surface (the lib function `kb_render_refusal_var`) **and** an acceptance narrowing — `card-completeness` and `release-pr-body` now refuse origin forms that used to resolve to a repo name, stated under `### Changed` below. Upgrade actions: `docs/UPGRADE.md` §6 v0.49.0.
+
 ### Changed
 
 - **card#12169** — ⚠ **Acceptance narrowing (minor at minimum, per [`../VERSIONING.md`](../VERSIONING.md) § Bump sizing): origin forms that `bin/card-completeness` and `bin/release-pr-body` used to resolve to a credential-free `<owner>/<repo>` are now refused.** Each shape below resolved before, with no `--repo` and no `$GITHUB_REPOSITORY`, and `card-completeness` ran to its verdict:
   - a bracketed scp host (`git@[::1]:acme/widget`);
   - a remote-helper prefix (`persistent-https::https://github.com/acme/widget`);
   - a relative path (`acme/widget`);
-  - an origin with leading or trailing whitespace (` https://github.com/acme/widget`);
-  - an authority whose port is not a number (`https://user:T@github.com:acme/widget`, and `https://user:T/abc#1@github.com/acme/widget`, whose authority runs to the first `/`, so host `user` and port `T`);
+  - an origin with leading whitespace (` https://github.com/acme/widget`);
+  - userinfo with unencoded `/`, `?` or `#`, or a non-numeric port (`https://user:T@github.com:acme/widget`, and `https://user:T/abc#1@github.com/acme/widget`, whose authority runs to the first `/`, so host `user` and port `T`);
   - an scp user holding `:` (`user:T@github.com:acme/widget`, whose host is `user` under the scp rule that the host is everything before the first `:`).
 
-  For the last three shapes the old answer was not the repo the remote names. They are listed anyway because the old run completed. Now `card-completeness` exits `2` ("Refusing to guess the population"), and `release-pr-body` exits `0` but reports every bundled PR as not measured without calling the verifier. Both fail loudly. The workaround is to pass `--repo <owner>/<repo>` to `card-completeness`, or set `GITHUB_REPOSITORY=<owner>/<repo>` for either tool. The cause is the positional parse under `### Security` below.
+  For the last two shapes the old answer was not the repo the remote names. They are listed anyway because the old run completed. Now `card-completeness` exits `2` ("Refusing to guess the population"), and `release-pr-body` exits `0` but reports every bundled PR as not measured without calling the verifier. Both fail loudly. An origin with trailing whitespace is not in this list: the previous release already failed on it, because the slug it derived kept the whitespace (`acme/widget `) and `card-completeness` put it into its request paths, which ended UNMEASURED (measured against a stubbed transport; not run against GitHub). The workaround is to pass `--repo <owner>/<repo>` to `card-completeness`, or set `GITHUB_REPOSITORY=<owner>/<repo>` for either tool. The cause is the positional parse under `### Security` below.
 
 ### Security
 
