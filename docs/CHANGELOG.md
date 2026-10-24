@@ -8,6 +8,8 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ### Changed
 
+- **card#12296** — **`kbcard move-board` prints each payload key it is about to clear WITH its value, on `--dry-run` and before the real write.** The board wipes the card's custom-field `payload` on a cross-board move, and the disclosure used to name only the keys, so values such as `pr_url`, `pr_number` and `dl_number` were gone for good with nothing to re-stamp them from (agent-roundtable#553). The `⚠ … which holds:` line is now followed by one indented `key=value` line per key, then a line saying none of it is carried to the target board. A string value prints raw (so one holding a newline spans more than one line), any other value as compact JSON, and a payload that is not an object prints whole as JSON. An empty payload still prints the existing "loses nothing" line. Only stderr changes: what is sent, stdout and every exit code are as before. A caller matching the old comma-joined key list on stderr (`which holds: dl_number, pr_number`) no longer matches it.
+
 - **card#12169** — ⚠ **Acceptance narrowing (minor at minimum, per [`../VERSIONING.md`](../VERSIONING.md) § Bump sizing): origin forms that `bin/card-completeness` and `bin/release-pr-body` used to resolve to a credential-free `<owner>/<repo>` are now refused.** Each shape below resolved before, with no `--repo` and no `$GITHUB_REPOSITORY`, and `card-completeness` ran to its verdict:
   - a bracketed scp host (`git@[::1]:acme/widget`);
   - a remote-helper prefix (`persistent-https::https://github.com/acme/widget`);

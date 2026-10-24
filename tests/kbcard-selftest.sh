@@ -7308,7 +7308,10 @@ eq "  …stdout is the RE-READ card (its name is the re-read's)" '"probe (re-rea
 eq "  …stdout carries exactly the documented keys" \
    '["assigned_user_id","board_id","card_type_id","id","name","payload","swimlane_id","workflow_stage_id"]' "$(jq -c 'keys' <<<"$out")"
 eq "  …stderr names the board it left and the board it re-reads on" "true" "$(has 'card 901 moved from board 42 to board 77 — re-read after the POST' "$err")"
-eq "  …stderr names the payload keys the move clears"      "true" "$(has 'which holds: dl_number, pr_number' "$err")"
+# Each key WITH its value: the board wipes the payload, so a name alone leaves the caller nothing
+# to re-stamp from. A string prints raw, any other type as compact JSON.
+eq "  …stderr names each payload key the move clears, with its value" "true|true|true" \
+   "$(has 'which holds:' "$err")|$(has $'\n  dl_number=DL-0012\n' "$err")|$(has $'\n  pr_number=88\n' "$err")"
 eq "  …stderr warns the assignment MAY be cleared, naming the seat" "true" "$(has 'assigned to alice (user 5)' "$err")"
 eq "  …and says it WAS cleared once the re-read shows it"  "true" "$(has 'the board cleared the card' "$err")"
 
@@ -7455,7 +7458,13 @@ echo "-- --dry-run: the disclosure and the request, nothing written --"
 mbc move-board --task 901 --to-board tgt --column prioritized --card-type feature --dry-run
 eq "M10 rc 0, ONE request (the read), no POST"           "0|1|0" "$rc|$(kb_stub_total)|$(kb_stub_count POST '/move-board.json')"
 eq "  …stdout is the exact request"                      "true" "$(has 'POST /tasks/901/move-board.json  {"board_id":77,"workflow_stage_id":881,"card_type_id":19}' "$out")"
-eq "  …stderr already names what would be cleared"       "true" "$(has 'which holds: dl_number, pr_number' "$err")"
+eq "  …stderr already names what would be cleared, values included" "true|true" \
+   "$(has $'\n  dl_number=DL-0012\n' "$err")|$(has $'\n  pr_number=88\n' "$err")"
+MB_PRE_BODY='{"data":{"id":901,"board_id":42,"workflow_stage_id":48,"payload":{"pr_url":"https://example.test/pull/7","refs":[1,"a"],"meta":{"k":null}}}}' mbc move-board --task 901 --to-board tgt --column prioritized --dry-run
+eq "  …a string value prints raw, any other type as compact JSON" "true|true|true" \
+   "$(has $'\n  pr_url=https://example.test/pull/7\n' "$err")|$(has $'\n  refs=[1,"a"]\n' "$err")|$(has $'\n  meta={"k":null}\n' "$err")"
+MB_PRE_BODY='{"data":{"id":901,"board_id":42,"workflow_stage_id":48,"payload":[1,2]}}' mbc move-board --task 901 --to-board tgt --column prioritized --dry-run
+eq "  …a payload that is not an object is printed whole, as JSON" "true" "$(has $'which holds:\n  [1,2]\n' "$err")"
 MB_PRE_BODY='{"data":{"id":901,"board_id":42,"workflow_stage_id":48,"payload":null}}' mbc move-board --task 901 --to-board tgt --column prioritized --dry-run
 eq "  …an empty payload is SAID to lose nothing, not skipped" "true" "$(has 'payload is empty, so the move' "$err")"
 
