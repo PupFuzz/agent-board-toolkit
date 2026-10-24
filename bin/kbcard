@@ -331,9 +331,14 @@
 #     correlation stamps (dl_number, pr_number, pr_url, …) a release promote matches on — and
 #     clears `assigned_user_id` unless that user is a member of the target board (membership
 #     is not readable from here, so the line says it MAY be cleared). The card is READ first
-#     and the keys it would lose are NAMED on stderr before anything is written; a card that
-#     cannot be read is rc 1 with nothing sent, because what the move would destroy is then
-#     unknown.
+#     and every payload key it would lose is printed on stderr WITH ITS VALUE before anything
+#     is written — exactly one indented `key=value` line each: the key through c0_header, a
+#     string raw only when it holds no C0 control and does not start with `"`, otherwise as
+#     its JSON encoding (so no C0 control can erase or forge this warning, and a value starting with
+#     `"` is always the JSON encoding of a string), any other value as compact
+#     JSON (a payload that is not an object prints whole, as JSON) — because nothing else
+#     keeps a copy to re-stamp from; a card that cannot be read is rc 1 with nothing sent,
+#     because what the move would destroy is then unknown.
 #     --yes is required to write: without it an interactive shell is asked, and a
 #     non-interactive one is rc 2 BEFORE ANY REQUEST — the posture `delete --hard` takes.
 #     --dry-run reads the card, prints the same disclosure and the exact request on stdout,
@@ -3455,7 +3460,7 @@ cmd_move_board() {
     # THE READ BEFORE THE WRITE. What the move destroys is a property of THIS card, so it is read,
     # and a card that cannot be read is refused: the disclosure would otherwise be a guess, and a
     # guess of "nothing to lose" is the silent field loss this verb exists to prevent.
-    local pre card from_id keys uid
+    local pre card from_id held uid
     pre="$(kb_card_witness "$task")" || {
         echo "kbcard: move-board on task $task: the card could not be READ, so what this move would clear from it is unknown — refusing before the write. Nothing was sent." >&2
         return 1
@@ -3463,7 +3468,17 @@ cmd_move_board() {
     [[ "$(jq -r '.state' <<<"$pre")" == "present" ]] || { echo "kbcard: move-board: the board does not know card $task (404) — nothing was sent" >&2; return 1; }
     card="$(jq -c '.card' <<<"$pre")"
     from_id="$(jq -r '.board_id // "?"' <<<"$card")"
-    keys="$(jq -r '.payload | if . == null or . == {} then "" elif type == "object" then keys_unsorted | join(", ") else tojson end' <<<"$card")"
+    # Values, not just keys: the board keeps none of them, so this is the caller's only copy.
+    # Both are board-writer text printed just above the [y/N] prompt, so a C0 control in either
+    # could erase or forge this warning (card#12311). A key goes through c0_header; a string value
+    # holding any C0 control prints as its JSON encoding instead of being lossily replaced, so each
+    # key stays one `  key=value` line and the value it shows is still the exact value. A string
+    # starting with `"` is encoded too, so a leading `"` always means JSON-encoded and a string
+    # that merely looks like an encoding (`"a\nb"`) cannot be mistaken for one.
+    held="$(jq -r "$_KBC_C0_DEFS"'
+      .payload | if . == null or . == {} then "" elif type == "object" then
+        to_entries | map("  \(.key | c0_header)=\(.value | if type == "string" and (startswith("\"") | not) and (explode | all(. >= 32)) then . else tojson end)") | join("\n")
+      else "  \(tojson)" end' <<<"$card")"
     uid="$(jq -r '.assigned_user_id // empty' <<<"$card")"
     # From the READ, not from --board: a task id is global, so the board this run was pointed at
     # says nothing about which board the card is on.
@@ -3472,8 +3487,9 @@ cmd_move_board() {
         return 2
     fi
     echo "kbcard: move-board: card $task, board $from_id → board $to_id ($to_env): column $column (stage $(jq -r '.workflow_stage_id' <<<"$body")), card type $(jq -r '.card_type_id // "none (--card-type omitted)"' <<<"$body"), swimlane $(jq -r 'if has("swimlane_id") and .swimlane_id != null then .swimlane_id else "none (laneless)" end' <<<"$body")" >&2
-    if [[ -n "$keys" ]]; then
-        echo "kbcard: move-board: ⚠ the move CLEARS the card's custom-field payload, which holds: $keys. None of it is carried to board $to_id and nothing restores it — a correlation stamp (dl_number, pr_number, pr_url, …) among them stops correlating this card." >&2
+    if [[ -n "$held" ]]; then
+        printf '%s\n%s\n%s\n' "kbcard: move-board: ⚠ the move CLEARS the card's custom-field payload, which holds:" "$held" \
+            "kbcard: move-board: none of it is carried to board $to_id and nothing restores it — a correlation stamp (dl_number, pr_number, pr_url, …) among it stops correlating this card" >&2
     else
         echo "kbcard: move-board: the card's custom-field payload is empty, so the move's payload clear loses nothing" >&2
     fi
