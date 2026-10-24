@@ -7467,6 +7467,25 @@ MB_PRE_BODY='{"data":{"id":901,"board_id":42,"workflow_stage_id":48,"payload":[1
 eq "  …a payload that is not an object is printed whole, as JSON" "true" "$(has $'which holds:\n  [1,2]\n' "$err")"
 MB_PRE_BODY='{"data":{"id":901,"board_id":42,"workflow_stage_id":48,"payload":null}}' mbc move-board --task 901 --to-board tgt --column prioritized --dry-run
 eq "  …an empty payload is SAID to lose nothing, not skipped" "true" "$(has 'payload is empty, so the move' "$err")"
+# The payload is board-writer text printed just above the [y/N] prompt: an ESC there is a terminal
+# command (ESC[1A ESC[2K erases the warning line above it, OSC 52 writes the clipboard) and a raw
+# newline mints an unindented line that forges the verdict (card#12311).
+MB_FORGE="kbcard: move-board: the card's custom-field payload is empty, so the move's payload clear loses nothing"
+MB_EVIL_NOTE=$'ok\n'"$MB_FORGE"
+MB_EVIL_CLIP=$'\e]52;c;ZXZpbA==\a'
+MB_EVIL_TAB=$'a\tb'
+MB_LOOKALIKE='"a\nb"'   # quote, backslash, n, quote — no control, but shaped like an encoding
+MB_PRE_BODY="$(jq -nc --arg n "$MB_EVIL_NOTE" --arg c "$MB_EVIL_CLIP" --arg t "$MB_EVIL_TAB" --arg q "$MB_LOOKALIKE" --arg k $'x\e[1A\e[2Ky' \
+    '{data:{id:901,board_id:42,workflow_stage_id:48,payload:{($k):"v",note:$n,clip:$c,tab:$t,quoted:$q,pr_url:"https://example.test/pull/7"}}}')" \
+    mbc move-board --task 901 --to-board tgt --column prioritized --dry-run
+mb_held="$(sed -n '/which holds:$/,/none of it is carried/p' <<<"$err" | sed '1d;$d')"
+eq "M10b no raw ESC or BEL from a key or value reaches stderr" "false|false" "$(has $'\e' "$err")|$(has $'\a' "$err")"
+eq "  …no unindented forged verdict line, and each key is exactly ONE indented line" "0|6|6" \
+   "$(grep -cxF "$MB_FORGE" <<<"$err" || :)|$(wc -l <<<"$mb_held" | tr -d ' ')|$(grep -c '^  [^ ]' <<<"$mb_held")"
+eq "  …the key is sanitized, a clean string still prints raw" "true|true" \
+   "$(has $'\n  x?[1A?[2Ky=v\n' "$err")|$(has $'\n  pr_url=https://example.test/pull/7\n' "$err")"
+eq "  …a string holding a control or a leading \" prints as its JSON encoding, recoverable exactly" "true|true|true|true" \
+   "$([[ "$(sed -n 's/^  note=//p' <<<"$mb_held" | jq -j .)" == "$MB_EVIL_NOTE" ]] && echo true || echo false)|$([[ "$(sed -n 's/^  clip=//p' <<<"$mb_held" | jq -j .)" == "$MB_EVIL_CLIP" ]] && echo true || echo false)|$([[ "$(sed -n 's/^  tab=//p' <<<"$mb_held" | jq -j .)" == "$MB_EVIL_TAB" ]] && echo true || echo false)|$([[ "$(sed -n 's/^  quoted=//p' <<<"$mb_held" | jq -j .)" == "$MB_LOOKALIKE" ]] && echo true || echo false)"
 
 echo "-- the read BEFORE the write refuses when it is not a measurement --"
 for _h in "500|{}" "200|<html>502</html>" "403|{}"; do
