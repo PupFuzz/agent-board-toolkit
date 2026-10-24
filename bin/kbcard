@@ -334,7 +334,7 @@
 #     and every payload key it would lose is printed on stderr WITH ITS VALUE before anything
 #     is written — exactly one indented `key=value` line each: the key through c0_header, a
 #     string raw only when it holds no C0 control and does not start with `"`, otherwise as
-#     its JSON encoding (so it cannot erase or forge this warning, and a value starting with
+#     its JSON encoding (so no C0 control can erase or forge this warning, and a value starting with
 #     `"` is always the JSON encoding of a string), any other value as compact
 #     JSON (a payload that is not an object prints whole, as JSON) — because nothing else
 #     keeps a copy to re-stamp from; a card that cannot be read is rc 1 with nothing sent,
