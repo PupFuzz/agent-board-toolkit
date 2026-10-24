@@ -573,3 +573,10 @@ kbcard show --task <some-id> | jq .id              # host -> the id, no error
 - **[vendor] re-vendor `bin/card-completeness`, `bin/release-pr-body`, `bin/release-tag-check`, `bin/promote-released-cards` and `bin/next-dl`, and `bin/_kb-board-lib.sh` with every bin that sources it** (§3 derives that set). Print the changed set with `git diff --name-only v0.48.0 v0.49.0 -- bin/ hooks/ promote/`. `kb_render_refusal <status> <body>` keeps its signature; the new `kb_render_refusal_var <status> <varname>` takes the body by variable name so `bash -x` does not trace it.
 - **No `PATH` symlink loop.** No tool is added or removed.
 - **[release-CI] re-pinning is optional.** `release-tag-check` and `promote-released-cards` change only in what they print and what `bash -x` traces; exit codes are unchanged. A pin to v0.48.0 keeps working but still prints git's error text and traces the token under `bash -x`.
+
+### v0.49.1
+
+- **[host] `kbcard move-board` prints a different stderr disclosure.** The `⚠ … which holds:` line is now followed by one indented `key=value` line per payload key, where it used to end with a comma-joined key list (`which holds: dl_number, pr_number`). **Action:** only for a script that greps that line for the key list — match the `key=value` lines instead. The request, stdout and every exit code are unchanged, so nothing that completed before now fails.
+- **[vendor] re-vendor `bin/kbcard`.** Print the changed set with `git diff --name-only v0.49.0 v0.49.1 -- bin/ hooks/ promote/`; besides `bin/kbcard`, the bins it lists are the stamped ones, re-stamped at every bump as usual (card#9335).
+- **No `PATH` symlink loop.** No tool is added or removed.
+- **[release-CI] No action.** The tools the composite actions run change only their version stamp; a pin to v0.49.0 keeps working, and re-pinning to v0.49.1 is optional.
