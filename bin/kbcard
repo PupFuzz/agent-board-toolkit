@@ -332,10 +332,12 @@
 #     clears `assigned_user_id` unless that user is a member of the target board (membership
 #     is not readable from here, so the line says it MAY be cleared). The card is READ first
 #     and every payload key it would lose is printed on stderr WITH ITS VALUE before anything
-#     is written — one indented `key=value` line each, a string raw and any other value as
-#     compact JSON (a payload that is not an object prints whole, as JSON) — because nothing
-#     else keeps a copy to re-stamp from; a card that cannot be read is rc 1 with nothing
-#     sent, because what the move would destroy is then unknown.
+#     is written — exactly one indented `key=value` line each: the key through c0_header, a
+#     string raw only when it holds no C0 control and otherwise as its JSON encoding (so it
+#     cannot erase or forge this warning, and stays recoverable), any other value as compact
+#     JSON (a payload that is not an object prints whole, as JSON) — because nothing else
+#     keeps a copy to re-stamp from; a card that cannot be read is rc 1 with nothing sent,
+#     because what the move would destroy is then unknown.
 #     --yes is required to write: without it an interactive shell is asked, and a
 #     non-interactive one is rc 2 BEFORE ANY REQUEST — the posture `delete --hard` takes.
 #     --dry-run reads the card, prints the same disclosure and the exact request on stdout,
@@ -3466,7 +3468,14 @@ cmd_move_board() {
     card="$(jq -c '.card' <<<"$pre")"
     from_id="$(jq -r '.board_id // "?"' <<<"$card")"
     # Values, not just keys: the board keeps none of them, so this is the caller's only copy.
-    held="$(jq -r '.payload | if . == null or . == {} then "" elif type == "object" then to_entries | map("  \(.key)=\(.value | if type == "string" then . else tojson end)") | join("\n") else "  \(tojson)" end' <<<"$card")"
+    # Both are board-writer text printed just above the [y/N] prompt, so a C0 control in either
+    # could erase or forge this warning (card#12311). A key goes through c0_header; a string value
+    # holding any C0 control prints as its JSON encoding instead of being lossily replaced, so each
+    # key stays one `  key=value` line and the value it shows is still the exact value.
+    held="$(jq -r "$_KBC_C0_DEFS"'
+      .payload | if . == null or . == {} then "" elif type == "object" then
+        to_entries | map("  \(.key | c0_header)=\(.value | if type == "string" and (explode | all(. >= 32)) then . else tojson end)") | join("\n")
+      else "  \(tojson)" end' <<<"$card")"
     uid="$(jq -r '.assigned_user_id // empty' <<<"$card")"
     # From the READ, not from --board: a task id is global, so the board this run was pointed at
     # says nothing about which board the card is on.
