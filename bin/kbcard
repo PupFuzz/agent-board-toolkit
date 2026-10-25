@@ -887,7 +887,11 @@
 #     A census can pipe existing titles through title-check, so the rules stay in one place.
 #   kbcard field list
 #     READ: list the board's custom fields (id/key/label/type); enum & multi_select
-#     fields include their full {value,label} option sets. The board index
+#     fields include their full {value,label} option sets (a legacy bare-string option
+#     reads as {value, label = value}); every other type reports its `options` column
+#     verbatim — the server stores whatever was sent there and never reads it. An enum /
+#     multi_select option kbcard cannot read (e.g. a non-string value) refuses the list
+#     at rc 1, naming the field and the entry; set-options on that field is the repair. The board index
 #     (GET /boards/<id>/custom_fields.json) is the ONLY field read surface — there
 #     is no per-field GET (that route is PATCH/DELETE only). Board is selected with
 #     the global --board flag: `kbcard --board <key> field list`.
@@ -1865,9 +1869,10 @@ _kbc_option_field() {
         echo "kbcard: $flag: the '$key' field on board $KB_BOARD_ID is type '$type', which has no option set to check the value against — nothing was written" >&2
         return 2
     fi
+    _kbc_field_opts_check "[$fld]" || { echo "kbcard: $flag: the value cannot be checked against that set — nothing was written" >&2; return 2; }
     vals="$(jq -nc --arg c "$csv" '$c | split(",") | map(sub("^[ \t\r\n]+"; "") | sub("[ \t\r\n]+$"; ""))
                                   | reduce .[] as $v ([]; if index([$v]) then . else . + [$v] end)')"
-    opts="$(jq -r '[(.options // [])[] | .value] | join(", ")' <<<"$fld")"
+    opts="$(jq -r "$_KBC_FIELD_JQ"'kbc_opt_values | join(", ")' <<<"$fld")"
     if jq -e 'any(. == "")' <<<"$vals" >/dev/null; then
         echo "kbcard: $flag has an empty value (check for a stray comma) — the options of '$key' are: ${opts:-none}" >&2
         return 2
@@ -1877,7 +1882,7 @@ _kbc_option_field() {
         echo "kbcard: $flag takes ONE value: '$key' is a single-choice (enum) field — its options are: ${opts:-none}" >&2
         return 2
     fi
-    bad="$(jq -r --argjson v "$vals" '[(.options // [])[] | .value] as $o | $v - $o | join(", ")' <<<"$fld")"
+    bad="$(jq -r --argjson v "$vals" "$_KBC_FIELD_JQ"'kbc_opt_values as $o | $v - $o | join(", ")' <<<"$fld")"
     if [[ -n "$bad" ]]; then
         echo "kbcard: $flag: '$bad' is not an option of the '$key' field on board $KB_BOARD_ID — its options are: ${opts:-none}. Nothing was written." >&2
         return 2
@@ -5398,13 +5403,56 @@ _kbc_field_require_type() {
     return 2
 }
 
-# _KBC_FIELD_ROW: the jq projection for one custom field. enum/multi_select carry
-# their {value,label} option set (label defaults to value); every other type reports
-# options as null (the API stores none). Shared by `field list` (mapped over the
-# array), the set-options no-op echo, and the PATCH-result echo.
-_KBC_FIELD_ROW='{id, key, label, type,
-    options: (if (.options // null) == null then null
-              else (.options | map({value, label: (.label // .value)})) end)}'
+# _KBC_FIELD_JQ: the ONE reading of a custom field's `options` column, as jq defs every
+# option reader prefixes to its filter (card#12349). What the column can hold is the
+# server's write rules, not the shape kbcard writes (kanban-board
+# CustomFieldsController::validatedCreateInput/validatedUpdateInput,
+# CustomFieldMutator::assertOptionEntryShape, CustomFieldValidator::optionValues):
+#   * enum / multi_select — entries are {value: string, label?: string} objects, or
+#     LEGACY bare strings the server still reads as values (label = the string). The
+#     `array` rule also passes an associative array, so the column can be a JSON object
+#     whose VALUES are the entries, in order — the server reads it through array_values,
+#     and jq's `.[]` / `map` iterate an object's values the same way, so it needs no case.
+#     Any other entry is UNREADABLE — a non-string value (reachable through the server's
+#     old CLI escape hatch, and one no card value can match, since card values are
+#     strings), a missing value, a non-string label: kbc_opt_unreadable names it so the
+#     caller refuses by field rather than guess at it.
+#   * every other type — the server stores whatever array was sent and never reads it as
+#     an option set, so kbcard does not interpret it either: kbc_opts is the column
+#     verbatim (null when none was sent).
+# kbc_field_row is the projection `field list`, the set-options echoes and the retype
+# echo print. _kbc_field_opts_check is how a caller names an unreadable set to the
+# operator; kbc_opts' error() only keeps a projection from guessing at one.
+_KBC_FIELD_JQ='
+def kbc_takes_options: .type == "enum" or .type == "multi_select";
+def kbc_opt_readable:
+    type == "string"
+    or (type == "object" and (.value | type) == "string" and ((.label | type) as $t | $t == "null" or $t == "string"));
+def kbc_opt_unreadable:
+    if (kbc_takes_options | not) or .options == null then []
+    elif (.options | type) == "array" or (.options | type) == "object" then [.options[] | select(kbc_opt_readable | not)]
+    else [.options] end;
+def kbc_opts:
+    if (kbc_takes_options | not) or .options == null then .options
+    elif kbc_opt_unreadable != [] then error("kbcard: custom field \(.key) has option entries kbcard cannot read: \(kbc_opt_unreadable | tojson)")
+    else .options | map(if type == "string" then {value: ., label: .} else {value, label: (.label // .value)} end) end;
+def kbc_opt_values: [(kbc_opts // [])[] | .value];
+def kbc_field_row: {id, key, label, type, options: kbc_opts};
+'
+
+# _kbc_field_opts_check <fields-json-array>: rc 0 when every enum / multi_select field in
+# the array has a readable option set; otherwise names each offending field — key, id,
+# type and the unreadable entries — on stderr, with the repair, and returns 1. The caller
+# says what it did not do; this says why.
+_kbc_field_opts_check() {
+    local bad
+    bad="$(jq -r "$_KBC_FIELD_JQ"'.[] | select(kbc_opt_unreadable != [])
+        | "kbcard:   \(.key) (id \(.id), type \(.type)): \(kbc_opt_unreadable | map(tojson) | join(", ")) — to repair: kbcard field set-options --field \(.key) --options a,b,…"' <<<"$1")" || return 1
+    [[ -z "$bad" ]] && return 0
+    echo "kbcard: board $KB_BOARD_ID: an enum / multi_select field carries option entries kbcard cannot read (an option is a string, or an object with a string \"value\" and an optional string \"label\"):" >&2
+    printf '%s\n' "$bad" >&2
+    return 1
+}
 
 # _kbc_fetch_fields: the board's custom fields as a JSON array (.data). One read
 # surface for both sub-verbs. A non-2xx propagates loudly (kb_api prints the error
@@ -5441,7 +5489,10 @@ _kbc_field_enumerate() {
 
 _kbc_field_list() {
     [[ $# -gt 0 ]] && { echo "kbcard: field list takes no arguments (select the board with the global --board flag)" >&2; return 2; }
-    _kbc_fetch_fields | jq "map($_KBC_FIELD_ROW)"
+    local fields
+    fields="$(_kbc_fetch_fields)" || return 1
+    _kbc_field_opts_check "$fields" || { echo "kbcard: field list: nothing was listed" >&2; return 1; }
+    jq "$_KBC_FIELD_JQ"'map(kbc_field_row)' <<<"$fields"
 }
 
 # _kbc_field_resolve <name|id> <fields-json>: the ONE resolver for a --field
@@ -5550,11 +5601,18 @@ _kbc_field_set_options() {
         return 2
     fi
 
-    local current
-    current="$(jq -c '(.options // []) | map(.value)' <<<"$fld")"
+    # An unreadable current set is NOT refused here: converging it to a readable one is the
+    # repair _kbc_field_opts_check points at. It only rules out the no-op compare.
+    local current="" current_shown="unreadable"
+    if _kbc_field_opts_check "[$fld]"; then
+        current="$(jq -c "$_KBC_FIELD_JQ"'kbc_opt_values' <<<"$fld")"
+        current_shown="$(jq -r 'join(", ")' <<<"$current")"
+    else
+        echo "kbcard: field set-options '$fkey': converging it to [$(jq -r 'join(", ")' <<<"$desired")] replaces the whole set, unreadable entries included" >&2
+    fi
     if [[ "$current" == "$desired" ]]; then
         echo "kbcard: field '$fkey' options already match [$(jq -r 'join(", ")' <<<"$desired")] — no change" >&2
-        jq "$_KBC_FIELD_ROW" <<<"$fld"
+        jq "$_KBC_FIELD_JQ"'kbc_field_row' <<<"$fld"
         return 0
     fi
 
@@ -5569,7 +5627,7 @@ _kbc_field_set_options() {
         return 1
     fi
     local row
-    row="$(kb_parse_resp "$result" ".data | $_KBC_FIELD_ROW")"
+    row="$(kb_parse_resp "$result" "$_KBC_FIELD_JQ .data | kbc_field_row")"
     [[ -n "$row" ]] || _kbc_unverified "field set-options" "'$fkey'" "The reconcile PATCH answered 2xx; which option set the board now holds is UNKNOWN." || return $?
 
     # THE OPTION SET IS READ BACK OFF THE BOARD INDEX, not off the PATCH's own echo — the same
@@ -5587,12 +5645,12 @@ _kbc_field_set_options() {
         echo "kbcard: field set-options '$fkey': HARD FAILURE — the reconcile answered 2xx and field id $fid is no longer defined on board $KB_BOARD_ID at all. The status is not the reconcile; the read-back is." >&2
         return 1
     fi
-    now="$(jq -c '(.options // []) | map(.value)' <<<"$fld2")"
+    now="$(jq -c "$_KBC_FIELD_JQ"'kbc_opt_values' <<<"$fld2")"
     if [[ "$now" != "$desired" ]]; then
         echo "kbcard: field set-options '$fkey': HARD FAILURE — the reconcile answered 2xx and the board now holds $now, not the $desired this call converged to (membership AND order are the target). The status is not the reconcile; the read-back is." >&2
         return 1
     fi
-    echo "kbcard: field '$fkey' options reconciled: [$(jq -r 'join(", ")' <<<"$current")] -> [$(jq -r 'join(", ")' <<<"$desired")] — re-read off the board's field index and equal" >&2
+    echo "kbcard: field '$fkey' options reconciled: [$current_shown] -> [$(jq -r 'join(", ")' <<<"$desired")] — re-read off the board's field index and equal" >&2
     printf '%s\n' "$row"
 }
 
@@ -6471,7 +6529,7 @@ _kbc_field_retype() {
     fi
 
     local row from_t to_t n_conv
-    row="$(kb_parse_resp "$resp" ".data | $_KBC_FIELD_ROW")"
+    row="$(kb_parse_resp "$resp" "$_KBC_FIELD_JQ .data | kbc_field_row")"
     from_t="$(kb_parse_resp "$resp" -r '.meta.from_type // empty')"
     to_t="$(kb_parse_resp "$resp" -r '.meta.to_type // empty')"
     n_conv="$(kb_parse_resp "$resp" -r '.meta.converted_task_count // empty')"
@@ -6479,6 +6537,11 @@ _kbc_field_retype() {
     # answer 2xx for a refusal), so this refuses the ECHO, not the write — and it
     # must not go on to restamp, because it has not read which conversion happened.
     if [[ -z "$row" || -z "$to_t" ]]; then
+        # A definition whose carried-over option set kbcard cannot read is the one 2xx body
+        # that parses and still projects to nothing; name it rather than call it unreadable.
+        local unread_why="nothing could be read out of its body"
+        _kbc_field_opts_check "[$(kb_parse_resp "$resp" -c '.data | objects')]" \
+            || unread_why="the definition it echoes carries option entries kbcard cannot read (named above)"
         # The re-run sentence is the shared owner's, fed all three predicates: it names
         # the restamp pass only where the flag was passed (without it there is no pass to
         # re-run, and naming one asserts a thing that did not happen — see the rule in
@@ -6497,7 +6560,7 @@ _kbc_field_retype() {
         # answer at all. It also hands an EMPTY restamp predicate, so with --restamp-dl
         # this arm names the pass and that one does not — deliberately, since it reports a
         # response and holds no opinion about a pass only a 2xx reaches.
-        _kbc_unverified "field retype" "'$fkey'" "The conversion returned HTTP $http and nothing could be read out of its body, so this run cannot say what the definition now is. $(_kbc_field_conversion_rerun_note "$have_options" "$restamp_dl" 1 "$ftype" "$to")"
+        _kbc_unverified "field retype" "'$fkey'" "The conversion returned HTTP $http and $unread_why, so this run cannot say what the definition now is. $(_kbc_field_conversion_rerun_note "$have_options" "$restamp_dl" 1 "$ftype" "$to")"
         return $?
     fi
 
@@ -6549,7 +6612,11 @@ _kbc_field_retype() {
     # loss that did not happen is its own false claim.
     if [[ -n "$have_options" ]] && _kbc_field_type_takes_options "$from_t" && _kbc_field_type_takes_options "$to_t"; then
         local lost
-        lost="$(jq -r '[(.options // [])[] | select(.label != null and .label != .value) | "\(.value)=\(.label)"] | join(", ")' <<<"$fld")"
+        local unread
+        lost="$(jq -r "$_KBC_FIELD_JQ"'[(.options | arrays, objects)[] | select(kbc_opt_readable) | objects
+                                         | select(.label != null and .label != .value) | "\(.value)=\(.label)"] | join(", ")' <<<"$fld")"
+        unread="$(jq -c "$_KBC_FIELD_JQ"'kbc_opt_unreadable | select(. != [])' <<<"$fld")"
+        [[ -z "$unread" ]] || echo "kbcard: ⚠ --options REPLACES the whole option set, so the entries '$fkey' carried that kbcard cannot read are GONE too, whatever labels they held: $unread" >&2
         [[ -z "$lost" ]] || echo "kbcard: ⚠ --options REPLACES the whole option set and a comma list carries no labels, so the label(s) '$fkey' carried are GONE: $lost — every value now has label = value, the server's default for an omitted label. Between two option types, OMITTING --options carries the existing set over verbatim, labels included." >&2
     fi
     printf '%s\n' "$row"
