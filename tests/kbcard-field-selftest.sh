@@ -8,7 +8,9 @@
 # Sources the bin (main-guarded) and exercises the pure sub-verb functions with a
 # STUBBED kb_api — no network. What it guards:
 #   - list projects id/key/label/type + the enum/multi_select {value,label} option
-#     set (label defaults to value; a non-option-bearing type reports options null);
+#     set (label defaults to value; a non-option-bearing type reports its options
+#     column verbatim), over every option shape the server can emit, and refuses an
+#     unreadable entry by field name (card#12349);
 #   - set-options DRIFT writes a value-only options PATCH in the given order, and an
 #     IDENTICAL set is a NO-OP (no PATCH) — the idempotency contract; reverting the
 #     drift compare reds these two mutually (always-write reds the no-op case,
@@ -235,6 +237,124 @@ eq "field with no sub-verb names the missing sub-verb" \
    "kbcard: field requires a sub-verb: list | create | delete | retype | set-options" "$(cmd_field 2>&1)"
 rc=0; cmd_field bogus >/dev/null 2>&1 || rc=$?
 eq "field with unknown sub-verb → rc 2"           "2"    "$rc"
+
+# ---------------------------------------------------------------------------
+echo "== option shapes the server can emit (card#12349) =="
+# The server's write rules decide which shapes `options` can hold, so the fixture is
+# derived from them (kanban-board CustomFieldsController::validatedCreateInput /
+# validatedUpdateInput, CustomFieldMutator::assertOptionEntryShape) rather than from
+# the one shape kbcard itself writes:
+#   * a NON-option type (string here) takes any array, stored as sent and never read as
+#     a membership set — a bare-string list is the shape that crashed `field list` with
+#     `Cannot index string with string "value"`;
+#   * an option type holds {value: string, label?: string} entries today, and LEGACY
+#     bare strings, which the server still reads as values (CustomField @property,
+#     CustomFieldValidator::optionValues, BoardCustomFields::normalizeLegacyOptions);
+#   * the `array` rule passes a PHP associative array too, so the column can be a JSON
+#     OBJECT whose values are the entries (optionValues reads them via array_values);
+#   * a non-string `value` is reachable on an option type through the old CLI escape
+#     hatch (CustomFieldMutator's own note on `[{"value":123}]`) — the one shape no
+#     reading of the server makes an option a card can hold, so kbcard refuses it by name.
+_OS_FIELDS='{"data":[
+  {"id":30,"board_id":1,"key":"ticket","label":"Ticket","type":"string","options":["alpha","beta"]},
+  {"id":31,"board_id":1,"key":"risk","label":"Risk","type":"enum","options":["routine","reserved"]},
+  {"id":32,"board_id":1,"key":"component","label":"Component","type":"multi_select","options":{"a":{"value":"plugin","label":"Plugin"},"b":{"value":"docs"}}},
+  {"id":33,"board_id":1,"key":"weight","label":"Weight","type":"number","options":[1,null,{"label":"x"}]}
+]}'
+_OS_BAD='{"id":34,"board_id":1,"key":"legacy","label":"Legacy","type":"enum","options":[{"value":"ok"},{"value":123}]}'
+kb_api() {
+    case "$1 $2" in
+        "GET /boards/"*) printf '%s' "$_OS_FIELDS" ;;
+        "PATCH /custom_fields/"*)
+            printf '%s' "$3" > "$_PATCH_FILE"
+            jq -nc --argjson body "$3" '{data:{id:31,board_id:1,key:"risk",label:"Risk",type:"enum",options:$body.options}}' ;;
+        *) printf '{"data":null}' ;;
+    esac
+}
+rc=0; LST="$(_kbc_field_list 2>"$TMP/os-err")" || rc=$?
+ERR="$(cat "$TMP/os-err")"
+eq "field list over every readable shape → rc 0"           "0"     "$rc"
+eq "…with no jq fault on stderr"                           "false" "$(has 'jq: error' "$ERR")"
+eq "…lists all four fields"                                "4"     "$(jq 'length' <<<"$LST")"
+eq "non-option type: options reported VERBATIM (bare strings)" '["alpha","beta"]' \
+   "$(jq -c '.[] | select(.key=="ticket") | .options' <<<"$LST")"
+eq "non-option type: any stored JSON reported verbatim"   '[1,null,{"label":"x"}]' \
+   "$(jq -c '.[] | select(.key=="weight") | .options' <<<"$LST")"
+eq "legacy bare-string enum option → {value, label = value}" '[{"value":"routine","label":"routine"},{"value":"reserved","label":"reserved"}]' \
+   "$(jq -c '.[] | select(.key=="risk") | .options' <<<"$LST")"
+eq "object-keyed option set → its entries, in order"      '[{"value":"plugin","label":"Plugin"},{"value":"docs","label":"docs"}]' \
+   "$(jq -c '.[] | select(.key=="component") | .options' <<<"$LST")"
+
+_OS_FIELDS_SAVED="$_OS_FIELDS"
+_OS_FIELDS="$(jq -c --argjson b "$_OS_BAD" '.data += [$b]' <<<"$_OS_FIELDS")"
+rc=0; OUT="$(_kbc_field_list 2>"$TMP/os-err")" || rc=$?
+ERR="$(cat "$TMP/os-err")"
+eq "an unreadable option entry → rc 1"                     "1"     "$rc"
+eq "…prints no list"                                       ""      "$OUT"
+eq "…no bare jq fault"                                     "false" "$(has 'jq: error' "$ERR")"
+eq "…names the field, its id and type, and the entry"      "true"  "$(has 'legacy (id 34, type enum): {"value":123}' "$ERR")"
+eq "…and only the unreadable entry"                        "false" "$(has '{"value":"ok"}' "$ERR")"
+eq "…pointing at the repair"                               "true"  "$(has 'kbcard field set-options --field legacy' "$ERR")"
+
+echo "-- --component / --risk read the same option sets --"
+_OS_FIELDS="$_OS_FIELDS_SAVED"
+F="$(_kbc_fetch_fields)"
+eq "--risk against a bare-string enum is accepted"         '{"risk":"routine"}' "$(_kbc_option_field --risk risk routine "$F" 2>/dev/null)"
+rc=0; ERR="$(_kbc_option_field --risk risk nonsense "$F" 2>&1 >/dev/null)" || rc=$?
+eq "--risk outside a bare-string set → rc 2, naming the set" "2|true" \
+   "$rc|$(has "'nonsense' is not an option of the 'risk' field on board 1 — its options are: routine, reserved" "$ERR")"
+eq "--component against an object-keyed set is accepted"   '{"component":["docs","plugin"]}' "$(_kbc_option_field --component component docs,plugin "$F" 2>/dev/null)"
+# card#12353: the refusal prints the BOARD's option values to the terminal, so they go through
+# c0_header (card#12311's rule) — an ESC in a stored option could erase the lines above it.
+# The fixture's ESC is a JSON escape, never a raw byte in this file.
+_c0_raw() { printf '%s' "$1" | /usr/bin/grep -c -e "$(printf '\033')" || true; }
+F_C0="$(jq -c 'map(if .key == "risk" then .options = ["routine", "re\u001b[2Kserved"] else . end)' <<<"$F")"
+rc=0; ERR="$(_kbc_option_field --risk risk nonsense "$F_C0" 2>&1 >/dev/null)" || rc=$?
+eq "--risk refusal: an ESC in a stored option prints escaped" "2|true|0" \
+   "$rc|$(has "its options are: routine, re?[2Kserved" "$ERR")|$(_c0_raw "$ERR")"
+unset F_C0
+F="$(jq -c --argjson b "$(jq -c '.key = "risk"' <<<"$_OS_BAD")" 'map(select(.key != "risk")) + [$b]' <<<"$F")"
+rc=0; OUT="$(_kbc_option_field --risk risk ok "$F" 2>"$TMP/os-err")" || rc=$?
+ERR="$(cat "$TMP/os-err")"
+eq "--risk against an unreadable set → rc 2, nothing printed" "2|" "$rc|$OUT"
+eq "…naming the field, with no bare jq fault"              "true|false" \
+   "$(has 'risk (id 34, type enum): {"value":123}' "$ERR")|$(has 'jq: error' "$ERR")"
+
+echo "-- set-options reads, and repairs, the same option sets --"
+rm -f "$_PATCH_FILE"
+rc=0; OUT="$(_kbc_field_set_options --field risk --options routine,reserved 2>"$TMP/os-err")" || rc=$?
+eq "set-options: a bare-string set equal to the target is a NO-OP" "0|false|true" \
+   "$rc|$( [[ -f "$_PATCH_FILE" ]] && echo true || echo false )|$(has 'already match' "$(cat "$TMP/os-err")")"
+eq "…echoing the normalised row"                           '[{"value":"routine","label":"routine"},{"value":"reserved","label":"reserved"}]' \
+   "$(jq -c '.options' <<<"$OUT")"
+_OS_FIELDS="$(jq -c --argjson b "$(jq -c '.id = 31 | .key = "risk"' <<<"$_OS_BAD")" '.data |= (map(select(.key != "risk")) + [$b])' <<<"$_OS_FIELDS_SAVED")"
+# The read-back after the PATCH must see the repaired set, so the GET answers it once written.
+kb_api() {
+    case "$1 $2" in
+        "GET /boards/"*)
+            if [[ -f "$_PATCH_FILE" ]]; then
+                jq -c --argjson o "$(jq -c '.options' "$_PATCH_FILE")" '(.data[] | select(.id == 31) | .options) |= $o' <<<"$_OS_FIELDS"
+            else printf '%s' "$_OS_FIELDS"; fi ;;
+        "PATCH /custom_fields/"*)
+            printf '%s' "$3" > "$_PATCH_FILE"
+            jq -nc --argjson body "$3" '{data:{id:31,board_id:1,key:"risk",label:"Risk",type:"enum",options:$body.options}}' ;;
+        *) printf '{"data":null}' ;;
+    esac
+}
+rm -f "$_PATCH_FILE"
+rc=0; OUT="$(_kbc_field_set_options --field risk --options ok 2>"$TMP/os-err")" || rc=$?
+ERR="$(cat "$TMP/os-err")"
+eq "set-options over an unreadable set still converges (it is the repair) → rc 0" "0" "$rc"
+eq "…writing the target"                                   '[{"value":"ok"}]' "$(jq -c '.options' "$_PATCH_FILE" 2>/dev/null)"
+eq "…naming what it could not read, with no bare jq fault" "true|false" \
+   "$(has 'risk (id 31, type enum): {"value":123}' "$ERR")|$(has 'jq: error' "$ERR")"
+eq "…and saying the prior set was unreadable"              "true" "$(has 'options reconciled: [unreadable] -> [ok]' "$ERR")"
+# card#12353: the reconcile line prints the PRIOR stored set, so it goes through c0_header.
+_OS_FIELDS="$(jq -c '.data |= map(if .key == "risk" then .options = ["x\u001b[1A"] else . end)' <<<"$_OS_FIELDS_SAVED")"
+rm -f "$_PATCH_FILE"
+rc=0; ERR="$(_kbc_field_set_options --field risk --options ok 2>&1 >/dev/null)" || rc=$?
+eq "set-options: an ESC in the prior stored set prints escaped on the reconcile line" "0|true|0" \
+   "$rc|$(has 'options reconciled: [x?[1A] -> [ok]' "$ERR")|$(_c0_raw "$ERR")"
 
 # ---------------------------------------------------------------------------
 echo "== field set-options — a failing PATCH preserves the error body (not #4337) =="
@@ -928,6 +1048,13 @@ eq "…naming the way to keep them"                     "true" "$(has 'OMITTING 
 # label warning, which is what this leg pins. RED if the disclosure grows a read: 3.
 eq "…off the resolve read, adding no read of its own (2 = resolve + confirm)" "2" \
    "$(_calls 'GET /boards')"
+# card#12353: the lost-label list prints STORED values and labels, so it goes through c0_header.
+_seed '[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":[{"value":"low","label":"L\u001b[2Kow"}]}]' "$_B_SEV"
+rc=0; ERR_C0="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "retype: an ESC in a lost stored label prints escaped" "0|true|0" \
+   "$rc|$(has "carried are GONE: low=L?[2Kow" "$ERR_C0")|$(_c0_raw "$ERR_C0")"
+unset ERR_C0
+_seed "$_F_SEV_ENUM" "$_B_SEV"
 
 # The same conversion with no labels to lose says nothing — a warning that fires on
 # every --options is noise, and would not distinguish the state it exists to report.
@@ -941,6 +1068,29 @@ eq "control: …and NO label-loss warning"              "false" "$(has 'are GONE
 _seed '[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":[{"value":"low","label":"low"},{"value":"high","label":"high"}]}]' "$_B_SEV"
 rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
 eq "control: label == value → no warning"             "false" "$(has 'are GONE' "$ERR")"
+
+# LEGACY bare-string options (card#12349) carry no label, so nothing is lost — and reading
+# them for the label-loss check must not fault the verb after its conversion has landed.
+_seed '[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":["low","high"]}]' "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "bare-string options: retype --options → rc 0"     "0|false" "$rc|$(has 'jq: error' "$ERR")"
+eq "…and NO label-loss warning (a bare string has no label)" "false" "$(has 'are GONE' "$ERR")"
+# Omitting --options carries the column over VERBATIM, so the echo carries the legacy shape.
+_seed '[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":["low","high"]}]' "$_B_SEV"
+rc=0; OUT="$(_kbc_field_retype --field severity --to multi_select 2>/dev/null)" || rc=$?
+eq "bare-string options carried over → rc 0, the echo normalised" '0|[{"value":"low","label":"low"},{"value":"high","label":"high"}]' \
+   "$rc|$(jq -c '.options' <<<"$OUT")"
+# An entry no reading makes an option, carried over the same way: the conversion LANDED,
+# so the echo is what is refused — by the field's name, not as an unreadable body.
+_seed '[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":[{"value":"low"},{"value":123}]}]' "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select 2>&1 >/dev/null)" || rc=$?
+eq "an unreadable carried-over set → non-zero, no bare jq fault" "true|false" "$([[ $rc -ne 0 ]] && echo true || echo false)|$(has 'jq: error' "$ERR")"
+eq "…naming the field and the entry"                  "true" "$(has 'severity (id 20, type multi_select): {"value":123}' "$ERR")"
+_seed '[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":[{"value":"low","label":"Low"},{"value":123}]}]' "$_B_SEV"
+rc=0; ERR="$(_kbc_field_retype --field severity --to multi_select --options low 2>&1 >/dev/null)" || rc=$?
+eq "unreadable PRIOR set + --options → rc 0, no bare jq fault" "0|false" "$rc|$(has 'jq: error' "$ERR")"
+eq "…naming the readable label it destroyed"         "true" "$(has "the label(s) 'severity' carried are GONE: low=Low" "$ERR")"
+eq "…and the unreadable entry it destroyed"          "true" "$(has 'cannot read are GONE too, whatever labels they held: [{"value":123}]' "$ERR")"
 
 # A SCALAR target never reaches the warning: the server refuses --options there, and the
 # options column is left exactly as it is, so nothing is destroyed to report.
@@ -1133,6 +1283,13 @@ eq "…names EVERY offender, with category and reason"  "true" \
 eq "…including the second, in the SAME refusal"       "true" \
    "$(has 'card 9 [target_rejects] Must be a number. — value: also bad' "$ERR")"
 eq "…and calls that refusal the preflight"            "true" "$(has 'refusal IS the preflight' "$ERR")"
+# card#12353: an offender's VALUE is stored card text, so its line goes through c0_header.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"bad\u001b[2K"}}]'
+rc=0; ERR_C0="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" || rc=$?
+eq "retype offender: an ESC in the stored value prints escaped" "1|true|0" \
+   "$rc|$(has 'card 7 [target_rejects] Must be a number. — value: bad?[2K' "$ERR_C0")|$(_c0_raw "$ERR_C0")"
+unset ERR_C0
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"not-a-number"}},{"id":9,"payload":{"dl_number":"also bad"}},{"id":8,"payload":{"dl_number":"12"}}]'
 eq "…nothing was written: the definition stands"      '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
 eq "…and the castable card is untouched too"          '"12"' "$(jq -c '.[2].payload.dl_number' "$_BOARD")"
 
@@ -1687,6 +1844,24 @@ eq "…and names the non-DL value as the reason"        "true"  \
 eq "…naming what would actually fix it"               "true"  \
    "$(has 'those need the VALUE corrected, never another run' "$ERR")"
 eq "control: the rc is unchanged by any of that"      "1"     "$rc"
+# card#12353: the non-DL value is STORED card text, so the summary prints it through c0_header
+# and kb_dl_num's own refusal (which would print it raw) is silenced. The verdict still reads
+# the unfiltered value — the trailing-LF case below is where the two differ.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"not\u001b[2K-dl"}}]'
+rc=0; ERR_C0="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "restamp-dl: an ESC in a non-DL stored value prints escaped" "1|true|0" \
+   "$rc|$(has "NOT a DL number, so nothing was written: 7 ('not?[2K-dl')" "$ERR_C0")|$(_c0_raw "$ERR_C0")"
+eq "…and that card is left exactly as it was" '"not\u001b[2K-dl"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+unset ERR_C0
+# The filter is DISPLAY-ONLY: the verdict reads the stored value as the shell receives it,
+# and $(…) drops a trailing LF, so a stored "12\n" is DL 12 and is canonicalized. Read through
+# c0_header it would be "12?" and refused as not a DL number.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"12\n"}}]'
+rc=0; ERR_C0="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "restamp-dl: a stored value with a trailing LF is still a DL number" "0|false" \
+   "$rc|$(has 'NOT a DL number' "$ERR_C0")"
+eq "…and is canonicalized to DL-0012" '"DL-0012"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+unset ERR_C0
 
 # The same bucket ALONGSIDE one a re-run does repair: the promise must survive, scoped
 # to the count it is true of, and carry the carve-out beside it rather than instead of it.
