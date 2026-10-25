@@ -1050,9 +1050,57 @@ eq "no --type → card_type_id key ABSENT"        "false" "$(pb --dl DL-7 | jq '
 echo "-- --tags: replaces the list wholesale, and composes with --triaged --"
 _CUR_TAGS='["dropped"]'
 eq "--tags replaces the whole list"     '["a","b"]'          "$(pb --tags a,b | jq -c '.tags')"
-eq "--tags spares the read"             "PATCH"              "$(reqs)"
+eq "--tags reads the current tags first" "GET PATCH"         "$(reqs)"
 eq "--tags + --triaged appends triaged" '["a","b","triaged"]' "$(pb --tags a,b --triaged | jq -c '.tags')"
 eq "no tag flag → tags key ABSENT"      "false"              "$(pb --dl DL-7 | jq 'has("tags")')"
+
+echo "-- --tags / --type carry forward the tags --tags may not send (card#12348) --"
+# THE DEFECT. --tags replaced the list without reading it, so a card's bridge stamps
+# (`created-by:<agent>`, `idem:<agent>:<key>`) were deleted — and _kbc_tag_guard refuses
+# those prefixes in --tags / --add-tags, so no caller could ever put them back. The card lost
+# its dedupe key, and the bridge's next mint with that key made a duplicate (board 3, card#12347).
+# The carried set is every stored member matching a `refused_prefixes` entry of the rule file.
+# pbe <args…> — pb, with the call's stderr in $_pbe_err.
+pbe() { : > "$_REQ_LOG"; local _e; _e="$(mktemp)"; cmd_patch --task 99 "$@" 2>"$_e"; _pbe_err="$(cat "$_e")"; rm -f "$_e"; }
+_CUR_TAGS='["old","created-by:x","idem:x:k"]'
+b="$(pbe --tags a,b)"
+eq "⭐ --tags on a stamped card keeps both stamps, after the given list" \
+   '["a","b","created-by:x","idem:x:k"]' "$(jq -c '.tags' <<<"$b")"
+eq "…and reads the card to find them"   "GET PATCH"          "$(reqs)"
+pbe --tags a,b >/dev/null
+eq "…and names what it carried on stderr" "true" \
+   "$(has "carries forward the card's created-by:x, idem:x:k" "$_pbe_err")"
+b="$(pbe --tags a,b --triaged)"
+eq "--tags + --triaged on a stamped card → given, stamps, triaged" \
+   '["a","b","created-by:x","idem:x:k","triaged"]' "$(jq -c '.tags' <<<"$b")"
+b="$(pbe --type task)"
+eq "--type on a stamped card keeps both stamps" '["old","created-by:x","idem:x:k"]' "$(jq -c '.tags' <<<"$b")"
+pbe --type task >/dev/null
+eq "…and --type alone (nothing replaced) prints no carry line" "false" "$(has "carries forward the card's" "$_pbe_err")"
+b="$(pbe --tags a --type task)"
+eq "--tags + --type on a stamped card keeps both stamps" '["a","created-by:x","idem:x:k"]' "$(jq -c '.tags' <<<"$b")"
+# Derived from the rule file, so a prefix added there is carried and asserted without an edit here.
+_rp_tags="$(jq -c '[.tags.refused_prefixes[].prefix + "v"]' "$KBC_TEXT_RULES")"
+eq "the prefix derivation carries real data (positive control)" "true" "$(jq 'length > 0' <<<"$_rp_tags")"
+_CUR_TAGS="$(jq -c '["old"] + .' <<<"$_rp_tags")"
+eq "every refused_prefixes member the card holds is carried" \
+   "$(jq -c '["a"] + .' <<<"$_rp_tags")" "$(pbe --tags a | jq -c '.tags')"
+_CUR_TAGS='["old","created-by:x","idem:x:k"]'
+: > "$_REQ_LOG"
+rc=0; err="$(cmd_patch --task 99 --tags a,idem:x:k2 2>&1 >/dev/null)" || rc=$?
+eq "--tags naming idem: is still refused → rc 2"  "2"    "$rc"
+eq "…in the guard's words"                        "true" "$(has "'idem:x:k2' is a data tag" "$err")"
+eq "…with NO request"                             ""     "$(reqs)"
+b="$(pbe --remove-tags idem:x:k)"
+eq "--remove-tags idem:x:k still removes it"      '{"remove_tags":["idem:x:k"]}' "$(jq -c '{remove_tags}' <<<"$b")"
+eq "…with no read and no tags key"                "PATCH false" "$(reqs) $(jq 'has("tags")' <<<"$b")"
+_CUR_TAGS='["old","keep"]'
+b="$(pbe --tags a,b)"
+eq "a card with no stamp tags gets the list exactly as given" '["a","b"]' "$(jq -c '.tags' <<<"$b")"
+pbe --tags a,b >/dev/null
+eq "…and no carry line"                           "false" "$(has "carries forward the card's" "$_pbe_err")"
+_CUR_TAGS='["dropped"]'
+unset -f pbe; unset _rp_tags _pbe_err
 
 echo "-- --add-tags / --remove-tags: the SERVER's delta keys, no read, no whole list (card#10924) --"
 # The board applies add_tags / remove_tags to the list as STORED, under a lock (kanban card#10923).
@@ -2141,6 +2189,9 @@ wipe_leg "patch --type --triaged (tags object)"   '{"data":{"id":505,"tags":{"a"
 # near side of the default; these legs red on any bin that reinstates the old ordering.
 wipe_leg "patch --triaged (tags is false)"        '{"data":{"id":505,"tags":false}}'           --triaged
 wipe_leg "patch --type (tags is false)"           '{"data":{"id":505,"tags":false}}'           --type fr
+# `--tags` READS the card too (card#12348: it carries forward the stamp tags it may not send),
+# so the same refusal reaches it — a list built over an unreadable read would drop those stamps.
+wipe_leg "patch --tags (tags is false)"           '{"data":{"id":505,"tags":false}}'           --tags a,b
 unset -f wipe_leg
 
 # THE ACCEPTED SET IS UNCHANGED — asserted, not assumed. These three bodies wrote before the
@@ -2161,15 +2212,16 @@ tags_accept_leg "patch --triaged (tags is [])"       '{"data":{"id":505,"tags":[
 tags_accept_leg "patch --triaged (tags is a list)"   '{"data":{"id":505,"tags":["a"]}}' '["a","triaged"]'
 unset -f tags_accept_leg
 
-# `--tags` BYPASSES the read entirely, so the narrowing above must not reach it — asserted
-# against the sharpest input there is: the same `tags:false` body that now refuses on the read
-# path. A caller supplying the list explicitly never consults the card, so this writes.
-kb_stub_reset
-KB_STUB_GET_BODY='{"data":{"id":505,"tags":false}}' kbc patch --task 505 --tags a,b
-eq "patch --tags over a tags:false card → still writes at rc 0" "0" "$rc"
-eq "…issues exactly one PATCH"        "1"           "$(kb_stub_count PATCH '/tasks/505.json')"
-eq "…with the caller's own list"      '["a","b"]'   "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
-eq "…and never GETs the card at all"  "0"           "$(kb_stub_count GET '/tasks/505.json')"
+tags_accept_leg_tags() {
+    local label="$1" body="$2" want="$3"
+    kb_stub_reset
+    KB_STUB_GET_BODY="$body" kbc patch --task 505 --tags a,b
+    eq "$label → still writes at rc 0"     "0"     "$rc"
+    eq "$label → with the given list"      "$want" "$(kb_stub_bodies PATCH '/tasks/505.json' | jq -c '.tags')"
+}
+tags_accept_leg_tags "patch --tags (no tags key)"     '{"data":{"id":505}}'                      '["a","b"]'
+tags_accept_leg_tags "patch --tags (stamped card)"    '{"data":{"id":505,"tags":["x","idem:s:k"]}}' '["a","b","idem:s:k"]'
+unset -f tags_accept_leg_tags
 
 echo "-- link: the relation echo --"
 KB_STUB_LINK_BODY="$NONJSON" nonjson_leg "link" 3 "link" link --from 505 --to 506 --relation blocks

@@ -6,6 +6,14 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- ⚠ **card#12348** — **Acceptance narrowing (minor at minimum, per [`../VERSIONING.md`](../VERSIONING.md) § Bump sizing): `kbcard patch --tags` on a card whose tag read yields no usable list is now refused, `rc 2`, nothing written.** Before, `--tags` never read the card, so a `2xx` read body carrying no card object or a non-array `tags` (`{"data":{"id":505,"tags":false}}`, measured) did not stop it: it wrote the given list at `rc 0`. It now takes the same refusal `--type` / `--triaged` already take, because a list built over an unreadable read would drop the tags it exists to keep. A `GET` that fails outright (unreachable, `404`) is likewise `rc 2` now, where the `PATCH` that followed used to fail at `rc 1`.
+
+### Fixed
+
+- **card#12348** — **`kbcard patch --tags` no longer deletes a card's data tags that `--tags` itself refuses to send — the bridge's `created-by:` / `idem:` stamps among them.** `--tags` replaced the whole list without reading the card, and `_kbc_tag_guard` refuses those prefixes, so once dropped they could not be written back: the card lost its duplicate-check key and the bridge's next mint with that key made a duplicate. `--tags` now reads the card and appends every stored tag matching a `refused_prefixes` entry of `bin/_card-text-rules.json` after the given list, naming them on stderr; callers still cannot supply them, and `--remove-tags` drops one. The cost is one `GET` per `patch --tags` (§ Changed above: the refusal that read brings). `--type` and `--triaged` were unaffected (they already merged onto the stored list); `create-card` has no prior tags to keep. Vendoring repos re-vendor `bin/kbcard`.
+
 ## [0.49.1] - 2026-10-24
 
 **Patch — `kbcard move-board` prints the value of each payload field it is about to clear, not only its name, and no longer passes C0 control characters stored in those fields to the terminal (card#12296, card#12311).** The PRs in `v0.49.0..v0.49.1` that carry a change are #481 and #482, enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.49.0..v0.49.1` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **patch**: both changes are fixes to what one existing verb prints on stderr before its confirmation; no tool, verb, flag or config key is added, what is sent, stdout and every exit code are unchanged, and no narrowings this release. The stderr shape change is § Bump sizing's unsized *Output shape at `rc 0`* class, stated in the bullet below. #482 filters #481's new value lines before any release carried them; the payload KEYS were already printed unfiltered by every release since `move-board` shipped in v0.37.0, and this release is the first to filter them. Upgrade actions: `docs/UPGRADE.md` §6 v0.49.1.
