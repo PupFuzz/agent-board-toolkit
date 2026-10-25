@@ -381,8 +381,12 @@
 #     instead of being permanently wrong (a card name stamped once from a retargeted PR title
 #     is the shipped case). Nothing here is implicit — an omitted flag leaves its field alone.
 #     --tags REPLACES the whole tag list (the API stores it as one list and replaces it
-#     wholesale); to add a tag, pass the full intended set. --triaged still appends to what
-#     the card already carries, and composes with --tags (given set, then `triaged`).
+#     wholesale); to add a tag, pass the full intended set. It reads the card first and KEEPS
+#     every tag the card holds that --tags itself refuses (the data tags above — the bridge's
+#     created-by: / idem: stamps among them), after the given set, naming them on stderr: a
+#     replace that dropped them could never put them back. --remove-tags is how to drop one.
+#     An unreadable tag list is rc 2, nothing written. --triaged still appends to what the card
+#     already carries, and composes with --tags (given set, kept tags, then `triaged`).
 #     A visually blank --tags is rc 2 before any request: the --tags paragraph of the free-text
 #     convention at the top owns it.
 #     --add-tags a,b / --remove-tags c CHANGE the list IN PLACE instead of replacing it: they send
@@ -2166,8 +2170,15 @@ _kbc_task_fields() {
 # patch should WRITE, printing nothing when the call touches no tag at all. `tags` is a
 # top-level string list the API replaces WHOLESALE, so adding one tag means re-sending the
 # others — hence the read-merge-write here; create-card needs none because it builds the whole
-# list at birth. The three inputs compose in one place so they can't fight each other:
-#   --tags     supplies the base list outright (and spares the read).
+# list at birth. Every path READS the card first. The three inputs compose in one place so they
+# can't fight each other:
+#   --tags     supplies the base list, followed by every member of the card's CURRENT list that
+#              matches a `refused_prefixes` entry of the rule file (card#12348). _kbc_tag_guard
+#              refuses those prefixes in --tags / --add-tags, so a replace that dropped them
+#              could never be undone — the bridge's `created-by:` / `idem:` stamps are the shipped
+#              case (a lost `idem:` key let the bridge mint a duplicate card). They are appended
+#              AFTER the guard, so a caller still cannot supply one; the carried members are named
+#              on stderr; `--remove-tags` is the way to drop one.
 #   --type     strips ANY existing `type:*` tag, then re-adds `type:<alias>` only when the
 #              board has no native id for the alias. The strip runs on BOTH paths on purpose:
 #              on a MIXED board a card retyped from a tag-mode alias to a native one would
@@ -2181,27 +2192,34 @@ _kbc_task_fields() {
 _kbc_patch_tags() {
     local task="$1" tags_csv="$2" type_alias="$3" type_id="$4" triaged="$5"
     [[ -n "$tags_csv" || -n "$type_alias" || -n "$triaged" ]] || return 0
-    local base
+    # THE READ IS PART OF THE WRITE here, so an unreadable one must abort it. `tags` is
+    # replaced wholesale by the API, so a read that yields nothing and is then treated as
+    # "the card has no tags" writes only what THIS call adds and DESTROYS every tag the
+    # card carried (with --tags, the ones it may not re-send). Refuse instead — the caller turns
+    # this rc into its own rc 2, before any PATCH is issued.
+    #
+    # What counts as "no tag list could be read" is kb_card_tags' rule (_kb-board-lib.sh), the
+    # one owner of the shape tests every read-before-replace of `tags` goes through.
+    local resp cur base
+    resp="$(kb_api GET "/tasks/$task.json")" || return 1
+    cur="$(kb_card_tags "$resp")"
+    [[ -n "$cur" ]] || {
+        echo "kbcard: patch on task $task: the tag read returned success but no tag list could be read out of its body — refusing to replace this card's tags with a list built from nothing" >&2
+        return 1
+    }
     if [[ -n "$tags_csv" ]]; then
-        base="$(jq -n --arg t "$tags_csv" '$t | split(",")')"
+        _kbc_rules || return 1
+        local kept
+        kept="$(jq -c --argjson cur "$cur" '[.tags.refused_prefixes[].prefix] as $p
+                   | [$cur[] | select(. as $t | any($p[]; . as $q | $t | startswith($q)))]' <<<"$_KBC_RULES")" || return 1
+        if [[ "$kept" != "[]" ]]; then
+            local kept_list
+            kept_list="$(jq -r 'join(", ")' <<<"$kept")" || return 1
+            echo "kbcard: patch on task $task: --tags carries forward the card's $kept_list — tags --tags may not send, so a replace never drops them; remove one with --remove-tags" >&2
+        fi
+        base="$(jq -n --arg t "$tags_csv" --argjson k "$kept" '($t | split(",")) + $k')"
     else
-        # THE READ IS PART OF THE WRITE here, so an unreadable one must abort it. `tags` is
-        # replaced wholesale by the API, so a read that yields nothing and is then treated as
-        # "the card has no tags" writes only what THIS call adds and DESTROYS every tag the
-        # card carried. Refuse instead — the caller turns this rc into its own rc 2, before any
-        # PATCH is issued.
-        #
-        # What counts as "no tag list could be read" is kb_card_tags' rule (_kb-board-lib.sh), the
-        # one owner of the shape tests every read-before-replace of `tags` goes through. This read
-        # is the base of a list the CALLER asked to write, so an unreadable one aborts the whole
-        # patch.
-        local resp
-        resp="$(kb_api GET "/tasks/$task.json")" || return 1
-        base="$(kb_card_tags "$resp")"
-        [[ -n "$base" ]] || {
-            echo "kbcard: patch on task $task: the tag read returned success but no tag list could be read out of its body — refusing to replace this card's tags with a list built from nothing" >&2
-            return 1
-        }
+        base="$cur"
     fi
     jq -n --argjson base "$base" \
         --arg type_alias "$type_alias" --arg type_id "$type_id" --arg triaged "$triaged" \

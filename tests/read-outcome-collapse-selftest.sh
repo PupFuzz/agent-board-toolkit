@@ -323,7 +323,7 @@ DISPOSITIONED=(
   "bin/card-completeness:load_open_prs()|DISTINCT — its one rc-1 tail is fetch_pages failing, which sets \$UNMEASURED; 'no open PRs' is rc 0 with no rows, never rc 1."
   "bin/card-completeness:load_unreleased_prs()|DISTINCT — every rc-1 tail sets \$UNMEASURED; an empty unreleased window is rc 0, never rc 1."
   "bin/kbcard:_kbc_field_create_call()|DISTINCT — its rc 1 is the re-read's 'does not define it' (a HARD FAILURE, the fail-closed direction for a create's read-back): \$after is _kbc_fetch_fields' output, which refuses a body with no .data, and a re-read that cannot be made returns _kbc_unverified's rc 3 on its own branch. Residual: a .data that is an object, not an array, would read as 'does not define it'. The POST's own failure is a write, outside this leg."
-  "bin/kbcard:_kbc_patch_tags:base|SAME OUTCOME — empty REFUSES the tag replace ('a list built from nothing'); kb_card_tags answers [] for a card with no tags, so empty is only the unreadable case."
+  "bin/kbcard:_kbc_patch_tags:cur|SAME OUTCOME — empty REFUSES the tag replace ('a list built from nothing'); kb_card_tags answers [] for a card with no tags, so empty is only the unreadable case."
   "bin/kbcard:_kbc_archive_decision:card|SAME OUTCOME — empty or null is the 'noprimitive' verdict, which the archive gate fails LOUD on and never archives."
   "bin/kbcard:cmd_comment:cid|DISTINCT — empty takes _kbc_unverified: rc 3 UNVERIFIED WRITE, never a success and never 'not posted'."
   "bin/kbcard:cmd_comments:card|SAME OUTCOME — empty (no one card object, per _kbc_one_card) leaves comments empty, which takes the cmd_comments:comments refusal below: rc 1, nothing was read, NOT an empty comment list. It is never read as a card with no comments."
