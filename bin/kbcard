@@ -382,9 +382,10 @@
 #     is the shipped case). Nothing here is implicit — an omitted flag leaves its field alone.
 #     --tags REPLACES the whole tag list (the API stores it as one list and replaces it
 #     wholesale); to add a tag, pass the full intended set. It reads the card first and KEEPS
-#     every tag the card holds that --tags itself refuses (the data tags above — the bridge's
-#     created-by: / idem: stamps among them), after the given set, naming them on stderr: a
-#     replace that dropped them could never put them back. --remove-tags is how to drop one.
+#     every tag the card holds that matches a `refused_prefixes` entry of the rule file (the
+#     data tags above — the bridge's created-by: / idem: stamps among them; not `type:`), after
+#     the given set, naming them on stderr: a replace that dropped them could never put them
+#     back. --remove-tags is how to drop one.
 #     An unreadable tag list is rc 2, nothing written. --triaged still appends to what the card
 #     already carries, and composes with --tags (given set, kept tags, then `triaged`).
 #     A visually blank --tags is rc 2 before any request: the --tags paragraph of the free-text
@@ -1872,7 +1873,7 @@ _kbc_option_field() {
     _kbc_field_opts_check "[$fld]" || { echo "kbcard: $flag: the value cannot be checked against that set — nothing was written" >&2; return 2; }
     vals="$(jq -nc --arg c "$csv" '$c | split(",") | map(sub("^[ \t\r\n]+"; "") | sub("[ \t\r\n]+$"; ""))
                                   | reduce .[] as $v ([]; if index([$v]) then . else . + [$v] end)')"
-    opts="$(jq -r "$_KBC_FIELD_JQ"'kbc_opt_values | join(", ")' <<<"$fld")"
+    opts="$(jq -r "$_KBC_FIELD_JQ$_KBC_C0_DEFS"'kbc_opt_values | join(", ") | c0_header' <<<"$fld")"
     if jq -e 'any(. == "")' <<<"$vals" >/dev/null; then
         echo "kbcard: $flag has an empty value (check for a stray comma) — the options of '$key' are: ${opts:-none}" >&2
         return 2
@@ -2173,12 +2174,13 @@ _kbc_task_fields() {
 # list at birth. Every path READS the card first. The three inputs compose in one place so they
 # can't fight each other:
 #   --tags     supplies the base list, followed by every member of the card's CURRENT list that
-#              matches a `refused_prefixes` entry of the rule file (card#12348). _kbc_tag_guard
-#              refuses those prefixes in --tags / --add-tags, so a replace that dropped them
+#              matches a `refused_prefixes` entry of the rule file (card#12348), after the same
+#              leading-blank trim _kbc_tag_guard applies (the STORED value is what is kept).
+#              _kbc_tag_guard refuses those prefixes in --tags / --add-tags, so a replace that dropped them
 #              could never be undone — the bridge's `created-by:` / `idem:` stamps are the shipped
 #              case (a lost `idem:` key let the bridge mint a duplicate card). They are appended
 #              AFTER the guard, so a caller still cannot supply one; the carried members are named
-#              on stderr; `--remove-tags` is the way to drop one.
+#              on stderr, through c0_header (they are board text); `--remove-tags` drops one.
 #   --type     strips ANY existing `type:*` tag, then re-adds `type:<alias>` only when the
 #              board has no native id for the alias. The strip runs on BOTH paths on purpose:
 #              on a MIXED board a card retyped from a tag-mode alias to a native one would
@@ -2210,11 +2212,13 @@ _kbc_patch_tags() {
     if [[ -n "$tags_csv" ]]; then
         _kbc_rules || return 1
         local kept
+        # The sub() class is _kbc_trim_blank's set spelled for jq (it trims what _kbc_tag_guard
+        # matched); tests/locale-range-guard-selftest.sh measures the two sets equal.
         kept="$(jq -c --argjson cur "$cur" '[.tags.refused_prefixes[].prefix] as $p
-                   | [$cur[] | select(. as $t | any($p[]; . as $q | $t | startswith($q)))]' <<<"$_KBC_RULES")" || return 1
+                   | [$cur[] | select(. as $t | any($p[]; . as $q | $t | sub("^[ \t\n\u000b\f\r]+"; "") | startswith($q)))]' <<<"$_KBC_RULES")" || return 1
         if [[ "$kept" != "[]" ]]; then
             local kept_list
-            kept_list="$(jq -r 'join(", ")' <<<"$kept")" || return 1
+            kept_list="$(jq -r "$_KBC_C0_DEFS"'join(", ") | c0_header' <<<"$kept")" || return 1
             echo "kbcard: patch on task $task: --tags carries forward the card's $kept_list — tags --tags may not send, so a replace never drops them; remove one with --remove-tags" >&2
         fi
         base="$(jq -n --arg t "$tags_csv" --argjson k "$kept" '($t | split(",")) + $k')"
@@ -5606,7 +5610,7 @@ _kbc_field_set_options() {
     local current="" current_shown="unreadable"
     if _kbc_field_opts_check "[$fld]"; then
         current="$(jq -c "$_KBC_FIELD_JQ"'kbc_opt_values' <<<"$fld")"
-        current_shown="$(jq -r 'join(", ")' <<<"$current")"
+        current_shown="$(jq -r "$_KBC_C0_DEFS"'join(", ") | c0_header' <<<"$current")"
     else
         echo "kbcard: field set-options '$fkey': converging it to [$(jq -r 'join(", ")' <<<"$desired")] replaces the whole set, unreadable entries included" >&2
     fi
@@ -6146,7 +6150,7 @@ _kbc_field_change_type_report() {
                 else
                     echo "kbcard: $oc card value(s) block this conversion — NOTHING was written. The whole board is scanned BEFORE anything is written, so this refusal IS the preflight: there is no separate check mode over HTTP." >&2
                 fi
-                kb_parse_resp "$resp" -r '.meta.offenders[]? | "kbcard:   card \(.task_id) [\(.category)] \(.reason) — value: \(.value)"' >&2
+                kb_parse_resp "$resp" -r "$_KBC_C0_DEFS"'.meta.offenders[]? | "kbcard:   card \(.task_id) [\(.category)] \(.reason) — value: \(.value)" | c0_header' >&2
                 # Read BEFORE the truncation notice, because it is what the notice's advice
                 # branches on — not merely what the line below prints.
                 local ref_ids
@@ -6299,7 +6303,7 @@ _kbc_field_rerun_note() {
 # (_kbc_field_conversion_rerun_note). Change either half of that — the flag's --to
 # string guard, or the server's option rules — and these lines need that owner too.
 _kbc_field_restamp_dl() {
-    local fkey="$1" n_conv="${2:-}" scanned="${3:-}" rows len i tid stored canon want body resp got unseen=0
+    local fkey="$1" n_conv="${2:-}" scanned="${3:-}" rows len i tid stored shown canon want body resp got unseen=0
     local -a done_ids=() already=() patch_failed=() mismatch=() unread=() notdl=()
     rows="$(_kbc_field_populated "$fkey")" || {
         echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did NOT run: the board read above did not return a complete card list, and a canonicalization pass over a partial board leaves an unknown remainder. No card was rewritten. Re-run this exact command once the board reads whole — the conversion half is then a server-side no-op." >&2
@@ -6340,10 +6344,12 @@ _kbc_field_restamp_dl() {
         # the conversion left as a container (or a number) reaches kb_dl_canon as
         # something it can refuse by name, rather than as an empty string.
         stored="$(jq -r --argjson i "$i" '.[$i].value | if type == "string" then . else tojson end' <<<"$rows")"
-        # kb_dl_canon speaks for itself on a non-DL value (it names the value); this
-        # collects the ids so the run's own summary can name every one of them at once.
-        if ! canon="$(kb_dl_canon "$stored")"; then
-            notdl+=("$tid ('$stored')")
+        # kb_dl_canon's own refusal is silenced: it would print the stored value raw, and
+        # the run's summary names every refused value at once, through c0_header. That
+        # filter is for DISPLAY only — the verdict and the compare below read $stored.
+        if ! canon="$(kb_dl_canon "$stored" 2>/dev/null)"; then
+            shown="$(jq -r --argjson i "$i" "$_KBC_C0_DEFS"'.[$i].value | if type == "string" then c0_header else tojson end' <<<"$rows")"
+            notdl+=("$tid ('$shown')")
             continue
         fi
         if [[ "$stored" == "$canon" ]]; then
@@ -6613,8 +6619,8 @@ _kbc_field_retype() {
     if [[ -n "$have_options" ]] && _kbc_field_type_takes_options "$from_t" && _kbc_field_type_takes_options "$to_t"; then
         local lost
         local unread
-        lost="$(jq -r "$_KBC_FIELD_JQ"'[(.options | arrays, objects)[] | select(kbc_opt_readable) | objects
-                                         | select(.label != null and .label != .value) | "\(.value)=\(.label)"] | join(", ")' <<<"$fld")"
+        lost="$(jq -r "$_KBC_FIELD_JQ$_KBC_C0_DEFS"'[(.options | arrays, objects)[] | select(kbc_opt_readable) | objects
+                                         | select(.label != null and .label != .value) | "\(.value)=\(.label)"] | join(", ") | c0_header' <<<"$fld")"
         unread="$(jq -c "$_KBC_FIELD_JQ"'kbc_opt_unreadable | select(. != [])' <<<"$fld")"
         [[ -z "$unread" ]] || echo "kbcard: ⚠ --options REPLACES the whole option set, so the entries '$fkey' carried that kbcard cannot read are GONE too, whatever labels they held: $unread" >&2
         [[ -z "$lost" ]] || echo "kbcard: ⚠ --options REPLACES the whole option set and a comma list carries no labels, so the label(s) '$fkey' carried are GONE: $lost — every value now has label = value, the server's default for an omitted label. Between two option types, OMITTING --options carries the existing set over verbatim, labels included." >&2

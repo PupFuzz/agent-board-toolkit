@@ -304,6 +304,15 @@ rc=0; ERR="$(_kbc_option_field --risk risk nonsense "$F" 2>&1 >/dev/null)" || rc
 eq "--risk outside a bare-string set → rc 2, naming the set" "2|true" \
    "$rc|$(has "'nonsense' is not an option of the 'risk' field on board 1 — its options are: routine, reserved" "$ERR")"
 eq "--component against an object-keyed set is accepted"   '{"component":["docs","plugin"]}' "$(_kbc_option_field --component component docs,plugin "$F" 2>/dev/null)"
+# card#12353: the refusal prints the BOARD's option values to the terminal, so they go through
+# c0_header (card#12311's rule) — an ESC in a stored option could erase the lines above it.
+# The fixture's ESC is a JSON escape, never a raw byte in this file.
+_c0_raw() { printf '%s' "$1" | /usr/bin/grep -c -e "$(printf '\033')" || true; }
+F_C0="$(jq -c 'map(if .key == "risk" then .options = ["routine", "re\u001b[2Kserved"] else . end)' <<<"$F")"
+rc=0; ERR="$(_kbc_option_field --risk risk nonsense "$F_C0" 2>&1 >/dev/null)" || rc=$?
+eq "--risk refusal: an ESC in a stored option prints escaped" "2|true|0" \
+   "$rc|$(has "its options are: routine, re?[2Kserved" "$ERR")|$(_c0_raw "$ERR")"
+unset F_C0
 F="$(jq -c --argjson b "$(jq -c '.key = "risk"' <<<"$_OS_BAD")" 'map(select(.key != "risk")) + [$b]' <<<"$F")"
 rc=0; OUT="$(_kbc_option_field --risk risk ok "$F" 2>"$TMP/os-err")" || rc=$?
 ERR="$(cat "$TMP/os-err")"
@@ -340,6 +349,12 @@ eq "…writing the target"                                   '[{"value":"ok"}]' 
 eq "…naming what it could not read, with no bare jq fault" "true|false" \
    "$(has 'risk (id 31, type enum): {"value":123}' "$ERR")|$(has 'jq: error' "$ERR")"
 eq "…and saying the prior set was unreadable"              "true" "$(has 'options reconciled: [unreadable] -> [ok]' "$ERR")"
+# card#12353: the reconcile line prints the PRIOR stored set, so it goes through c0_header.
+_OS_FIELDS="$(jq -c '.data |= map(if .key == "risk" then .options = ["x\u001b[1A"] else . end)' <<<"$_OS_FIELDS_SAVED")"
+rm -f "$_PATCH_FILE"
+rc=0; ERR="$(_kbc_field_set_options --field risk --options ok 2>&1 >/dev/null)" || rc=$?
+eq "set-options: an ESC in the prior stored set prints escaped on the reconcile line" "0|true|0" \
+   "$rc|$(has 'options reconciled: [x?[1A] -> [ok]' "$ERR")|$(_c0_raw "$ERR")"
 
 # ---------------------------------------------------------------------------
 echo "== field set-options — a failing PATCH preserves the error body (not #4337) =="
@@ -1033,6 +1048,13 @@ eq "…naming the way to keep them"                     "true" "$(has 'OMITTING 
 # label warning, which is what this leg pins. RED if the disclosure grows a read: 3.
 eq "…off the resolve read, adding no read of its own (2 = resolve + confirm)" "2" \
    "$(_calls 'GET /boards')"
+# card#12353: the lost-label list prints STORED values and labels, so it goes through c0_header.
+_seed '[{"id":20,"board_id":1,"key":"severity","label":"Severity","type":"enum","options":[{"value":"low","label":"L\u001b[2Kow"}]}]' "$_B_SEV"
+rc=0; ERR_C0="$(_kbc_field_retype --field severity --to multi_select --options low,high 2>&1 >/dev/null)" || rc=$?
+eq "retype: an ESC in a lost stored label prints escaped" "0|true|0" \
+   "$rc|$(has "carried are GONE: low=L?[2Kow" "$ERR_C0")|$(_c0_raw "$ERR_C0")"
+unset ERR_C0
+_seed "$_F_SEV_ENUM" "$_B_SEV"
 
 # The same conversion with no labels to lose says nothing — a warning that fires on
 # every --options is noise, and would not distinguish the state it exists to report.
@@ -1261,6 +1283,13 @@ eq "…names EVERY offender, with category and reason"  "true" \
 eq "…including the second, in the SAME refusal"       "true" \
    "$(has 'card 9 [target_rejects] Must be a number. — value: also bad' "$ERR")"
 eq "…and calls that refusal the preflight"            "true" "$(has 'refusal IS the preflight' "$ERR")"
+# card#12353: an offender's VALUE is stored card text, so its line goes through c0_header.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"bad\u001b[2K"}}]'
+rc=0; ERR_C0="$(_kbc_field_retype --field dl_number --to number 2>&1 >/dev/null)" || rc=$?
+eq "retype offender: an ESC in the stored value prints escaped" "1|true|0" \
+   "$rc|$(has 'card 7 [target_rejects] Must be a number. — value: bad?[2K' "$ERR_C0")|$(_c0_raw "$ERR_C0")"
+unset ERR_C0
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"not-a-number"}},{"id":9,"payload":{"dl_number":"also bad"}},{"id":8,"payload":{"dl_number":"12"}}]'
 eq "…nothing was written: the definition stands"      '"string"' "$(jq -c '.[0].type' "$_FIELDS")"
 eq "…and the castable card is untouched too"          '"12"' "$(jq -c '.[2].payload.dl_number' "$_BOARD")"
 
@@ -1815,6 +1844,24 @@ eq "…and names the non-DL value as the reason"        "true"  \
 eq "…naming what would actually fix it"               "true"  \
    "$(has 'those need the VALUE corrected, never another run' "$ERR")"
 eq "control: the rc is unchanged by any of that"      "1"     "$rc"
+# card#12353: the non-DL value is STORED card text, so the summary prints it through c0_header
+# and kb_dl_num's own refusal (which would print it raw) is silenced. The verdict still reads
+# the unfiltered value — the trailing-LF case below is where the two differ.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"not\u001b[2K-dl"}}]'
+rc=0; ERR_C0="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "restamp-dl: an ESC in a non-DL stored value prints escaped" "1|true|0" \
+   "$rc|$(has "NOT a DL number, so nothing was written: 7 ('not?[2K-dl')" "$ERR_C0")|$(_c0_raw "$ERR_C0")"
+eq "…and that card is left exactly as it was" '"not\u001b[2K-dl"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+unset ERR_C0
+# The filter is DISPLAY-ONLY: the verdict reads the stored value as the shell receives it,
+# and $(…) drops a trailing LF, so a stored "12\n" is DL 12 and is canonicalized. Read through
+# c0_header it would be "12?" and refused as not a DL number.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"12\n"}}]'
+rc=0; ERR_C0="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "restamp-dl: a stored value with a trailing LF is still a DL number" "0|false" \
+   "$rc|$(has 'NOT a DL number' "$ERR_C0")"
+eq "…and is canonicalized to DL-0012" '"DL-0012"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+unset ERR_C0
 
 # The same bucket ALONGSIDE one a re-run does repair: the promise must survive, scoped
 # to the count it is true of, and carry the carve-out beside it rather than instead of it.

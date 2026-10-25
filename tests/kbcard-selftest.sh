@@ -1099,6 +1099,23 @@ b="$(pbe --tags a,b)"
 eq "a card with no stamp tags gets the list exactly as given" '["a","b"]' "$(jq -c '.tags' <<<"$b")"
 pbe --tags a,b >/dev/null
 eq "…and no carry line"                           "false" "$(has "carries forward the card's" "$_pbe_err")"
+# card#12353. A stored member is matched the way _kbc_tag_guard matches a sent one — after the
+# leading-blank trim — so a ` idem:x:k` (writable only through the UI or the raw API), which
+# --tags can neither send nor, untrimmed, carry, is kept; the STORED value is what is written.
+_CUR_TAGS='["old"," idem:x:k"]'
+eq "a stored stamp with a leading blank is carried, stored value unchanged" \
+   '["a"," idem:x:k"]' "$(pbe --tags a | jq -c '.tags')"
+# The carry line prints STORED tag text to the terminal, so it goes through c0_header
+# (card#12311's rule): an ESC there could erase the lines above it. The fixture's ESC is a JSON
+# escape, never a raw byte in this file.
+_CUR_TAGS='["old","idem:x:k\u001b[2K"]'
+pbe --tags a >/dev/null
+eq "an ESC in a carried stamp prints escaped on the carry line" "true" \
+   "$(has "carries forward the card's idem:x:k?[2K — tags" "$_pbe_err")"
+eq "…the raw ESC byte is ABSENT from stderr" "0" \
+   "$(printf '%s' "$_pbe_err" | /usr/bin/grep -c -e "$(printf '\033')" || true)"
+eq "…and the WRITTEN tag keeps the stored ESC (only the display is filtered)" \
+   '["a","idem:x:k\u001b[2K"]' "$(pbe --tags a | jq -c '.tags')"
 _CUR_TAGS='["dropped"]'
 unset -f pbe; unset _rp_tags _pbe_err
 
