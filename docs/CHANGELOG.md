@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-25
+
+**Minor — `kbcard patch --tags` keeps the data tags it cannot re-send (the bridge's `created-by:` / `idem:` stamps among them) and is refused when the card's tag list cannot be read (card#12348); `kbcard field list` no longer crashes on fields whose options are plain strings, and an enum / multi_select option set holding an entry kbcard cannot read is refused by name (card#12349); `kbcard` no longer prints C0 control characters from board-stored text to the terminal (card#12353).** The PRs in `v0.49.1..v0.50.0` that carry a change are #485, #486 and #487, enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.49.1..v0.50.0` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **minor** on the acceptance-narrowing floor, not on new surface: no tool, verb, flag or config key is added, and two changes narrow what `kbcard` accepts, each an input that previously completed at `rc 0` (`patch --tags` over an unreadable tag read; `--component` / `--risk` and `field list` over an option set holding an unreadable entry), stated under `### Changed` below. Upgrade actions: `docs/UPGRADE.md` §6 v0.50.0.
+
 ### Changed
 
 - ⚠ **card#12348** — **Acceptance narrowing (minor at minimum, per [`../VERSIONING.md`](../VERSIONING.md) § Bump sizing): `kbcard patch --tags` on a card whose tag read yields no usable list is now refused, `rc 2`, nothing written.** Before, `--tags` never read the card, so a `2xx` read body carrying no card object or a non-array `tags` (`{"data":{"id":505,"tags":false}}`, measured) did not stop it: it wrote the given list at `rc 0`. It now takes the same refusal `--type` / `--triaged` already take, because a list built over an unreadable read would drop the tags it exists to keep. A `GET` that fails outright (unreachable, `404`) is likewise `rc 2` now, where the `PATCH` that followed used to fail at `rc 1`.
