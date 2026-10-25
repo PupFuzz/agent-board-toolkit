@@ -1844,14 +1844,23 @@ eq "…and names the non-DL value as the reason"        "true"  \
 eq "…naming what would actually fix it"               "true"  \
    "$(has 'those need the VALUE corrected, never another run' "$ERR")"
 eq "control: the rc is unchanged by any of that"      "1"     "$rc"
-# card#12353: the non-DL value is STORED card text, printed by this pass and by kb_dl_num's own
-# refusal, so it is read through c0_header. Equivalent for the verdict: a value holding a C0
-# control is no DL number either way, and one holding none is read unchanged.
+# card#12353: the non-DL value is STORED card text, so the summary prints it through c0_header
+# and kb_dl_num's own refusal (which would print it raw) is silenced. The verdict still reads
+# the unfiltered value — the trailing-LF case below is where the two differ.
 _seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"not\u001b[2K-dl"}}]'
 rc=0; ERR_C0="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
 eq "restamp-dl: an ESC in a non-DL stored value prints escaped" "1|true|0" \
    "$rc|$(has "NOT a DL number, so nothing was written: 7 ('not?[2K-dl')" "$ERR_C0")|$(_c0_raw "$ERR_C0")"
 eq "…and that card is left exactly as it was" '"not\u001b[2K-dl"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
+unset ERR_C0
+# The filter is DISPLAY-ONLY: the verdict reads the stored value as the shell receives it,
+# and $(…) drops a trailing LF, so a stored "12\n" is DL 12 and is canonicalized. Read through
+# c0_header it would be "12?" and refused as not a DL number.
+_seed "$_F_DL_STR" '[{"id":7,"payload":{"dl_number":"12\n"}}]'
+rc=0; ERR_C0="$(_kbc_field_retype --field dl_number --to string --restamp-dl 2>&1 >/dev/null)" || rc=$?
+eq "restamp-dl: a stored value with a trailing LF is still a DL number" "0|false" \
+   "$rc|$(has 'NOT a DL number' "$ERR_C0")"
+eq "…and is canonicalized to DL-0012" '"DL-0012"' "$(jq -c '.[0].payload.dl_number' "$_BOARD")"
 unset ERR_C0
 
 # The same bucket ALONGSIDE one a re-run does repair: the promise must survive, scoped

@@ -2212,6 +2212,8 @@ _kbc_patch_tags() {
     if [[ -n "$tags_csv" ]]; then
         _kbc_rules || return 1
         local kept
+        # The sub() class is _kbc_trim_blank's set spelled for jq (it trims what _kbc_tag_guard
+        # matched); tests/locale-range-guard-selftest.sh measures the two sets equal.
         kept="$(jq -c --argjson cur "$cur" '[.tags.refused_prefixes[].prefix] as $p
                    | [$cur[] | select(. as $t | any($p[]; . as $q | $t | sub("^[ \t\n\u000b\f\r]+"; "") | startswith($q)))]' <<<"$_KBC_RULES")" || return 1
         if [[ "$kept" != "[]" ]]; then
@@ -6301,7 +6303,7 @@ _kbc_field_rerun_note() {
 # (_kbc_field_conversion_rerun_note). Change either half of that — the flag's --to
 # string guard, or the server's option rules — and these lines need that owner too.
 _kbc_field_restamp_dl() {
-    local fkey="$1" n_conv="${2:-}" scanned="${3:-}" rows len i tid stored canon want body resp got unseen=0
+    local fkey="$1" n_conv="${2:-}" scanned="${3:-}" rows len i tid stored shown canon want body resp got unseen=0
     local -a done_ids=() already=() patch_failed=() mismatch=() unread=() notdl=()
     rows="$(_kbc_field_populated "$fkey")" || {
         echo "kbcard: ⚠ the conversion LANDED, but --restamp-dl did NOT run: the board read above did not return a complete card list, and a canonicalization pass over a partial board leaves an unknown remainder. No card was rewritten. Re-run this exact command once the board reads whole — the conversion half is then a server-side no-op." >&2
@@ -6341,11 +6343,13 @@ _kbc_field_restamp_dl() {
         # The stored value as TEXT — a non-string is rendered with tojson so a value
         # the conversion left as a container (or a number) reaches kb_dl_canon as
         # something it can refuse by name, rather than as an empty string.
-        stored="$(jq -r --argjson i "$i" "$_KBC_C0_DEFS"'.[$i].value | if type == "string" then c0_header else tojson end' <<<"$rows")"
-        # kb_dl_canon speaks for itself on a non-DL value (it names the value); this
-        # collects the ids so the run's own summary can name every one of them at once.
-        if ! canon="$(kb_dl_canon "$stored")"; then
-            notdl+=("$tid ('$stored')")
+        stored="$(jq -r --argjson i "$i" '.[$i].value | if type == "string" then . else tojson end' <<<"$rows")"
+        # kb_dl_canon's own refusal is silenced: it would print the stored value raw, and
+        # the run's summary names every refused value at once, through c0_header. That
+        # filter is for DISPLAY only — the verdict and the compare below read $stored.
+        if ! canon="$(kb_dl_canon "$stored" 2>/dev/null)"; then
+            shown="$(jq -r --argjson i "$i" "$_KBC_C0_DEFS"'.[$i].value | if type == "string" then c0_header else tojson end' <<<"$rows")"
+            notdl+=("$tid ('$shown')")
             continue
         fi
         if [[ "$stored" == "$canon" ]]; then

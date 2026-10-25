@@ -207,6 +207,33 @@ both "kb_is_blank does not leak LC_ALL to its caller" "restored" "x" \
       [[ "${LC_ALL-unset}" == "$before" ]] && echo restored || echo LEAKED'
 
 # ---------------------------------------------------------------------------
+echo "== patch --tags carry-forward: its jq blank class is _kbc_trim_blank's (bin/kbcard; card#12353) =="
+# The carry-forward matches a stored tag against refused_prefixes inside jq, so it cannot call
+# _kbc_trim_blank (which _kbc_tag_guard trims with) and spells the class as a jq regex instead.
+# Pinned by MEASURING both over one candidate population: every C0 character but NUL (a bash
+# string cannot hold it), space, DEL, U+0085, U+00A0, U+2003 and U+3000. Each candidate leads
+# a tag "<c>x"; the two sets of candidates the two trims strip must be equal.
+_cf_lit="$(/usr/bin/grep -o 'sub("\^\[[^]]*\]+"; "") | startswith(\$q)' "$BIN/kbcard" | sed 's/^sub(//; s/; "") | startswith(\$q)$//')"
+eq "the carry-forward's jq trim is found exactly once in bin/kbcard" "1" "$(printf '%s\n' "$_cf_lit" | /usr/bin/grep -c .)"
+_cf_sets="$(CF_LIT="$_cf_lit" bash -c '
+    source "$BIN/kbcard" 2>/dev/null || true
+    sh_set=""; jq_set=""
+    for code in $(seq 1 32) 127; do
+        printf -v c "\\x$(printf %02x "$code")"
+        [[ "$(_kbc_trim_blank "${c}x")" == x ]] && sh_set+="$code "
+        [[ "$(jq -rn --arg s "${c}x" "\$s | sub($CF_LIT; \"\")")" == x ]] && jq_set+="$code "
+    done
+    for c in $'"'"'\xc2\x85'"'"' $'"'"'\xc2\xa0'"'"' $'"'"'\xe2\x80\x83'"'"' $'"'"'\xe3\x80\x80'"'"'; do
+        [[ "$(_kbc_trim_blank "${c}x")" == x ]] && sh_set+="U "
+        [[ "$(jq -rn --arg s "${c}x" "\$s | sub($CF_LIT; \"\")")" == x ]] && jq_set+="U "
+    done
+    printf "%s|%s" "$sh_set" "$jq_set"')"
+eq "…and strips exactly the candidates _kbc_trim_blank strips" "${_cf_sets%%|*}" "${_cf_sets#*|}"
+# Positive control: the measurement is not vacuous — the shared set is kb_is_blank's six.
+eq "…which are the six ASCII blanks (posctl)" "9 10 11 12 13 32 " "${_cf_sets%%|*}"
+unset _cf_lit _cf_sets
+
+# ---------------------------------------------------------------------------
 echo "== kb_is_blank's adopters, reached through each tool's own entry point =="
 # One verdict per adopter under both locales, over the two inputs that separate the old spelling
 # from the new one on SOME seat: U+2003 (the UTF-8 seat's widening) and VT (the C0 member the
