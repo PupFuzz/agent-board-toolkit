@@ -9,9 +9,10 @@ for c in bash curl jq git gh ps timeout; do command -v "$c" >/dev/null && echo "
 ```
 All must print `ok:`. (`gh` is only needed for tools that touch GitHub — `board-session-close`, `dependabot-deploy-reconcile`, and `gh-code-search`, which is a thin guarded wrapper around `gh api search/code` and refuses at rc 2 without it. `release-pr-body` needs no `gh`, but it does need `git fetch` access to `origin` — it resolves **both ends** of the release range from the remote: the baseline from the remote's release branch, since the local one is stale by design under the branch-off-dev flow, and the head from the remote's integration branch, since the local one lags every merge that lands after a release worktree is cut. Each leg has its own explicit override — `--base <tag>` and `--head <ref>` — and each skips only its own leg's fetch, so an offline run passes both. An explicit ref must still **resolve in the checkout**: the flag says which ref to use, not that a ref this repo does not have should be read as an empty range, so a `--base`/`--head` naming no commit here is refused at rc 2 rather than generating a body and a `shipped-cards` manifest that list nothing.)
 
-Two of these are newer and **not** fatal if missing, so they are listed to be checked rather than assumed:
+Two of these, and `python3` (not in the loop above — check it with `command -v python3`), are **not** fatal if missing, so they are listed to be checked rather than assumed:
 
 - **`ps`** — `dependabot-deploy-reconcile` reads the whole process table to decide whether the tree it inspects is the one actually running. Without it that tool reports an instrument failure rather than a wrong answer.
+- **`python3`** — `next-dl`'s offline `max+1` scan reads local decision logs through `bin/_decision-log.py`, and refuses to mint without it (its atomic claim does not need it); `dl-collision-gate` refuses to run without it.
 - **`timeout`** (coreutils) — bounds each advisory leg of `board-session-close`. **macOS ships no `timeout` by default**, and the MSYS/Git-Bash install in §2 may not either. When it is absent the legs still run, and each one prints a one-line warning saying it is running **unbounded**: it can no longer hang the close's exit code, but it can hang its clock. Install coreutils (`brew install coreutils` provides `gtimeout`; symlink or alias it as `timeout`) to get the bound back.
 
 
@@ -635,11 +636,26 @@ jobs:
 
 **Keep the checkout's default `ref:`.** On a pull request it is the `refs/pull/N/merge` commit, and the gate pairs the work tree with that merge's first parent (`bin/pr-base-snapshot`); a work tree that is not this PR's merge is refused at rc 2, never given a guessed base. **The bound people assume away:** two open PRs that each mint the same new number both pass, because neither number is on the target branch yet; the second reds on its first run after the first merges.
 
+**Before you enable it — two states of the target branch's log refuse every pull request.** The gate judges each PR's merge, so a defect already on the target branch is in every PR's input:
+
+- **The log ends inside an unclosed code fence.** Every PR is refused, including the one that closes it, because the gate reads the fence from the target branch, not from the PR. Close it before you enable the gate; once the gate runs, only a path it does not block can close it (a direct push, or a merge that bypasses the check).
+- **The log already uses one DL number twice** — including through a heading indented 1–3 spaces, which renders as a heading and which the gate reads. Every PR is refused until a PR renumbers one of the two entries to a free number; that PR passes.
+
+Check the target branch's log before you add the workflow, with the predicate the gate runs:
+
+```bash
+git fetch origin <target-branch>
+git show origin/<target-branch>:CLAUDE_DECISIONS.md > /tmp/target-log.md
+python3 ~/agent-board-toolkit/bin/_decision-log.py check --head /tmp/target-log.md; echo "rc=$?"
+```
+
+`rc=0` is clean. `rc=8` is the unclosed fence and `rc=5` the duplicate (each named on stderr): fix it first. `rc=7` is **not** a blocker, and is reached only once neither of those holds: run without `--base`/`--target`, the check refuses every placeholder heading (`## DL-TBD`), while the gate refuses only one a PR adds, so placeholders already on the target branch pass it. This list is the one statement of these preconditions; [`UPGRADE.md`](UPGRADE.md) §6 (v0.51.0) points here.
+
 **Exit status.** `1` is a refusal (a verdict about the log). `2` means the gate measured nothing — usage, no base snapshot, the log unreadable at base or target, the fetch failed, or the predicate exited with a status the gate does not enumerate. Both fail the step.
 
 **Vendoring instead (§6b)?** Vendor `bin/dl-collision-gate`, `bin/pr-base-snapshot` and `bin/_decision-log.py` together: the gate runs both from its own directory and refuses at rc 2 by name when either is missing. Run it as `dl-collision-gate --head-sha <sha> --base-ref <branch> [--log PATH]` inside the PR merge checkout.
 
-**Reading the grammar from another tool.** A consumer that must agree with the gate on what an entry is (an allocator's local-log veto, say) path-loads `bin/_decision-log.py` and calls `header_scan` / `header_numbers` — the module docstring declares that contract, and `tests/decision-log-selftest.sh` checks it. The grammar reads top-level ATX `## DL-` headings only; a setext H2 or a heading inside a blockquote or list item is not read (the grammar comment names these).
+**Reading the grammar from another tool.** A consumer that must agree with the gate on what an entry is (an allocator's local-log veto, say) path-loads `bin/_decision-log.py` and calls `header_scan` / `header_numbers` — the module docstring declares that contract, and `tests/decision-log-selftest.sh` checks it. A shell tool runs `_decision-log.py floor <log>` instead, which prints the highest number one log holds; `next-dl`'s offline `max+1` scan does. The grammar reads top-level ATX `## DL-` headings only; a setext H2 or a heading inside a blockquote or list item is not read (the grammar comment names these).
 
 ## Worked example (host install, primary board named `dev`)
 

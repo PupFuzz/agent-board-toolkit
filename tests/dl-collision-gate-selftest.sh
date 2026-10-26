@@ -99,6 +99,15 @@ make "$(log 293)" "$(log 293)"$'\n```\nnever closed\n\n## DL-294 — hidden\n'
 gate
 eq "a log this PR leaves inside an unclosed fence is refused (H1)" 1 "$RC"
 eq "…as an unclosed fence" true "$(has 'unclosed code fence' "$OUT")"
+eq "…whose remedy, the fence being this PR's, is to close it" true "$(has_line 'Fix: close the fence.' "$OUT")"
+
+# The PR that CLOSES a fence left open on the target branch is refused too — base is the target's.
+make "$(log 293)"$'\n```\nnever closed\n' "$(log 293)"$'\n```\nclosed here\n```\n'
+gate
+eq "a PR closing the TARGET branch's unclosed fence is still refused" 1 "$RC"
+eq "…and is told to close it on dev itself, by a path the gate does not block" true \
+   "$(has 'Fix: close the fence on dev itself, by a path this gate does not block' "$OUT")"
+eq "…not the head-side remedy" false "$(has_line 'Fix: close the fence.' "$OUT")"
 
 make "$(log 293)" "$(log 293 294)" "$(log 293)"$'\n  ## DL-294 — an indented heading\n'
 gate
