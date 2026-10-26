@@ -473,12 +473,12 @@ eq "strict + no board env → and still says what it refused" "true" \
 
 echo "== the local scan reads the GATE'S grammar: bin/_decision-log.py, not a second grep (card#12338) =="
 # THE DEFECT: the offline scan was `grep -oE '^## DL-[0-9]+'`, a second spelling of the grammar
-# dl-collision-gate judges a PR by, and the two disagreed in both directions. A `## DL-` line
-# quoted inside a code fence raised the floor (the gate does not count it), and a heading indented
-# 1-3 spaces — rendered as a heading, and counted by the gate — was invisible, so the floor could
-# sit BELOW a number the log already uses. Every leg runs on an unconfigured board, so the local
-# log is the whole floor and the mint is a direct reading of what the scan counted. Each was
-# watched red against the grep before it was trusted.
+# dl-collision-gate judges a PR by. A heading indented 1-3 spaces — rendered as a heading, and
+# counted by the gate — was invisible to it, so the floor could sit BELOW a number the log already
+# uses. The grep also counted a `## DL-` line inside a code fence, which the gate skips; `floor`
+# keeps counting those on purpose (an over-count only leaves a gap — its docstring says why).
+# Every leg runs on an unconfigured board, so the local logs are the whole floor and the mint is a
+# direct reading of what the scan counted. Each was watched red before it was trusted.
 _ndl_grammar_log="$TMP/grammar-checkout"
 mkdir -p "$_ndl_grammar_log"
 export KB_DL_CHECKOUT_GLOBS="$_ndl_grammar_log"
@@ -486,7 +486,12 @@ ndl_log() { printf '%b' "$1" > "$_ndl_grammar_log/CLAUDE_DECISIONS.md"; }
 
 ndl_log '## DL-0300 — a\n```\n## DL-0900 — quoted as an example\n```\n'
 run_ndl --board nosuchboard
-eq "a ## DL- line inside a closed fence does NOT count" "0|DL-0301" "$rc|$out"
+eq "a ## DL- line inside a closed fence still counts" "0|DL-0901" "$rc|$out"
+# Two lines merely STARTING with an inline code span match the fence pattern and pair up, so a
+# fence-skipping floor reads 300 here and re-mints DL-0500, which the gate (same grammar) passes.
+ndl_log '## DL-0300 — a\n```x``` is inline code\n## DL-0500 — b\n```y``` too\n'
+run_ndl --board nosuchboard
+eq "a heading between two inline-code lines the fence scan pairs still counts" "0|DL-0501" "$rc|$out"
 
 ndl_log '## DL-0300 — a\n   ## DL-0400 — indented three spaces\n'
 run_ndl --board nosuchboard
@@ -495,8 +500,10 @@ ndl_log '## DL-0300 — a\n    ## DL-0400 — four spaces is a code block\n'
 run_ndl --board nosuchboard
 eq "control: four spaces is a code block, not a heading" "0|DL-0301" "$rc|$out"
 
-ndl_log '## DL-0300 — a\n```\n## DL-0400 — hidden by a fence that never closes\n'
-run_ndl --board nosuchboard
+# Beside a checkout with a real floor (DL-0300), so a refusal that degraded to "drop this log
+# from the max" would MINT DL-0301 at rc 0 instead of answering rc 1 with nothing on stdout.
+ndl_log '## DL-0100 — a\n```\n## DL-0400 — hidden by a fence that never closes\n'
+KB_DL_CHECKOUT_GLOBS="$_ndl_checkout,$_ndl_grammar_log" run_ndl --board nosuchboard
 eq "an UNCLOSED fence → rc 1, mints nothing" "1|" "$rc|$out"
 eq "…naming the line the fence opened on" "true" "$(has 'opens a code fence at line 2 that is never closed' "$err")"
 eq "…and saying next-dl refused to mint" "true" "$(has 'REFUSING to mint: a log left out of the offline scan' "$err")"
@@ -518,16 +525,38 @@ run_ndl --board nosuchboard
 eq "positive control: a plain log mints its max + 1" "0|DL-0301" "$rc|$out"
 
 # A vendored next-dl without its sibling (INSTALL.md §6b) must refuse, not fall back to a guess.
+# This leg and the no-python3 one below run on board `dev`, whose stamped DL-0219 is a floor that
+# does NOT come through the grammar: a refusal degraded to "drop the log from the max" would mint
+# DL-0220 at rc 0. (A second LOCAL log would not discriminate — it loses the grammar too, and the
+# empty max then exits 1 with "no DL headers found", the same rc and stdout as the refusal.)
 _ndl_nogrammar="$TMP/ndl-no-grammar"
 mkdir -p "$_ndl_nogrammar"
 cp -pR "$HERE"/../bin/. "$_ndl_nogrammar"/
 rm -f "$_ndl_nogrammar/_decision-log.py"
 kb_stub_reset; rc=0
-out="$("$_ndl_nogrammar/next-dl" --board nosuchboard 2>"$TMP/err")" || rc=$?
+out="$("$_ndl_nogrammar/next-dl" --board dev 2>"$TMP/err")" || rc=$?
 err="$(cat "$TMP/err")"
 eq "no _decision-log.py beside next-dl → rc 1, mints nothing" "1|" "$rc|$out"
 eq "…naming the missing sibling" "true" "$(has '_decision-log.py is missing or unreadable' "$err")"
 rm -rf "$_ndl_nogrammar"
+
+# No python3 on PATH: a PATH of links to every other executable on it, first one of a name wins.
+_ndl_nopy="$TMP/ndl-no-python3"
+mkdir -p "$_ndl_nopy"
+IFS=: read -r -a _ndl_path_dirs <<<"$PATH"
+for _d in "${_ndl_path_dirs[@]}"; do
+    for _x in "$_d"/*; do
+        _n="${_x##*/}"
+        [[ -x "$_x" && ! -d "$_x" && "$_n" != python3* && ! -e "$_ndl_nopy/$_n" ]] || continue
+        ln -s "$_x" "$_ndl_nopy/$_n"
+    done
+done
+eq "control: the no-python3 PATH has no python3" "false" "$(PATH="$_ndl_nopy" command -v python3 >/dev/null && echo true || echo false)"
+PATH="$_ndl_nopy" run_ndl --board dev
+eq "no python3 → rc 1, mints nothing" "1|" "$rc|$out"
+eq "…saying python3 is required" "true" "$(has 'python3 is required to read' "$err")"
+rm -rf "$_ndl_nopy"
+unset _ndl_path_dirs _d _x _n
 
 if [[ "$(id -u)" -ne 0 ]]; then
     # Beside a readable checkout holding a LOWER floor. MEASURED on the grep this replaced: it

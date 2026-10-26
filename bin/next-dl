@@ -670,16 +670,16 @@ max=0
 
 # (1) local CLAUDE_DECISIONS.md headers across all checkouts, read through the grammar
 # dl-collision-gate judges a PR by — `_decision-log.py floor`, run from beside this script — never a
-# second spelling of it. A `## DL-` line inside a closed code fence is a quoted example and does not
-# count; a heading indented 1-3 spaces renders as a heading and does. What else `floor` counts (the
-# digits of a suffixed heading such as `## DL-0344a`) is owned by its `cmd_floor` docstring.
+# second spelling of it. A heading indented 1-3 spaces renders as a heading and counts. What `floor`
+# counts beyond the gate's entries, and why (a heading inside a code fence, the digits of a suffixed
+# heading such as `## DL-0344a` — an over-count only leaves a gap), is owned by its `cmd_floor`
+# docstring.
 # ⛔ THIS SCAN FEEDS A max+1, SO A LOG IT CANNOT MEASURE REFUSES THE MINT rather than dropping out of
 # the max — the posture the board read below takes (card#6631). That covers a log ending inside an
-# UNCLOSED fence (the headings after it are hidden, so its max could be too low; the gate refuses the
-# same log), a log that cannot be read or decoded, the grammar absent (a vendored next-dl without its
-# sibling) and no python3. The grep this replaced exited 1 with nothing on stderr on an unreadable
-# log — and on a log holding no DL heading at all, which now adds nothing and mints — because its
-# no-match status killed the script under pipefail (measured).
+# UNCLOSED fence (the gate refuses the same log), a log that cannot be read or decoded, the grammar
+# absent (a vendored next-dl without its sibling) and no python3. The grep this replaced exited 1
+# with nothing on stderr on an unreadable log — and on a log holding no DL heading at all, which now
+# adds nothing and mints — because its no-match status killed the script under pipefail (measured).
 # Only this offline path needs the grammar or python3; the claim and the inspect read do not.
 local_log_max() {   # <log> → its highest DL number on stdout (empty: none); non-zero: refuse
     local grammar

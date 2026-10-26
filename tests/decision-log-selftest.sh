@@ -156,7 +156,11 @@ flr() {
   OUT="$(cat "$TMP/out")"; ERR="$(cat "$TMP/err")"
 }
 flr "$(log 0300)"$'\n```\n## DL-0900 — quoted\n```\n'
-eq "floor: a heading inside a closed fence does not count" "0|300" "$RC|$OUT"
+eq "floor: a heading inside a closed fence still counts (an over-count only leaves a gap)" "0|900" "$RC|$OUT"
+# A line merely STARTING with an inline code span matches the fence pattern, so two such lines
+# "fence" the real heading between them; the floor must still see it, or a max+1 re-mints DL-500.
+flr "$(log 300)"$'\n```x``` is inline code\n'"$(log 500)"$'\n```y``` too\n'
+eq "floor: a heading between two inline-code lines the fence scan pairs still counts" "0|500" "$RC|$OUT"
 flr "$(log 300)"$'\n   ## DL-0400 — indented\n'
 eq "floor: a heading indented 1-3 spaces counts" "0|400" "$RC|$OUT"
 flr "$(log 300)"$'\n## DL-0500a — suffixed\n## DL-TBD — draft\n'
@@ -166,7 +170,7 @@ flr $'# Decision log\n\nnothing yet\n'
 eq "floor: a log with no DL heading prints an empty line at rc 0" "0|" "$RC|$OUT"
 flr "$(log 300)"$'\n```\n## DL-0400 — hidden\n'
 eq "floor: an unclosed fence is rc 8 and prints no number" "8|" "$RC|$OUT"
-eq "…with the local remedy, not the target-branch one" true "$(has 'population. Close the fence.' "$ERR")"
+eq "…with the local remedy, not the target-branch one" true "$(has 'that is never closed. dl-collision-gate refuses a log in that state, so a number minted over it could not land as written. Close the fence.' "$ERR")"
 RC=0; python3 "$TOOL" floor "$TMP/absent.md" >"$TMP/out" 2>"$TMP/err" || RC=$?
 eq "floor: an unreadable log is rc 2" 2 "$RC"
 

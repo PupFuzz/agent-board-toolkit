@@ -14,9 +14,9 @@ USAGE
 
 `bin/dl-collision-gate` is the CI entry point and the one most callers want: it derives the three
 files from a `pull_request` checkout and maps each exit status below to a verdict. This file is the
-predicate over three files already on disk, and the importable grammar. `floor` is the same
-grammar read for an allocator: `bin/next-dl`'s offline max+1 scan runs it over each local log
-(`cmd_floor` owns what it counts).
+predicate over three files already on disk, and the importable grammar. `floor` reads the same
+heading grammar for an allocator, deliberately counting more than `check` does: `bin/next-dl`'s
+offline max+1 scan runs it over each local log (`cmd_floor` owns what it counts, and why).
 
 THE IMPORT CONTRACT — a cross-repo seam, declared here. `tests/decision-log-selftest.sh`
 (§ import contract) path-loads this file and asserts both return shapes on one fixture; it checks
@@ -88,8 +88,8 @@ EXIT_UNCLOSED_FENCE = 8
 # every DL heading, as defined above, between them.
 _DL_H2 = re.compile(r"^ {0,3}##[ \t]+DL-")
 _HEADER = re.compile(r"^ {0,3}##[ \t]+DL-0*(\d+)\b")
-# `_HEADER` without its word boundary: the digits an UNNUMBERED heading starts with (`## DL-0344a`
-# → 344). Read by `cmd_floor` alone, to keep an allocator's floor from dropping below them.
+# `_HEADER` without its word boundary: the digits ANY DL heading starts with (`## DL-0344a` → 344).
+# Read by `cmd_floor` alone, which counts every DL heading's digits (its docstring says why).
 _LEADING_DIGITS = re.compile(r"^ {0,3}##[ \t]+DL-0*(\d+)")
 # A fence opens on ``` or ~~~ and closes on a line starting with the same characters.
 _FENCE = re.compile(r"^\s*(```|~~~)")
@@ -330,26 +330,36 @@ def cmd_check(args) -> int:
 def cmd_floor(args) -> int:
     """Print the highest DL number a max+1 allocator must stay above, read from one local log.
 
-    The entries `check` counts, plus the DIGITS of any DL heading carrying no well-formed number
-    (`## DL-0344a` adds 344): not an entry to the gate, but it may be the entry a number was meant
-    for, and counting it can only raise the floor. A placeholder with no digits (`## DL-TBD`) adds
-    nothing and is not refused, since it is what an author writes before allocating. A log ending
-    inside an unclosed fence is refused (rc 8): the headings after the fence are hidden, so any
-    number read from it could be too low.
+    The digits of EVERY DL heading (`_DL_H2`'s indentation rule), fenced or not, well-formed or
+    not. An allocator that over-counts costs a gap in the sequence; one that under-counts re-mints
+    a number already in use. So `floor` is deliberately WIDER than `check`'s entries: it does not
+    apply the fence skip, because `_FENCE` also matches lines that open no fence (a paragraph
+    starting with an inline code span, a backtick run indented as code), and two such lines would
+    hide every real heading between them. It counts the digits of a heading carrying no
+    well-formed number (`## DL-0344a` adds 344), which may be the entry a number was meant for. A
+    placeholder with no digits (`## DL-TBD`) adds nothing and is not refused, since it is what an
+    author writes before allocating. A log ending inside an unclosed fence is refused (rc 8): the
+    gate refuses the same log, so a number minted over it could not land as written.
     """
-    entries, _, unnumbered, unclosed = header_scan(_read(args.log, "local"))
-    if _refuse_unclosed(args.log, "local", unclosed):
+    text = _read(args.log, "local")
+    _, _, unnumbered, unclosed = header_scan(text)
+    if unclosed is not None:
+        print(
+            f"decision-log: the local log {args.log} opens a code fence at line {unclosed} that is "
+            "never closed. dl-collision-gate refuses a log in that state, so a number minted over it "
+            "could not land as written. Close the fence.",
+            file=sys.stderr,
+        )
         return EXIT_UNCLOSED_FENCE
-    numbers = [n for n, _ in entries]
-    for text, lineno in unnumbered:
-        m = _LEADING_DIGITS.match(text)
+    for heading, lineno in unnumbered:
+        m = _LEADING_DIGITS.match(heading)
         if m:
-            numbers.append(int(m.group(1)))
             print(
-                f"decision-log: {args.log} line {lineno} carries no well-formed DL number ({text}); "
+                f"decision-log: {args.log} line {lineno} carries no well-formed DL number ({heading}); "
                 f"its DL-{int(m.group(1))} is counted toward the floor anyway.",
                 file=sys.stderr,
             )
+    numbers = [int(m.group(1)) for m in map(_LEADING_DIGITS.match, text.splitlines()) if m]
     print(max(numbers) if numbers else "")
     return 0
 
