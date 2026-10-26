@@ -8,9 +8,10 @@
 #   `dl-sequence/claim` endpoint, next-dl ATOMICALLY claims the next number
 #   server-side (race-free across concurrent allocators). A claim RESERVES the
 #   number — an unused claim simply burns it (gaps are expected and fine). If the
-#   endpoint is absent (older kanban / not deployed) or unreachable, it falls
-#   back to the offline max+1 scan below — LOUDLY, naming which cause fired
-#   (card#7214, THE FALLBACK IS ANNOUNCED below). What it MINTS is unchanged
+#   endpoint is absent (older kanban / not deployed), it falls back to the
+#   offline max+1 scan below — LOUDLY, naming which cause fired (card#7214, THE
+#   FALLBACK IS ANNOUNCED below); an unreachable endpoint refuses the claim
+#   (card#10230) and degrades only under --peek, per the cause list below. What it MINTS is unchanged
 #   until the endpoint ships; what it SAYS while doing so is not.
 #
 #   --peek: return the next number WITHOUT reserving it — reads the board's
