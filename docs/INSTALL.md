@@ -639,7 +639,7 @@ jobs:
 
 **Vendoring instead (§6b)?** Vendor `bin/dl-collision-gate`, `bin/pr-base-snapshot` and `bin/_decision-log.py` together: the gate runs both from its own directory and refuses at rc 2 by name when either is missing. Run it as `dl-collision-gate --head-sha <sha> --base-ref <branch> [--log PATH]` inside the PR merge checkout.
 
-**Reading the grammar from another tool.** A consumer that must agree with the gate on what an entry is (an allocator's local-log veto, say) path-loads `bin/_decision-log.py` and calls `header_scan` / `header_numbers` — the module docstring declares that contract, and `tests/decision-log-selftest.sh` checks it.
+**Reading the grammar from another tool.** A consumer that must agree with the gate on what an entry is (an allocator's local-log veto, say) path-loads `bin/_decision-log.py` and calls `header_scan` / `header_numbers` — the module docstring declares that contract, and `tests/decision-log-selftest.sh` checks it. The grammar reads top-level ATX `## DL-` headings only; a setext H2 or a heading inside a blockquote or list item is not read (the grammar comment names these).
 
 ## Worked example (host install, primary board named `dev`)
 

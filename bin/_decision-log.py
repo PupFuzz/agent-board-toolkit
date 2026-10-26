@@ -59,10 +59,12 @@ EXIT_UNCLOSED_FENCE = 8
 
 # THE GRAMMAR, one rule per line class. Each was a hole in the bridge original (card#12338).
 #
-# A DL HEADING is any H2 whose text starts `DL-`: `_DL_H2`. Up to THREE spaces of indentation are
-# allowed because CommonMark renders `   ## DL-342` as an H2 — an indent-blind grammar let that
-# heading duplicate a number unseen. Four spaces or a tab make an indented code block, not a
-# heading, and are not matched.
+# A DL HEADING is a top-level ATX H2 whose text starts `DL-`: `_DL_H2`. Up to THREE spaces of
+# indentation are allowed because CommonMark renders `   ## DL-342` as an H2 — an indent-blind
+# grammar let that heading duplicate a number unseen. Four spaces or a tab make an indented code
+# block, not a heading, and are not matched. NOT READ, and not pinned by any test: a setext H2
+# (`DL-342` underlined with `---`) and an ATX H2 inside a blockquote (`> ## DL-342`) or a list item
+# (`- ## DL-342`) — each renders as an H2, but a duplicate written that way passes at rc 0.
 #
 # A DL ENTRY is a DL heading whose `DL-` is followed by digits and then a word boundary: `_HEADER`.
 # Deliberately not a search for `DL-\d+` anywhere: decision logs embed cross-repo references
@@ -77,7 +79,7 @@ EXIT_UNCLOSED_FENCE = 8
 # `## DL-0344_x`, which the bridge original matched with neither its entry nor its placeholder
 # pattern and so counted nowhere at rc 0. Classifying by "a DL heading `_HEADER` rejects", rather
 # than by a second pattern for what a placeholder looks like, is what makes the two classes cover
-# every DL heading between them.
+# every DL heading, as defined above, between them.
 _DL_H2 = re.compile(r"^ {0,3}##[ \t]+DL-")
 _HEADER = re.compile(r"^ {0,3}##[ \t]+DL-0*(\d+)\b")
 # A fence opens on ``` or ~~~ and closes on a line starting with the same characters.
