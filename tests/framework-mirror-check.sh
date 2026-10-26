@@ -34,8 +34,8 @@
 # not clean. Each run prints the population it derived; read it rather than quoting a count.
 #
 # ⛔ …AND A DERIVED POPULATION IS DERIVED FROM THE AUDITED END, SO THE AUDITED END CAN SHRINK IT.
-# A mirror that has DROPPED one of the two release bins shares ONE name with `bin/`, that one
-# name compares clean, and the run reads `OK` — the check cannot tell IN STEP from NO LONGER
+# A mirror that has DROPPED one of the release bins shares one name fewer with `bin/`, the rest
+# compare clean, and the run reads `OK` — the check cannot tell IN STEP from NO LONGER
 # MIRRORED, which is the exact shape that let the live drift live (*a sweep predicate built from
 # the FOUND copies cannot find the DRIFTED one*). The N→0 case is caught by the `MIRRORED:` guard
 # below; N→N−1 needs an anchor that does NOT come from the mirror. `FLOOR` is that anchor: the
@@ -140,13 +140,13 @@ echo "NOT SEEN: any other framework artifact (repo branch vs plugin install are 
 
 # ── what MUST be present: the DECLARED travelling set ───────────────────────────────────────
 #
-# README's `bin/release-pr-body` row is the declaration: "the toolkit owns both release bins
+# README's `bin/release-pr-body` row is the declaration: "the toolkit owns these release bins
 # (tests + release discipline live here); the agent-board-framework's `templates/release/` copies
 # are mirrors synced at toolkit tags". This array is that sentence, machine-readable. It is a
 # RESTATEMENT of README and is therefore GUARDED, not left to agree by inspection:
 # `framework-mirror-check-selftest.sh` holds every member against the README row that carries the
 # declaration (and would red if README stopped naming one).
-FLOOR=(promote-released-cards release-pr-body)
+FLOOR=(card-completeness promote-released-cards release-pr-body)
 
 # GUARD 1 — a declared member `bin/` no longer carries. Errs RED on a rename or a removal, so the
 # declaration cannot outlive the file it names.
