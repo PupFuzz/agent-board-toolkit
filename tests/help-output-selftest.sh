@@ -74,7 +74,8 @@ _mktmp_scratch
 CLIS=(promote-released-cards card-completeness release-pr-body release-artifacts-check release-tag-check
       changelog-gate
       agent-board-toolkit-runtime-check dependabot-deploy-reconcile board-stats gh-code-search
-      gitignore-secret-family-check run-coverage-check board-hooks-check)
+      gitignore-secret-family-check run-coverage-check board-hooks-check
+      dl-collision-gate pr-base-snapshot)
 
 # Bins that carry `--help` and are deliberately NOT asserted above. Each entry states WHY, and
 # the reason is machine-checked below — an exclusion here is a claim, not a licence. A one-line

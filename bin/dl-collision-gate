@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# dl-collision-gate — on a `pull_request` run, refuse a PR whose decision log mints a `## DL-NNN`
+# number already in use, uses one twice, or adds a DL heading that carries no number (card#12338,
+# hoisted from agent-webhook-bridge's `dl-collision-gate.yml`, card#7157).
+#
+# A duplicate DL number is silent, permanent and cross-cutting: nothing rejects it, review cannot
+# see it (each PR's log is internally consistent), and once both entries land the log has two
+# entries claiming one identifier that is cited across repos and card titles.
+#
+# THE PREDICATE AND ITS STATED BOUND ARE OWNED BY `bin/_decision-log.py` (`cmd_check` docstring
+# and the module docstring's grammar) and are not restated here. The one line worth repeating at
+# the door, because it is the bound people assume away: TWO OPEN PRs THAT EACH MINT THE SAME NEW
+# NUMBER BOTH PASS — neither number is on the target branch yet. The second reds on its next run
+# after the first merges.
+#
+# WHAT THIS DOES, in order:
+#   1. BASE = `pr-base-snapshot --head <sha>`: the FIRST PARENT of the merge commit the checkout
+#      left at HEAD. Head (the work tree) and base are then ONE snapshot of the base branch plus
+#      this PR, so "present at head, absent at base" means "this PR minted it". Not the event's
+#      `base.sha` (it lags) and not a merge-base (it re-derives the fork point) — that tool's
+#      header owns why.
+#   2. The log at BASE, and at the LIVE tip of the target branch, fetched fresh from the remote:
+#      the second assertion exists to see an entry the target gained AFTER the merge was built,
+#      which by definition is in neither file the checkout holds.
+#   3. `_decision-log.py check --head <log> --base <base copy> --target <target copy>`, and a
+#      verdict per exit status. ANY status the predicate does not enumerate is a gate failure: an
+#      unreadable decision log must not be reported as a clean one.
+#
+# PRECONDITIONS in the calling job: a `pull_request` event; `actions/checkout` with the DEFAULT
+# ref (the `refs/pull/N/merge` commit) and `fetch-depth: 0`; a remote that can fetch the target
+# branch; python3 and git on PATH. Run it with NO `paths:` filter on the workflow — a filter that
+# stops matching makes the gate absent, not red.
+#
+# Usage:
+#   dl-collision-gate --head-sha <sha> --base-ref <branch> [--log PATH] [--remote NAME]
+#   dl-collision-gate --tool-version
+#
+#   --head-sha  the PR head sha (github.event.pull_request.head.sha)
+#   --base-ref  the PR's target branch NAME (github.event.pull_request.base.ref)
+#   --log       the decision log, relative to the repository root (default CLAUDE_DECISIONS.md)
+#   --remote    the remote the target branch is fetched from (default origin)
+#   --tool-version print the toolkit release this FILE was stamped at, and exit 0, before any
+#                  repo, sibling or network is read (VERSIONING.md rule 1).
+#
+# Exit status: 0 = no collision. 1 = refused: a number used twice at head, an added number already
+# on the target branch, an added heading with no well-formed number, or a log ending inside an
+# unclosed code fence. 2 = could not measure: usage, no base snapshot (the work tree is not this
+# PR's merge), the log unreadable at base or target, the fetch failed, or the predicate exited
+# with a status it does not enumerate.
+set -euo pipefail
+# A verdict must survive a reader that goes away (card#6911): SIGPIPE ignored, so a closed reader
+# makes a write RETURN non-zero, and every write below tolerates that instead of dying on it.
+trap '' PIPE
+
+ABTK_TOOL_VERSION='0.50.0'
+
+_put()     { printf '%s\n' "$1" 2>/dev/null || true; }
+_put_err() { printf '%s\n' "$1" >&2 2>/dev/null || true; }
+die() { _put_err "::error::dl-collision-gate: $*"; exit 2; }
+
+# Mirrors kb_require_value in _kb-board-lib.sh; held level by tests/mirror-pair-parity-selftest.sh.
+require_value() { [ -n "${2:-}" ] || die "$1 requires a non-empty value"; }
+
+HEAD_SHA=""; BASE_REF=""; LOG="CLAUDE_DECISIONS.md"; REMOTE="origin"; TOOL_VERSION_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --head-sha) require_value "$1" "${2:-}"; HEAD_SHA="$2"; shift 2;;
+    --base-ref) require_value "$1" "${2:-}"; BASE_REF="$2"; shift 2;;
+    --log)      require_value "$1" "${2:-}"; LOG="$2"; shift 2;;
+    --remote)   require_value "$1" "${2:-}"; REMOTE="$2"; shift 2;;
+    --tool-version) TOOL_VERSION_ONLY=1; shift;;
+    -h|--help) _put "$(awk 'NR>1 { if (substr($0,1,1) == "#") print; else exit }' "$0")"; exit 0;;
+    *) die "unknown arg '$1'";;
+  esac
+done
+
+if [ "$TOOL_VERSION_ONLY" = 1 ]; then
+  _put "$ABTK_TOOL_VERSION"
+  exit 0
+fi
+
+command -v git >/dev/null || die "git is required"
+command -v python3 >/dev/null || die "python3 is required (it runs _decision-log.py)"
+[ -n "$HEAD_SHA" ] || die "--head-sha <sha> is required"
+[ -n "$BASE_REF" ] || die "--base-ref <branch> is required"
+
+# Siblings from this tool's own directory, never a PATH lookup: a consumer may carry a different
+# toolkit version on PATH, and the snapshot rule and the grammar must be the ones shipped with this.
+SELF_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+SNAPSHOT="$SELF_DIR/pr-base-snapshot"
+PREDICATE="$SELF_DIR/_decision-log.py"
+[ -x "$SNAPSHOT" ] || die "missing sibling $SNAPSHOT — vendor it beside this tool"
+[ -r "$PREDICATE" ] || die "missing sibling $PREDICATE — vendor it beside this tool"
+
+[ -r "$LOG" ] || die "the decision log '$LOG' is not readable in the work tree ($(pwd))"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# pr-base-snapshot prints its own ::error:: lines; its non-zero status means no base exists.
+BASE="$("$SNAPSHOT" --head "$HEAD_SHA")" || die "no base snapshot (pr-base-snapshot refused, above) — the gate measured nothing"
+
+git show "$BASE:$LOG" > "$work/base.md" 2>"$work/err" \
+  || die "cannot read '$LOG' at the base snapshot $BASE: $(cat "$work/err")"
+
+tgt_ref="refs/remotes/dl-gate/$BASE_REF"
+git fetch --no-tags --quiet "$REMOTE" "+refs/heads/$BASE_REF:$tgt_ref" 2>"$work/err" \
+  || die "cannot fetch the target branch '$BASE_REF' from '$REMOTE': $(cat "$work/err")"
+git show "$tgt_ref:$LOG" > "$work/target.md" 2>"$work/err" \
+  || die "cannot read '$LOG' at the live tip of '$BASE_REF': $(cat "$work/err")"
+
+# Captured and re-emitted through the tolerated writers, so the predicate's own report cannot be
+# what a closed reader kills: its status is read here, never lost with its output.
+rc=0
+pout="$(python3 "$PREDICATE" check --head "$LOG" --base "$work/base.md" --target "$work/target.md" 2>"$work/perr")" || rc=$?
+[ -s "$work/perr" ] && _put_err "$(cat "$work/perr")"
+[ -n "$pout" ] && _put "$pout"
+
+fix="Fix: allocate a fresh number with your repo's allocator (\`next-dl <project>\`) and renumber the entry, its CHANGELOG line, its commit messages and the PR title together."
+case "$rc" in
+  0)
+    exit 0
+    ;;
+  5)
+    _put "::error::this PR's $LOG uses one DL number twice (the number is named above)."
+    _put "Two entries claiming one identifier is permanent once merged: every citation of that number becomes ambiguous."
+    _put "$fix"
+    exit 1
+    ;;
+  6)
+    _put "::error::this PR mints a DL number that is already in use on $BASE_REF (named above)."
+    _put "The number was free when this branch was cut and has been taken since — the case a 'max + 1' scan of your own checkout structurally cannot see."
+    _put "$fix"
+    exit 1
+    ;;
+  7)
+    _put "::error::this PR adds a DL heading that carries no well-formed number (named above)."
+    _put "A placeholder or malformed heading is invisible to both number assertions, so two PRs can each write one and the log lands with two entries claiming a non-identifier."
+    _put "$fix"
+    exit 1
+    ;;
+  8)
+    _put "::error::a decision log this gate read ends inside an unclosed code fence (named above)."
+    _put "Every heading after the fence renders as code and was not scanned, so no verdict here would describe the log's real population."
+    _put "Fix: close the fence."
+    exit 1
+    ;;
+  2)
+    _put "::error::bin/_decision-log.py could not read its inputs (named above) — the gate measured nothing."
+    exit 2
+    ;;
+  *)
+    _put "::error::bin/_decision-log.py exited $rc — a status it does not enumerate; treated as a gate failure."
+    _put "An unreadable decision log must not be reported as a clean one."
+    exit 2
+    ;;
+esac

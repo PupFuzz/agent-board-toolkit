@@ -185,9 +185,11 @@ DRIVERS=(
   "bin/dependabot-deploy-reconcile|--help"
   "bin/dl-a0-backfill-triaged|--help"
   "bin/dl-a1-register-field|--help"
+  "bin/dl-collision-gate|--help"
   "bin/gh-code-search|--help"
   "bin/gitignore-secret-family-check|--help"
   "bin/kbcard|"
+  "bin/pr-base-snapshot|--help"
   "bin/promote-released-cards|--help"
   "bin/release-artifacts-check|--help"
   "bin/run-coverage-check|--help"
@@ -209,6 +211,8 @@ DISPOSITIONED=(
   "bin/gitignore-secret-family-check|SURVIVES|BUILT THIS WAY (card#7036) — the same two mechanisms as the two fixed members above: \`trap '' PIPE\` as the first statement after \`set\`, and one tolerated write per stream of an already-built string. It ships correct rather than joining the roll below, deliberately: this is a SECURITY gate whose entire product is the rc plus a FINDINGS block on STDOUT, so a lost verdict is the gate reporting nothing while the invocation looks like it worked. Its VERDICT path is measured, not just \`--help\`: driven to a real UNCOVERED verdict it answers rc 1 through \`head -n 0\` AND \`head -1\`, under the default SIGPIPE disposition and under an inherited SIG_IGN, and its rc-2 refusal keeps its stderr through a truncating reader."
   "bin/board-hooks-check|SURVIVES|BUILT SAFE (card#10374) — \`trap '' PIPE\` as the first statement after \`set\`, and the whole report captured and written once with the write's failure tolerated. Its VERDICT path is measured, not only its help: an unwired fixture seat's rc 1 NOT-LIVE survives \`head -n 0\` and \`head -1\` under the default SIGPIPE disposition and under an inherited SIG_IGN — where the first cut, writing progressively, answered rc 141 through \`head -n 0\`."
   "bin/changelog-gate|SURVIVES|BUILT SAFE (card#11698) — \`trap '' PIPE\` as the first statement of a RUN (not when sourced: the selftest owns that shell), and every byte — help, report, refusal — written once through a tolerated \`_put\`/\`_put_err\`. Verdict path NOT separately driven here; its run needs a repository with a release tag."
+  "bin/dl-collision-gate|SURVIVES|BUILT SAFE (card#12338) — \`trap '' PIPE\` as the first statement after \`set\`, and every byte (help, refusal, and the predicate's report, captured and re-emitted) written through a tolerated \`_put\`/\`_put_err\`. Verdict path NOT separately driven here; its run needs a PR-merge fixture, which tests/dl-collision-gate-selftest.sh builds."
+  "bin/pr-base-snapshot|SURVIVES|BUILT SAFE (card#12338) — the same two mechanisms. Verdict path NOT separately driven here; tests/pr-base-snapshot-selftest.sh drives it over merge fixtures without a truncating reader."
   "bin/board-stats|SURVIVES|NOT AT RISK — no errexit AND the report renders through child processes, so a killed child neither kills the shell nor is promoted into one. BOTH halves are load-bearing (see defect 2 in the header); adding \`set -e\` alone would move this to LOSES. Its verdict path was measured directly under card#6911: rc 1 and 150 B of stderr survive \`head -n 0\`, \`head -c 1\` and \`head -n 1\`."
 
   # ── KNOWN DEFECTS. Each is a live instance of card#6911 awaiting the two-mechanism fix. They

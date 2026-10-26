@@ -165,9 +165,11 @@ jobs:
           - ci-gate-selftest
           - composite-action-wiring-selftest
           - composite-step-run-selftest
+          - decision-log-selftest
           - dependabot-reconcile-selftest
           - dl-a0-backfill-triaged-selftest
           - dl-a1-register-field-selftest
+          - dl-collision-gate-selftest
           - drift-check-fixture-selftest
           - e2e-harness-containment-selftest
           - fetch-board-cards-caller-claims-selftest
@@ -193,6 +195,7 @@ jobs:
           - path-link-recipe-selftest
           - piped-match-gate-selftest
           - pipeline-free-match-selftest
+          - pr-base-snapshot-selftest
           - prelude-shadow-selftest
           - promote-completeness-gate-selftest
           - promote-move-readback-selftest
