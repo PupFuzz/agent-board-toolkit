@@ -258,7 +258,8 @@ echo "== the declared trigger list: action.yml and INSTALL.md §6f's workflow na
 # Two copies that cannot be one: action.yml's description is the action's own declaration, and
 # §6f's workflow is YAML a consumer copies whole. README points at §6f rather than restating it.
 # Each list is read as a SET (order carries no meaning in `types:`); an empty read is a failure,
-# so a reflowed or renamed line reds here instead of comparing two empties.
+# so a renamed or unreadable list reds here instead of comparing two empties (a list reflowed
+# across lines is still read).
 # action_types <action.yml> / install_types <INSTALL.md> — the event types, sorted, comma-joined.
 _types_set() { tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sort | paste -sd, -; }
 action_types() {
