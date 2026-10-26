@@ -197,10 +197,9 @@ _TARGET_BRANCH_FENCE_REMEDY = (
 )
 
 
-def _refuse_unclosed(path: str, label: str, unclosed) -> bool:
+def _refuse_unclosed(path: str, label: str, unclosed, remedy: str = _TARGET_BRANCH_FENCE_REMEDY) -> bool:
     if unclosed is None:
         return False
-    remedy = _TARGET_BRANCH_FENCE_REMEDY if label in ("base", "target") else "Close the fence."
     print(
         f"decision-log: the {label} log {path} opens a code fence at line {unclosed} that is never "
         "closed. Every `## DL-` heading after that line renders as code and was NOT scanned, so no "
@@ -208,6 +207,46 @@ def _refuse_unclosed(path: str, label: str, unclosed) -> bool:
         file=sys.stderr,
     )
     return True
+
+
+def _refuse_head_unclosed(args, unclosed) -> None:
+    """Refuse an unclosed head fence, saying WHOSE it is and so which remedy applies.
+
+    Head is base plus this change, so a fence left open on the target branch is open at head too:
+    head alone cannot tell an inherited fence from one this change opened. With `--base`/`--target`
+    the fence is the target branch's when EITHER of them is unclosed — base (head inherited it) or
+    target (the change will merge into it) — and only then; otherwise it is this change's. Bound: a
+    head that ALSO carries a fence of this change's own (one opened below an inherited fence the
+    change closed, or one beside a fence only the live target gained) is reported as the target's
+    alone. That is still the first fix — the target's fence refuses every change — and the
+    change's own fence is named on the run after it.
+    """
+    if args.base is None:
+        _refuse_unclosed(
+            args.head, "head", unclosed,
+            "Close the fence. (A head-only run cannot tell a fence this change opened from one it "
+            "inherited from the target branch; given --base and --target it says which.)",
+        )
+        return
+    base_unclosed = _scan(args.base, "base")[3]
+    target_unclosed = _scan(args.target, "target")[3]
+    sides = [label for label, line in (("base", base_unclosed), ("target", target_unclosed)) if line is not None]
+    if not sides:
+        _refuse_unclosed(
+            args.head, "head", unclosed,
+            "Neither the base nor the target log ends inside a fence, so this fence is this "
+            "change's. Close the fence.",
+        )
+        return
+    which = "the base and target logs end" if len(sides) == 2 else f"the {sides[0]} log ends"
+    print(
+        f"decision-log: the head log {args.head} opens a code fence at line {unclosed} that is "
+        f"never closed, and the fence is the TARGET BRANCH's, not this change's: {which} inside an "
+        "unclosed fence too (named below), and head is base plus this change.",
+        file=sys.stderr,
+    )
+    _refuse_unclosed(args.base, "base", base_unclosed)
+    _refuse_unclosed(args.target, "target", target_unclosed)
 
 
 def cmd_check(args) -> int:
@@ -251,9 +290,29 @@ def cmd_check(args) -> int:
         because refusing it would red every innocent PR cut after it landed. A change that EDITS
         an inherited placeholder's wording is adding one, and is refused. A HEAD-ONLY run refuses
         EVERY placeholder, because with no base it cannot tell added from inherited.
+
+    AN UNCLOSED FENCE (rc 8) at head is refused before any assertion runs, and on base or target
+    before the assertions that read them. The predicate — not its caller — says whose a head fence
+    is, because that decides the remedy: `_refuse_head_unclosed` owns the rule. A fence open on
+    base or target is the target branch's, which no change can clear; a HEAD-ONLY run cannot tell
+    inherited from added, and says so. Because that verdict reads base and target, the
+    `--base`/`--target` pairing is checked before any log is read: rc 2 outranks every other
+    status on a half-paired invocation.
     """
+    if (args.base is None) != (args.target is None):
+        # Half the inputs would run half the assertion and still print OK — a clean result over
+        # an unnamed population. Neither, or both. Checked before any log is read, because the
+        # head-fence verdict below already reads base and target to say whose the fence is.
+        print(
+            "decision-log: --base and --target are given together or not at all "
+            "(one alone would report OK having skipped assertion 2).",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
     head_headers, head_skipped, head_unnumbered, head_unclosed = _scan(args.head, "head")
-    if _refuse_unclosed(args.head, "head", head_unclosed):
+    if head_unclosed is not None:
+        _refuse_head_unclosed(args, head_unclosed)
         return EXIT_UNCLOSED_FENCE
 
     seen = {}
@@ -266,16 +325,6 @@ def cmd_check(args) -> int:
             )
             return EXIT_DUPLICATE_AT_HEAD
         seen[number] = lineno
-
-    if (args.base is None) != (args.target is None):
-        # Half the inputs would run half the assertion and still print OK — a clean result over
-        # an unnamed population. Neither, or both.
-        print(
-            "decision-log: --base and --target are given together or not at all "
-            "(one alone would report OK having skipped assertion 2).",
-            file=sys.stderr,
-        )
-        return EXIT_USAGE
 
     if args.base is None:
         if _refuse_unnumbered(args.head, head_unnumbered):

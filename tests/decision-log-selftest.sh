@@ -104,6 +104,29 @@ eq "a head log ending inside a fence is rc 8" 8 "$RC"
 eq "…naming the line the fence opened on" true "$(has 'opens a code fence at line 5 that is never closed' "$ERR")"
 eq "…and a HEAD fence's remedy is to close it in this change" true "$(has 'population. Close the fence.' "$ERR")"
 eq "…not the target-branch remedy" false "$(has 'ON THE TARGET BRANCH' "$ERR")"
+eq "…and a HEAD-ONLY run says it cannot tell an inherited fence from an added one" true \
+   "$(has 'A head-only run cannot tell a fence this change opened from one it inherited' "$ERR")"
+# OWNERSHIP, on the paired invocation: head is base plus this change, so a fence open on the target
+# branch is open at head too. The predicate reads base/target to say whose it is.
+chk --head "$(w head.md "$unclosed")" --base "$(w base.md "$(log 100)")" --target "$(w target.md "$(log 100)")"
+eq "a fence ONLY this change opened is rc 8" 8 "$RC"
+eq "…named as this change's" true "$(has 'Neither the base nor the target log ends inside a fence, so this fence is this change'"'"'s.' "$ERR")"
+eq "…whose remedy is to close it" true "$(has 'Close the fence.' "$ERR")"
+eq "…not the target-branch remedy" false "$(has 'ON THE TARGET BRANCH' "$ERR")"
+eq "…and no head-only caveat (base/target were read)" false "$(has 'A head-only run' "$ERR")"
+inherited_base=$'# Decision log\n\n## DL-100 — a\n\n```\nnever closed\n'
+chk --head "$(w head.md "$inherited_base"$'\n## DL-101 — appended under it\n')" --base "$(w base.md "$inherited_base")" --target "$(w target.md "$inherited_base")"
+eq "a fence INHERITED from base and target is rc 8" 8 "$RC"
+eq "…named as the target branch's, naming both unclosed sides" true \
+   "$(has 'the fence is the TARGET BRANCH'"'"'s, not this change'"'"'s: the base and target logs end inside an unclosed fence too' "$ERR")"
+eq "…with the target-branch remedy" true "$(has 'Close the fence ON THE TARGET BRANCH, by a path this check does not block' "$ERR")"
+eq "…NOT the change-side remedy" false "$(has 'Close the fence.' "$ERR")"
+chk --head "$(w head.md "$inherited_base")" --base "$(w base.md "$inherited_base")" --target "$(w target.md "$(log 100)")"
+eq "a fence open on base only (target since closed it) is still the target branch's" true \
+   "$(has 'the base log ends inside an unclosed fence too' "$ERR")"
+eq "…NOT the change-side remedy" false "$(has 'Close the fence.' "$ERR")"
+chk --head "$(w head.md "$unclosed")" --base "$(w base.md "$(log 100)")"
+eq "--base without --target is usage (rc 2) even over an unclosed head: ownership needs both" 2 "$RC"
 chk --head "$(w head.md "$(log 293 294)")" --base "$(w base.md $'## DL-293 — a\n\n```\n## DL-294 — hidden\n')" --target "$(w target.md "$(log 293)")"
 eq "an unclosed fence in the BASE log is rc 8 (it would invent mints)" 8 "$RC"
 eq "…naming the base log" true "$(has 'the base log' "$ERR")"
