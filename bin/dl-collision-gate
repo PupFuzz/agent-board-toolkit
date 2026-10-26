@@ -142,12 +142,18 @@ case "$rc" in
   8)
     _put "::error::a decision log this gate read ends inside an unclosed code fence (named above)."
     _put "Every heading after the fence renders as code and was not scanned, so no verdict here would describe the log's real population."
-    # WHOSE fence it is decides the remedy. The predicate reads head first and refuses before it
-    # opens base or target, so a head-only run answering 8 says it is this PR's; anything else
-    # says it is $BASE_REF's, which no PR can clear — the one that closes it is refused too.
-    hrc=0
-    python3 "$PREDICATE" check --head "$LOG" >/dev/null 2>&1 || hrc=$?
-    if [ "$hrc" = 8 ]; then
+    # WHOSE fence it is decides the remedy, and only the target-branch side can say. Head is base
+    # plus this PR, so a fence left open on $BASE_REF is open at head too: a head-side read cannot
+    # tell an inherited fence from one this PR opened. If the base snapshot or the live target
+    # answers 8 on its own, the fence is $BASE_REF's, which no PR can clear — the one that closes
+    # it is refused too. Otherwise both are closed and the open fence is this PR's.
+    owner=pr
+    for side in "$work/base.md" "$work/target.md"; do
+      src=0
+      python3 "$PREDICATE" check --head "$side" >/dev/null 2>&1 || src=$?
+      [ "$src" = 8 ] && owner=target
+    done
+    if [ "$owner" = pr ]; then
       _put "Fix: close the fence."
     else
       _put "Fix: close the fence on $BASE_REF itself, by a path this gate does not block — a direct push, or a merge that bypasses this required check. This PR cannot clear it: the gate reads that fence from $BASE_REF, so a PR closing it is refused like any other. Then push to this PR so the gate runs on a merge built over the fixed tip."

@@ -109,6 +109,32 @@ eq "…and is told to close it on dev itself, by a path the gate does not block"
    "$(has 'Fix: close the fence on dev itself, by a path this gate does not block' "$OUT")"
 eq "…not the head-side remedy" false "$(has_line 'Fix: close the fence.' "$OUT")"
 
+# A fence INHERITED from the base: the PR only appends an entry, which lands inside the base's open
+# fence. Head is base plus the PR, so head is unclosed too — a head-side ownership read names the
+# PR's remedy here, which the PR cannot act on. Only the base/target side can say whose it is.
+make "$(log 293)"$'
+```
+never closed
+' "$(log 293)"$'
+```
+never closed
+'"$(log 294 | tail -n +5)"
+gate
+eq "a PR appending under the base's unclosed fence is refused" 1 "$RC"
+eq "…and is told to close it on dev itself (the fence is the target branch's)" true \
+   "$(has 'Fix: close the fence on dev itself, by a path this gate does not block' "$OUT")"
+eq "…not the head-side remedy" false "$(has_line 'Fix: close the fence.' "$OUT")"
+
+# The target alone gains the open fence after the merge was built: base and head are closed.
+make "$(log 293)" "$(log 293 294)" "$(log 293)"$'
+```
+never closed
+'
+gate
+eq "a fence the live target gained after this PR's merge was built is refused" 1 "$RC"
+eq "…with the target-branch remedy" true \
+   "$(has 'Fix: close the fence on dev itself, by a path this gate does not block' "$OUT")"
+
 make "$(log 293)" "$(log 293 294)" "$(log 293)"$'\n  ## DL-294 — an indented heading\n'
 gate
 eq "an INDENTED heading the target took is still a collision (H2)" 1 "$RC"
