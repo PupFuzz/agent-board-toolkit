@@ -122,15 +122,35 @@ eq "…named as the target branch's, naming both unclosed sides" true \
 eq "…with the target-branch remedy" true "$(has 'Close the fence ON THE TARGET BRANCH, by a path this check does not block' "$ERR")"
 eq "…NOT the change-side remedy" false "$(has 'Close the fence.' "$ERR")"
 chk --head "$(w head.md "$inherited_base")" --base "$(w base.md "$inherited_base")" --target "$(w target.md "$(log 100)")"
-eq "a fence open on base only (target since closed it) is still the target branch's" true \
+eq "a fence open on base only (target since closed it) is inherited, not this change's" true \
    "$(has 'the base log ends inside an unclosed fence too' "$ERR")"
+eq "…and the remedy says the target branch has since closed it: update this change" true \
+   "$(has 'The target branch has since closed it' "$ERR")"
+eq "…NOT 'close it on the target branch', which is already done" false "$(has 'ON THE TARGET BRANCH' "$ERR")"
 eq "…NOT the change-side remedy" false "$(has 'Close the fence.' "$ERR")"
+# Base CLOSED, so head's fence was opened by this change, even when the live target has gained one
+# of its own: each is reported with its own owner's remedy.
+chk --head "$(w head.md "$unclosed")" --base "$(w base.md "$(log 100)")" --target "$(w target.md "$inherited_base")"
+eq "a head fence over a CLOSED base is this change's, even beside an open target" true \
+   "$(has "The base log ends outside a fence, so this fence is this change's. Close the fence." "$ERR")"
+eq "…NOT named as the target branch's" false "$(has "the fence is the TARGET BRANCH's" "$ERR")"
+eq "…and the target's own fence is refused beside it, with the target-branch remedy" true \
+   "$(has 'Close the fence ON THE TARGET BRANCH, by a path this check does not block' "$ERR")"
+eq "…still rc 8" 8 "$RC"
 chk --head "$(w head.md "$unclosed")" --base "$(w base.md "$(log 100)")"
 eq "--base without --target is usage (rc 2) even over an unclosed head: ownership needs both" 2 "$RC"
+printf '\xff\xfe not utf-8\n' > "$TMP/badbase.md"
+chk --head "$(w head.md "$unclosed")" --base "$TMP/badbase.md" --target "$(w target.md "$(log 100)")"
+eq "an unreadable base beside an unclosed head is rc 2: ownership reads base first" 2 "$RC"
+eq "…saying it cannot read it" true "$(has 'cannot read the base decision log' "$ERR")"
 chk --head "$(w head.md "$(log 293 294)")" --base "$(w base.md $'## DL-293 — a\n\n```\n## DL-294 — hidden\n')" --target "$(w target.md "$(log 293)")"
 eq "an unclosed fence in the BASE log is rc 8 (it would invent mints)" 8 "$RC"
 eq "…naming the base log" true "$(has 'the base log' "$ERR")"
-eq "…whose remedy is the TARGET BRANCH, which no change can clear" true "$(has 'Close the fence ON THE TARGET BRANCH, by a path this check does not block' "$ERR")"
+eq "…and, the live target having closed it since, the remedy is to update this change" true "$(has 'The target branch has since closed it' "$ERR")"
+eq "…not to close what is already closed" false "$(has 'ON THE TARGET BRANCH' "$ERR")"
+chk --head "$(w head.md "$(log 293 294)")" --base "$(w base.md $'## DL-293 — a\n\n```\n## DL-294 — hidden\n')" --target "$(w target.md $'## DL-293 — a\n\n```\n## DL-294 — hidden\n')"
+eq "a BASE fence the target still carries is the TARGET BRANCH's, which no change can clear" true "$(has 'Close the fence ON THE TARGET BRANCH, by a path this check does not block' "$ERR")"
+eq "…not the since-closed remedy" false "$(has 'has since closed it' "$ERR")"
 chk --head "$(w head.md "$(log 293 294)")" --base "$(w base.md "$(log 293)")" --target "$(w target.md $'## DL-293 — a\n\n~~~\n## DL-294 — hidden\n')"
 eq "an unclosed fence in the TARGET log is rc 8 (it would hide the collision)" 8 "$RC"
 eq "…with the same target-branch remedy" true "$(has 'Close the fence ON THE TARGET BRANCH' "$ERR")"
