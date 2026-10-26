@@ -616,8 +616,11 @@ on:
   pull_request:
     # NO `paths:` filter: one that stops matching makes this gate absent, not red.
     # `synchronize` re-reads the target tip — the only way the second of two concurrently
-    # minted numbers is ever caught.
-    types: [opened, reopened, synchronize]
+    # minted numbers is ever caught. `edited` is the only event a RETARGET fires: without it a
+    # PR moved to another base keeps a verdict judged against the old target (§6c says why).
+    # A title or body edit fires it too, which only re-runs a check that executes no code from
+    # the PR and whose verdict neither field changes.
+    types: [opened, edited, reopened, synchronize]
 permissions:
   contents: read
 jobs:

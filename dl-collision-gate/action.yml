@@ -9,9 +9,13 @@ description: >-
   PASS until one merges and the other re-runs). Consume this action SHA-pinned
   (uses: <owner>/agent-board-toolkit/dl-collision-gate@<full-SHA>  # vX.Y.Z)
   so dependabot's github-actions ecosystem tracks and bumps it.
-  RUN IT ON `pull_request: [opened, reopened, synchronize]` with NO `paths:`
-  filter — a filter that stops matching makes the gate absent, not red; and
-  `synchronize` is what re-reads the target tip.
+  RUN IT ON `pull_request: [opened, edited, reopened, synchronize]` with NO
+  `paths:` filter — a filter that stops matching makes the gate absent, not
+  red; `synchronize` is what re-reads the target tip; and `edited` is the only
+  event a change of the PR's base branch fires, so without it a retargeted PR
+  keeps a verdict judged against the old target. A title or body edit fires
+  `edited` too, which only re-runs a check that executes no code from the PR
+  and whose verdict neither field changes.
   PRECONDITIONS in the calling job:
   (1) check out the consumer repo with the DEFAULT ref (on a pull_request event
   the refs/pull/N/merge commit — the base snapshot is that merge's FIRST
