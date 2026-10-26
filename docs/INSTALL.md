@@ -605,6 +605,42 @@ jobs:
 
 **Vendoring instead (§6b)?** Vendor `bin/changelog-gate` together with `bin/release-artifacts-check`: the gate execs it from its own directory for the release classification, on every pull-request run, and refuses at rc 2 by name when it is missing. §6b's derivation recipe prints that dependency for the version you are vendoring. Run it as `changelog-gate --base <sha> --head <sha> --title <title> --head-ref <branch>` on a pull request, and with no arguments on a push.
 
+### 6f. GitHub Actions consumer — the decision-log collision gate
+
+Consume `dl-collision-gate` via the [`dl-collision-gate/`](../dl-collision-gate/action.yml) composite action, SHA-pinned on the same terms as §6a. It refuses a pull request whose decision log (`CLAUDE_DECISIONS.md` by default) uses one `## DL-NNN` number twice, mints a number already on the live tip of its target branch, adds a DL heading with no well-formed number, or ends inside an unclosed code fence. [`bin/_decision-log.py`](../bin/_decision-log.py)'s docstring owns the grammar, the predicate and its bound; [`bin/dl-collision-gate`](../bin/dl-collision-gate)'s `--help` header owns the steps. Neither is restated here.
+
+```yaml
+name: DL collision gate
+on:
+  pull_request:
+    # NO `paths:` filter: one that stops matching makes this gate absent, not red.
+    # `synchronize` re-reads the target tip — the only way the second of two concurrently
+    # minted numbers is ever caught.
+    types: [opened, reopened, synchronize]
+permissions:
+  contents: read
+jobs:
+  dl-collision-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<full-40-char-SHA>  # vX.Y.Z
+        with:
+          fetch-depth: 0     # REQUIRED — and keep the default ref: the base snapshot is HEAD^1 of the PR merge
+      - uses: <owner>/agent-board-toolkit/dl-collision-gate@<full-40-char-SHA>  # vX.Y.Z
+        with:
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          base-ref: ${{ github.event.pull_request.base.ref }}
+          # log-path: CLAUDE_DECISIONS.md   # optional; the default
+```
+
+**Keep the checkout's default `ref:`.** On a pull request it is the `refs/pull/N/merge` commit, and the gate pairs the work tree with that merge's first parent (`bin/pr-base-snapshot`); a work tree that is not this PR's merge is refused at rc 2, never given a guessed base. **The bound people assume away:** two open PRs that each mint the same new number both pass, because neither number is on the target branch yet; the second reds on its first run after the first merges.
+
+**Exit status.** `1` is a refusal (a verdict about the log). `2` means the gate measured nothing — usage, no base snapshot, the log unreadable at base or target, the fetch failed, or the predicate exited with a status the gate does not enumerate. Both fail the step.
+
+**Vendoring instead (§6b)?** Vendor `bin/dl-collision-gate`, `bin/pr-base-snapshot` and `bin/_decision-log.py` together: the gate runs both from its own directory and refuses at rc 2 by name when either is missing. Run it as `dl-collision-gate --head-sha <sha> --base-ref <branch> [--log PATH]` inside the PR merge checkout.
+
+**Reading the grammar from another tool.** A consumer that must agree with the gate on what an entry is (an allocator's local-log veto, say) path-loads `bin/_decision-log.py` and calls `header_scan` / `header_numbers` — the module docstring declares that contract, and `tests/decision-log-selftest.sh` checks it. The grammar reads top-level ATX `## DL-` headings only; a setext H2 or a heading inside a blockquote or list item is not read (the grammar comment names these).
+
 ## Worked example (host install, primary board named `dev`)
 
 ```bash

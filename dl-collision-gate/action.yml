@@ -1,0 +1,54 @@
+name: 'dl-collision-gate'
+description: >-
+  Refuse a pull request whose decision log mints a `## DL-NNN` number already
+  in use on the target branch, uses one number twice, adds a DL heading that
+  carries no well-formed number, or ends inside an unclosed code fence. Thin
+  composite wrapper around bin/dl-collision-gate — all logic stays in the
+  script, whose `--help` header owns the steps and bin/_decision-log.py owns
+  the predicate and its bound (TWO OPEN PRs MINTING THE SAME NEW NUMBER BOTH
+  PASS until one merges and the other re-runs). Consume this action SHA-pinned
+  (uses: <owner>/agent-board-toolkit/dl-collision-gate@<full-SHA>  # vX.Y.Z)
+  so dependabot's github-actions ecosystem tracks and bumps it.
+  RUN IT ON `pull_request: [opened, reopened, synchronize]` with NO `paths:`
+  filter — a filter that stops matching makes the gate absent, not red; and
+  `synchronize` is what re-reads the target tip.
+  PRECONDITIONS in the calling job:
+  (1) check out the consumer repo with the DEFAULT ref (on a pull_request event
+  the refs/pull/N/merge commit — the base snapshot is that merge's FIRST
+  PARENT, and a work tree that is not this PR's merge is refused) and
+  fetch-depth: 0;
+  (2) the `origin` remote must be able to fetch the target branch;
+  (3) python3 and git on PATH (GitHub-hosted runners ship both);
+  (4) `contents: read` is sufficient.
+  Any non-zero status fails the step: 1 is a refusal, 2 is "measured nothing"
+  (including any predicate status the script does not enumerate).
+
+inputs:
+  head-sha:
+    description: "The PR's head commit (pass github.event.pull_request.head.sha)."
+    required: true
+  base-ref:
+    description: "The PR's target branch NAME (pass github.event.pull_request.base.ref)."
+    required: true
+  log-path:
+    description: 'The decision log, relative to the workspace root.'
+    required: false
+    default: 'CLAUDE_DECISIONS.md'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: A DL number this PR mints is not already in use
+      shell: bash
+      # Passed through the environment, never interpolated into the run: body — a
+      # `${{ }}` expansion inside a run: script is textual substitution into the shell
+      # source, i.e. the Actions script-injection class.
+      env:
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_REF: ${{ inputs.base-ref }}
+        LOG_PATH: ${{ inputs.log-path }}
+      run: |
+        # Every input is passed unconditionally: each is required or has a meaningful default,
+        # so a blank one is a wiring error and the script refuses it at rc 2 (fail closed).
+        "$GITHUB_ACTION_PATH/../bin/dl-collision-gate" \
+          --head-sha "$HEAD_SHA" --base-ref "$BASE_REF" --log "$LOG_PATH"
