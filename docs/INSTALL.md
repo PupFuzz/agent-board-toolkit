@@ -652,13 +652,13 @@ git show origin/<target-branch>:CLAUDE_DECISIONS.md > /tmp/target-log.md
 python3 ~/agent-board-toolkit/bin/_decision-log.py check --head /tmp/target-log.md; echo "rc=$?"
 ```
 
-`rc=0` is clean. `rc=8` is the unclosed fence and `rc=5` the duplicate (each named on stderr): fix it first. `rc=7` is **not** a blocker, and is reached only once neither of those holds: run without `--base`/`--target`, the check refuses every placeholder heading (`## DL-TBD`), while the gate refuses only one a PR adds, so placeholders already on the target branch pass it. This list is the one statement of these preconditions; [`UPGRADE.md`](UPGRADE.md) §6 (v0.51.0) points here.
+`rc=0` is clean. `rc=8` is the unclosed fence and `rc=5` the duplicate (each named on stderr): fix it first. `rc=7` is **not** a blocker, and is reached only once neither of those holds: run without `--base`/`--target`, the check refuses every placeholder heading (`## DL-TBD`), while the gate refuses only one a PR adds, so placeholders already on the target branch pass it. This list is the one statement of both preconditions.
 
 **Exit status.** `1` is a refusal (a verdict about the log). `2` means the gate measured nothing — usage, no base snapshot, the log unreadable at base or target, the fetch failed, or the predicate exited with a status the gate does not enumerate. Both fail the step.
 
 **Vendoring instead (§6b)?** Vendor `bin/dl-collision-gate`, `bin/pr-base-snapshot` and `bin/_decision-log.py` together: the gate runs both from its own directory and refuses at rc 2 by name when either is missing. Run it as `dl-collision-gate --head-sha <sha> --base-ref <branch> [--log PATH]` inside the PR merge checkout.
 
-**Reading the grammar from another tool.** A consumer that must agree with the gate on what an entry is (an allocator's local-log veto, say) path-loads `bin/_decision-log.py` and calls `header_scan` / `header_numbers` — the module docstring declares that contract, and `tests/decision-log-selftest.sh` checks it. A shell tool runs `_decision-log.py floor <log>` instead, which prints the highest number one log holds; `next-dl`'s offline `max+1` scan does. The grammar reads top-level ATX `## DL-` headings only; a setext H2 or a heading inside a blockquote or list item is not read (the grammar comment names these).
+**Reading the grammar from another tool.** A consumer that must agree with the gate on what an entry is (an allocator's local-log veto, say) path-loads `bin/_decision-log.py` and calls `header_scan` / `header_numbers` — the module docstring declares that contract, and `tests/decision-log-selftest.sh` checks it. A shell tool runs `_decision-log.py floor <log>` instead, which prints the highest number one log holds, deliberately counting headings inside a code fence that the gate skips (`cmd_floor`'s docstring says why); `next-dl`'s offline `max+1` scan does. The grammar reads top-level ATX `## DL-` headings only; a setext H2 or a heading inside a blockquote or list item is not read (the grammar comment names these).
 
 ## Worked example (host install, primary board named `dev`)
 

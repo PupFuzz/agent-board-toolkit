@@ -254,4 +254,30 @@ make "$(log 293)" "$(log 293)"
 RC=0; OUT="$(cd "$WORK" && "$STEPRUN" "$ROOT/dl-collision-gate" --input head-sha= --input base-ref=dev 2>&1)" || RC=$?
 eq "a blank head-sha input fails closed at rc 2" 2 "$RC"
 
+echo "== the declared trigger list: action.yml and INSTALL.md §6f's workflow name one set =="
+# Two copies that cannot be one: action.yml's description is the action's own declaration, and
+# §6f's workflow is YAML a consumer copies whole. README points at §6f rather than restating it.
+# Each list is read as a SET (order carries no meaning in `types:`); an empty read is a failure,
+# so a reflowed or renamed line reds here instead of comparing two empties.
+# action_types <action.yml> / install_types <INSTALL.md> — the event types, sorted, comma-joined.
+_types_set() { tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sort | paste -sd, -; }
+action_types() {
+  tr '\n' ' ' <"$1" | tr -s ' ' | sed -n 's/.*`pull_request: \[\([^]]*\)\]`.*/\1/p' | _types_set
+}
+install_types() {
+  awk '/^### 6f\./ {on=1; next} on && /^##/ {exit} on' "$1" \
+    | sed -n 's/^[[:space:]]*types:[[:space:]]*\[\([^]]*\)\].*/\1/p' | _types_set
+}
+A_TYPES="$(action_types "$ROOT/dl-collision-gate/action.yml")"
+I_TYPES="$(install_types "$ROOT/docs/INSTALL.md")"
+eq "action.yml's trigger list was read" true "$([ -n "$A_TYPES" ] && echo true || echo false)"
+eq "INSTALL.md §6f's trigger list was read" true "$([ -n "$I_TYPES" ] && echo true || echo false)"
+eq "INSTALL.md §6f's workflow lists the event types action.yml declares" "$A_TYPES" "$I_TYPES"
+sed 's/types: \[opened, edited, reopened, synchronize\]/types: [opened, reopened, synchronize]/' \
+  "$ROOT/docs/INSTALL.md" >"$TMP/INSTALL-drift.md"
+eq "control: the drift fixture really differs from INSTALL.md" false \
+   "$(cmp -s "$ROOT/docs/INSTALL.md" "$TMP/INSTALL-drift.md" && echo true || echo false)"
+eq "control: the §6f reader sees a list missing \`edited\` as a different set" "edited,opened,reopened,synchronize|opened,reopened,synchronize" \
+   "$I_TYPES|$(install_types "$TMP/INSTALL-drift.md")"
+
 _summary "dl-collision-gate-selftest"
