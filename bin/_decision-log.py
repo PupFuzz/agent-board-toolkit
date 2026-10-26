@@ -9,11 +9,14 @@ how a gate and an allocator come to disagree about what an entry is.
 
 USAGE
     _decision-log.py check --head FILE [--base FILE --target FILE]
+    _decision-log.py floor FILE
     _decision-log.py --tool-version
 
 `bin/dl-collision-gate` is the CI entry point and the one most callers want: it derives the three
 files from a `pull_request` checkout and maps each exit status below to a verdict. This file is the
-predicate over three files already on disk, and the importable grammar.
+predicate over three files already on disk, and the importable grammar. `floor` reads the same
+heading grammar for an allocator, deliberately counting more than `check` does: `bin/next-dl`'s
+offline max+1 scan runs it over each local log (`cmd_floor` owns what it counts, and why).
 
 THE IMPORT CONTRACT — a cross-repo seam, declared here. `tests/decision-log-selftest.sh`
 (§ import contract) path-loads this file and asserts both return shapes on one fixture; it checks
@@ -37,6 +40,9 @@ EXIT CODES (check) — the contract a caller maps:
   6  a number this change adds is already in use on the target branch
   7  this change adds a DL heading that carries no well-formed number
   8  a log read ends inside an UNCLOSED code fence, so its population cannot be measured
+
+EXIT CODES (floor): 0 with the number on stdout (an empty line: the log holds none), 2 the log could
+not be read, 8 it ends inside an unclosed code fence.
 """
 
 import argparse
@@ -82,6 +88,9 @@ EXIT_UNCLOSED_FENCE = 8
 # every DL heading, as defined above, between them.
 _DL_H2 = re.compile(r"^ {0,3}##[ \t]+DL-")
 _HEADER = re.compile(r"^ {0,3}##[ \t]+DL-0*(\d+)\b")
+# `_HEADER` without its word boundary: the digits ANY DL heading starts with (`## DL-0344a` → 344).
+# Read by `cmd_floor` alone, which counts every DL heading's digits (its docstring says why).
+_LEADING_DIGITS = re.compile(r"^ {0,3}##[ \t]+DL-0*(\d+)")
 # A fence opens on ``` or ~~~ and closes on a line starting with the same characters.
 _FENCE = re.compile(r"^\s*(```|~~~)")
 
@@ -178,13 +187,24 @@ def _refuse_unnumbered(path: str, unnumbered) -> bool:
     return bool(unnumbered)
 
 
+# The base and target logs are the TARGET BRANCH's, not the change's, so a change cannot clear
+# them: one that closes the fence is refused on the same unclosed base/target as every other.
+_TARGET_BRANCH_FENCE_REMEDY = (
+    "Close the fence ON THE TARGET BRANCH, by a path this check does not block (a direct push, or "
+    "a merge that bypasses it); a change that closes it is refused like any other, because this "
+    "log is read from the target branch. Then update this change so it is checked against the new "
+    "tip."
+)
+
+
 def _refuse_unclosed(path: str, label: str, unclosed) -> bool:
     if unclosed is None:
         return False
+    remedy = _TARGET_BRANCH_FENCE_REMEDY if label in ("base", "target") else "Close the fence."
     print(
         f"decision-log: the {label} log {path} opens a code fence at line {unclosed} that is never "
         "closed. Every `## DL-` heading after that line renders as code and was NOT scanned, so no "
-        "verdict over this log would describe its real population. Close the fence.",
+        f"verdict over this log would describe its real population. {remedy}",
         file=sys.stderr,
     )
     return True
@@ -307,6 +327,43 @@ def cmd_check(args) -> int:
     return 0
 
 
+def cmd_floor(args) -> int:
+    """Print the highest DL number a max+1 allocator must stay above, read from one local log.
+
+    The digits of EVERY DL heading (`_DL_H2`'s indentation rule), fenced or not, well-formed or
+    not. An allocator that over-counts costs a gap in the sequence; one that under-counts re-mints
+    a number already in use. So `floor` is deliberately WIDER than `check`'s entries: it does not
+    apply the fence skip, because `_FENCE` also matches lines that open no fence (a paragraph
+    starting with an inline code span, a backtick run indented as code), and two such lines would
+    hide every real heading between them. It counts the digits of a heading carrying no
+    well-formed number (`## DL-0344a` adds 344), which may be the entry a number was meant for. A
+    placeholder with no digits (`## DL-TBD`) adds nothing and is not refused, since it is what an
+    author writes before allocating. A log ending inside an unclosed fence is refused (rc 8): the
+    gate refuses the same log, so a number minted over it could not land as written.
+    """
+    text = _read(args.log, "local")
+    _, _, unnumbered, unclosed = header_scan(text)
+    if unclosed is not None:
+        print(
+            f"decision-log: the local log {args.log} opens a code fence at line {unclosed} that is "
+            "never closed. dl-collision-gate refuses a log in that state, so a number minted over it "
+            "could not land as written. Close the fence.",
+            file=sys.stderr,
+        )
+        return EXIT_UNCLOSED_FENCE
+    for heading, lineno in unnumbered:
+        m = _LEADING_DIGITS.match(heading)
+        if m:
+            print(
+                f"decision-log: {args.log} line {lineno} carries no well-formed DL number ({heading}); "
+                f"its DL-{int(m.group(1))} is counted toward the floor anyway.",
+                file=sys.stderr,
+            )
+    numbers = [int(m.group(1)) for m in map(_LEADING_DIGITS.match, text.splitlines()) if m]
+    print(max(numbers) if numbers else "")
+    return 0
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # Answered before anything else is parsed or read, so a vendored copy can say what it is.
@@ -327,8 +384,12 @@ def main(argv=None) -> int:
         "event's base.sha",
     )
     p_check.add_argument("--target", help="the decision log at the live tip of the target branch")
+    p_check.set_defaults(func=cmd_check)
+    p_floor = sub.add_parser("floor", help="print the highest DL number one local log holds")
+    p_floor.add_argument("log", help="the decision log to read")
+    p_floor.set_defaults(func=cmd_floor)
     args = parser.parse_args(argv)
-    return cmd_check(args)
+    return args.func(args)
 
 
 if __name__ == "__main__":

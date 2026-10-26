@@ -93,7 +93,8 @@
 #
 # The offline max+1 scan — the FALLBACK for both modes — takes the max over BOTH:
 #   (1) `## DL-NNN` headers in CLAUDE_DECISIONS.md across every local checkout
-#       (so an in-flight DL on a worktree / held PR can't be reused), AND
+#       (so an in-flight DL on a worktree / held PR can't be reused), read through
+#       bin/_decision-log.py's grammar — the one dl-collision-gate judges a PR by — AND
 #   (2) the project's kanban board's stamped `dl_number`s.
 # (2) closes the collision gap that caused the DL-154 reuse (board card #2643).
 # A CONFIGURED BOARD THAT DOES NOT ANSWER A WHOLE READ REFUSES THE MINT (card#6631).
@@ -220,10 +221,8 @@ for pat in "${patterns[@]}"; do
 done
 
 # Highest integer in a stream of text on stdin (leading zeros stripped; empty ⇒ empty).
-# The shared tail of BOTH max scans below — the DL-header scan and the dl_number scan.
+# The tail of the board's dl_number scan below.
 max_int() { grep -oE '[0-9]+' | sed 's/^0*//;s/^$/0/' | sort -n | tail -1; }
-# Highest DL number found in a stream of text on stdin (tolerates any DL-NNN form).
-max_dl() { grep -oE 'DL-[0-9]+' | max_int; }
 
 # Resolve api/board/token from config (in a subshell so env never leaks into this
 # script). Echoes "<api>\t<board>\t<token_file>"; non-zero (with a reason on
@@ -669,11 +668,33 @@ fi
 # Offline fallback (either mode): max+1 over local headers + board-stamped dl_numbers.
 max=0
 
-# (1) local CLAUDE_DECISIONS.md headers across all checkouts.
+# (1) local CLAUDE_DECISIONS.md headers across all checkouts, read through the grammar
+# dl-collision-gate judges a PR by — `_decision-log.py floor`, run from beside this script — never a
+# second spelling of it. A heading indented 1-3 spaces renders as a heading and counts. What `floor`
+# counts beyond the gate's entries, and why (a heading inside a code fence, the digits of a suffixed
+# heading such as `## DL-0344a` — an over-count only leaves a gap), is owned by its `cmd_floor`
+# docstring.
+# ⛔ THIS SCAN FEEDS A max+1, SO A LOG IT CANNOT MEASURE REFUSES THE MINT rather than dropping out of
+# the max — the posture the board read below takes (card#6631). That covers a log ending inside an
+# UNCLOSED fence (the gate refuses the same log), a log that cannot be read or decoded, the grammar
+# absent (a vendored next-dl without its sibling) and no python3. The grep this replaced exited 1
+# with nothing on stderr on an unreadable log — and on a log holding no DL heading at all, which now
+# adds nothing and mints — because its no-match status killed the script under pipefail (measured).
+# Only this offline path needs the grammar or python3; the claim and the inspect read do not.
+local_log_max() {   # <log> → its highest DL number on stdout (empty: none); non-zero: refuse
+    local grammar
+    grammar="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/_decision-log.py"
+    [[ -r "$grammar" ]] || { echo "next-dl: the DL heading grammar $grammar is missing or unreadable — REFUSING to mint from the offline scan without it. Vendor bin/_decision-log.py beside next-dl (INSTALL.md §6b), or re-run the install loop (INSTALL.md §2)." >&2; return 1; }
+    command -v python3 >/dev/null || { echo "next-dl: python3 is required to read $1 through _decision-log.py — REFUSING to mint from the offline scan without it." >&2; return 1; }
+    python3 "$grammar" floor "$1" || {
+        echo "next-dl: could not measure the DL floor of $1 (cause above) — REFUSING to mint: a log left out of the offline scan drops its floor, and the number could already be in use." >&2
+        return 1
+    }
+}
 for d in "${globs[@]}"; do
     f="$d/CLAUDE_DECISIONS.md"
     [[ -f "$f" ]] || continue
-    n="$(grep -oE '^## DL-[0-9]+' "$f" 2>/dev/null | max_dl)"
+    n="$(local_log_max "$f")" || exit 1
     [[ -n "$n" && "$n" -gt "$max" ]] && max="$n"
 done
 
