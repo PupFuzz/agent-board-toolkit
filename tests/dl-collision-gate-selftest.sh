@@ -99,19 +99,21 @@ make "$(log 293)" "$(log 293)"$'\n```\nnever closed\n\n## DL-294 — hidden\n'
 gate
 eq "a log this PR leaves inside an unclosed fence is refused (H1)" 1 "$RC"
 eq "…as an unclosed fence" true "$(has 'unclosed code fence' "$OUT")"
-eq "…whose remedy, the fence being this PR's, is to close it" true "$(has_line 'Fix: close the fence.' "$OUT")"
+eq "…whose remedy, the fence being this PR's, is to close it" true \
+   "$(has "so this fence is this change's. Close the fence." "$OUT")"
+eq "…not the target-branch remedy" false "$(has 'ON THE TARGET BRANCH' "$OUT")"
 
 # The PR that CLOSES a fence left open on the target branch is refused too — base is the target's.
 make "$(log 293)"$'\n```\nnever closed\n' "$(log 293)"$'\n```\nclosed here\n```\n'
 gate
 eq "a PR closing the TARGET branch's unclosed fence is still refused" 1 "$RC"
-eq "…and is told to close it on dev itself, by a path the gate does not block" true \
-   "$(has 'Fix: close the fence on dev itself, by a path this gate does not block' "$OUT")"
-eq "…not the head-side remedy" false "$(has_line 'Fix: close the fence.' "$OUT")"
+eq "…and is told to close it on the target branch, by a path the gate does not block" true \
+   "$(has 'Close the fence ON THE TARGET BRANCH, by a path this check does not block' "$OUT")"
+eq "…not the head-side remedy" false "$(has 'Close the fence.' "$OUT")"
 
 # A fence INHERITED from the base: the PR only appends an entry, which lands inside the base's open
-# fence. Head is base plus the PR, so head is unclosed too — a head-side ownership read names the
-# PR's remedy here, which the PR cannot act on. Only the base/target side can say whose it is.
+# fence. Head is base plus the PR, so head is unclosed too; the predicate reads base/target to say
+# the fence is the target branch's, which the PR cannot act on.
 make "$(log 293)"$'
 ```
 never closed
@@ -121,9 +123,11 @@ never closed
 '"$(log 294 | tail -n +5)"
 gate
 eq "a PR appending under the base's unclosed fence is refused" 1 "$RC"
-eq "…and is told to close it on dev itself (the fence is the target branch's)" true \
-   "$(has 'Fix: close the fence on dev itself, by a path this gate does not block' "$OUT")"
-eq "…not the head-side remedy" false "$(has_line 'Fix: close the fence.' "$OUT")"
+eq "…named by the predicate as the target branch's, not this PR's" true \
+   "$(has "the fence is the TARGET BRANCH's, not this change's: the base and target logs end" "$OUT")"
+eq "…and is told to close it on the target branch" true \
+   "$(has 'Close the fence ON THE TARGET BRANCH, by a path this check does not block' "$OUT")"
+eq "…not the head-side remedy" false "$(has 'Close the fence.' "$OUT")"
 
 # The target alone gains the open fence after the merge was built: base and head are closed.
 make "$(log 293)" "$(log 293 294)" "$(log 293)"$'
@@ -133,7 +137,10 @@ never closed
 gate
 eq "a fence the live target gained after this PR's merge was built is refused" 1 "$RC"
 eq "…with the target-branch remedy" true \
-   "$(has 'Fix: close the fence on dev itself, by a path this gate does not block' "$OUT")"
+   "$(has 'Close the fence ON THE TARGET BRANCH, by a path this check does not block' "$OUT")"
+eq "…and the gate names which branch that is" true \
+   "$(has_line "Fix: the remedy named above. A remedy naming THE TARGET BRANCH means 'dev'." "$OUT")"
+eq "…without re-deciding ownership (no remedy text of its own)" false "$(has 'Fix: close the fence' "$OUT")"
 
 make "$(log 293)" "$(log 293 294)" "$(log 293)"$'\n  ## DL-294 — an indented heading\n'
 gate
