@@ -8,8 +8,8 @@
 # once, in the script's header (`KANBAN_WRITEBACK_TOKEN` block); this file holds it.
 #
 # THE LEGS:
-#   § 1  within the Member set — viewer, Member, a custom role granted only Member permissions:
-#        no warning, on stderr or in the summary. The control for § 2-3: a tool that warned on
+#   § 1  within the Member set — viewer, Member, a custom role granted only Member permissions,
+#        the move-only custom role INSTALL § 6a recommends: no warning, on stderr or in the summary. The control for § 2-3: a tool that warned on
 #        every run would pass them.
 #   § 2  beyond it — a custom role granted webhook.manage, an Admin, the owner: the warning fires,
 #        names what is extra (or the ownership), points at INSTALL § 6a.
@@ -103,6 +103,13 @@ eq "⭐ viewer: no warning"                        "false|" "$(has "$WARN" "$err
 # A custom role holding only what a Member has: board.view + the inherited set + create/update/move.
 STUB_ME_BODY="$(me 1 '"board.view","task.create","task.move","task.archive","comment.create"')" run_promote
 eq "⭐ custom role within the Member set: no warning" "false|" "$(has "$WARN" "$err")|$summ"
+eq "…and rc and summary line are a Member run's" "$BASE_RC|$BASE_OUT" "$rc|$out"
+# The recommended setup (INSTALL § 6a step 2, card#12544): a Custom role with only `move` granted.
+# Its effective permissions are board.view, task.move and the set every Custom role inherits
+# (BoardPermissions::CUSTOM_INHERITED_PERMISSIONS on the kanban app's `dev` branch).
+MOVE_ONLY='"board.view","task.move","task.archive","subtask.manage","comment.create","attachment.upload","timetracker.manage"'
+STUB_ME_BODY="$(me 1 "$MOVE_ONLY")" run_promote
+eq "⭐ custom role with only Move tasks: no warning" "false|" "$(has "$WARN" "$err")|$summ"
 eq "…and rc and summary line are a Member run's" "$BASE_RC|$BASE_OUT" "$rc|$out"
 STUB_ME_BODY="$(me null "$MEMBER")" run_promote
 eq "an orphaned board (owner_id null) with Member permissions: no warning" "false" "$(has "$WARN" "$err")"

@@ -507,9 +507,12 @@
 #
 # --- KANBAN_WRITEBACK_TOKEN (REQUIRED) --------------------------------------------------
 #   The bearer token the card PATCHes are made with. Absent => refuse before any request.
-#   ITS USER SHOULD HOLD NO MORE THAN A MEMBER'S PERMISSIONS ON THE TARGET BOARD (card#12491). The
-#   token's abilities are verb-only (`read` / `write`), so they cannot narrow what the user's BOARD
-#   ROLE allows. A Member can move cards, which is all this tool writes. An Admin can also add
+#   ITS USER SHOULD HOLD A CUSTOM ROLE WITH ONLY "MOVE TASKS" ON THE TARGET BOARD (`board_custom`,
+#   custom_permissions move=true and every other key false; card#12544), AND NEVER MORE THAN A
+#   MEMBER'S PERMISSIONS (card#12491). The token's abilities are verb-only (`read` / `write`), so
+#   they cannot narrow what the user's BOARD ROLE allows. This tool's only write is a
+#   `workflow_stage_id`-only PATCH, which the kanban app authorizes on `task.move` alone. A Member
+#   also works, but adds creating and editing cards, which this tool never does. An Admin can also add
 #   members, manage webhooks, workflows, custom fields and the DL counter, and an owner can also
 #   archive or delete the board. Every run that sends a request — one with no shipped refs
 #   included — first reads the token's own user
@@ -1601,7 +1604,7 @@ ROLE_DOC_REF="agent-board-toolkit docs/INSTALL.md § 6a, \"The writeback token's
 # the two cannot disagree. A stderr line in a GREEN job is invisible in a collapsed log.
 token_role_warn() {
   local line
-  line="promote-released-cards: ⚠ WARNING — $1 Re-issue KANBAN_WRITEBACK_TOKEN on a dedicated \`<seat>-release\` user that is a Member (board_member) of board $BOARD and of no board it does not promote on: $ROLE_DOC_REF. This warning does not change this run's exit code or what it promotes."
+  line="promote-released-cards: ⚠ WARNING — $1 Re-issue KANBAN_WRITEBACK_TOKEN on a dedicated \`<seat>-release\` user that holds, on board $BOARD, a Custom role with only \"Move tasks\" enabled (board_custom, custom_permissions move=true, all others false), and no membership on any board it does not promote on: $ROLE_DOC_REF. This warning does not change this run's exit code or what it promotes."
   printf '%s\n' "$line" >&2
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     { echo "### promote-released-cards — the writeback token's board permissions"
