@@ -511,7 +511,8 @@
 #   token's abilities are verb-only (`read` / `write`), so they cannot narrow what the user's BOARD
 #   ROLE allows. A Member can move cards, which is all this tool writes. An Admin can also add
 #   members, manage webhooks, workflows, custom fields and the DL counter, and an owner can also
-#   archive or delete the board. Before any move this run reads the token's own user
+#   archive or delete the board. Every run that sends a request — one with no shipped refs
+#   included — first reads the token's own user
 #   (`GET users/current.json`), whose `boards[]` carries each board's `owner_id` and the user's
 #   effective `permissions` on it. It prints a `⚠ WARNING` to stderr and to $GITHUB_STEP_SUMMARY
 #   when it is set, if the user owns the target board, holds any permission outside the Member
@@ -1204,7 +1205,8 @@ fi
 # are simply absent — a gate that must catch it reads this count, not the rc.
 unm_txt=""
 if [ "${UNMEASURED_N:-0}" -gt 0 ]; then unm_txt="$UNMEASURED_N commits-unmeasured, "; fi
-[ -n "$DL_NUMS$PR_NUMS$CARD_IDS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do${unm_txt:+ (${unm_txt%, }: release-pr-body could not classify them; see NOT MEASURED above)}."; exit 0; }
+# The "nothing to do" exit is NOT here: it is below, after the token's role check, so a run with no
+# shipped refs still makes that read (card#12491) — every refusal that precedes it is above.
 jarr() { printf '%s' "$1" | jq -R . | jq -s 'map(select(. != ""))'; }
 DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"; CARDS_J="$(jarr "$CARD_IDS")"
 
@@ -1575,9 +1577,9 @@ fetch_whole_board() {
 # --- THE TOKEN'S OWN ROLE ON THIS BOARD — WARN-ONLY (card#12491) ---------------------------------
 # What is warned on and what the warning does NOT change are stated once, in the header's
 # KANBAN_WRITEBACK_TOKEN block. Why each choice here:
-#   * WHERE: after every refusal this tool makes before its first read, and before the board read,
-#     so a run that is going to send the token at all asks this first, and a run refused earlier
-#     makes no extra request.
+#   * WHERE: after every refusal this tool makes before its first request, and before both the
+#     "nothing to do" exit and the board read. So every run that sends the token at all sends this
+#     read first — a run with no shipped refs included — and a refused run sends nothing.
 #   * ONE READ: `users/current.json` is the route that answers "who is this token", and its
 #     `boards[]` is every board the user owns or is a member of — unpaginated — each carrying
 #     `owner_id` and `permissions`, the user's EFFECTIVE permission list on that board as the
@@ -1646,6 +1648,10 @@ token_role_check() {
   return 0
 }
 token_role_check
+# AFTER the role check on purpose (card#12491): a dry run with no shipped refs (`--dls none
+# --dry-run`) is how an operator verifies a re-issued token, so it must make the read and print the
+# warning like any other run. It is still before the board read, so an empty run reads nothing else.
+[ -n "$DL_NUMS$PR_NUMS$CARD_IDS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do${unm_txt:+ (${unm_txt%, }: release-pr-body could not classify them; see NOT MEASURED above)}."; exit 0; }
 
 CARDS="$(fetch_whole_board)"
 

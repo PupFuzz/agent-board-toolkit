@@ -21,6 +21,8 @@
 #        warning can neither add a failure nor hide one.
 #   § 5  the read happens BEFORE the board read and any PATCH, and a refusal body echoing the
 #        token is masked in the warning (the warning renders through resp_detail).
+#   § 6  a run with NOTHING to promote (`--dls none --dry-run`, docs/UPGRADE.md's verification)
+#        still makes the read and warns; a run refused before its first request sends nothing.
 #
 # WEAKEST PROPERTY OF A GREEN RUN. The server is `tests/_promote-curl-stub.sh`, so this says what
 # the tool concludes from answers of these shapes. That the kanban app answers in these shapes, and
@@ -188,5 +190,40 @@ STUB_ME_STATUS=403 STUB_ME_BODY="{\"message\":\"denied\",\"echo\":\"Bearer $KANB
 eq "control: the refusal body carried the token, and the warning rendered it" "true" "$(has '"echo":"Bearer ***"' "$err")"
 eq "⭐ a refusal body echoing the token is masked on stderr and in the summary" "false|false" \
    "$(has "$KANBAN_WRITEBACK_TOKEN" "$err")|$(has "$KANBAN_WRITEBACK_TOKEN" "$summ")"
+
+# ═════════════════════════════════════════════════════════════════════════════════════════
+echo "== § 6 — a run with NOTHING to promote still makes the read =="
+# ═════════════════════════════════════════════════════════════════════════════════════════
+# `--dls none --dry-run` is the verification docs/UPGRADE.md tells an operator to run on a
+# re-issued token. It exits at "nothing to do" — so the read must come before that exit, or the
+# verification passes having measured nothing.
+# run_noref [env assignments…] — the real bin with an explicit empty ref set, as a dry run.
+run_noref() {
+    : > "$PATCH_LOG"; : > "$GET_LOG"; : > "$SUMMARY_FILE"
+    rc=0
+    out="$(cd "$TMP" && env GITHUB_STEP_SUMMARY="$SUMMARY_FILE" "$@" \
+             bash "$PRC" --config "$TMP/release-pr.json" --dls none --dry-run 2>"$TMP/err")" || rc=$?
+    err="$(cat "$TMP/err")"; summ="$(cat "$SUMMARY_FILE")"; gets="$(cat "$GET_LOG")"; patched="$(cat "$PATCH_LOG")"
+}
+run_noref STUB_ME_BODY="$(me 1 "$MEMBER")"
+eq "Member, nothing to promote: the run says nothing to do, rc 0" "true|0" \
+   "$(has 'no shipped refs in range — nothing to do' "$out")|$rc"
+eq "⭐ …and it made the identity read, and only that read" \
+   "https://kanban.test/api/v3/users/current.json" "$gets"
+eq "⭐ …and it is silent"                           "false|" "$(has "$WARN" "$err")|$summ"
+NOREF_OUT="$out"; NOREF_RC="$rc"
+run_noref STUB_ME_BODY="$(me 1 "$ADMIN")"
+eq "⭐ Admin, nothing to promote: the warning fires, on stderr and in the summary" "true|true" \
+   "$(has "${WARN}the writeback token's user (#900) holds permissions on board 12 beyond a Member's" "$err")|$(has "$WARN" "$summ")"
+eq "⭐ …and rc and stdout are the Member no-refs run's" "$NOREF_RC|$NOREF_OUT" "$rc|$out"
+eq "…and nothing was written"                      ""   "$patched"
+run_noref STUB_ME_STATUS=401
+eq "⭐ unreadable, nothing to promote: the warning fires; rc and stdout unchanged" "true|$NOREF_RC|$NOREF_OUT" \
+   "$(has "${WARN}the writeback token's permissions on board 12 could NOT be read" "$err")|$rc|$out"
+
+echo "-- 6b: a run REFUSED before its first request sends nothing, the read included"
+: > "$GET_LOG"; rc=0
+( cd "$TMP" && env -u KANBAN_EXPECTED_HOST bash "$PRC" --config "$TMP/release-pr.json" --dls none --dry-run ) >/dev/null 2>"$TMP/err" || rc=$?
+eq "no expected host: refused at rc 2 with no request at all" "2|" "$rc|$(cat "$GET_LOG")"
 
 _summary "promote-token-role-selftest"
