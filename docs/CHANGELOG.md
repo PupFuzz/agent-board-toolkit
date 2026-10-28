@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **card#12374** — **This repo's own `release-promote-cards.yml` now runs its promote job in the `kanban-writeback` GitHub environment, whose deployment branches are `main` only, as `docs/INSTALL.md` §6a tells public repos to do.** The job reads `KANBAN_WRITEBACK_TOKEN` from that environment, which shadows the repository secret of the same name; the token stays out of pull-request workflows once that repository secret is deleted. The job now starts only on `main`: a `workflow_dispatch` from any other ref is refused by the environment's branch rule and never receives the token, so dispatch it from `main`. Release-CI only: no `bin/` tool, composite action or consumer setup changes.
+
 ## [0.52.0] - 2026-10-27
 
 **Minor — `promote-released-cards` warns when its writeback token's user can do more than a Member (card#12491); `next-dl`'s offline scan reads the decision-log collision gate's grammar and now refuses where it used to mint (card#12338).** The PRs in `v0.51.0..v0.52.0` that carry a change are enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.51.0..v0.52.0` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **minor**: it adds a user-visible warning and carries one acceptance narrowing (card#12338, `next-dl`).
