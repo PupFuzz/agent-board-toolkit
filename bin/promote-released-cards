@@ -507,6 +507,21 @@
 #
 # --- KANBAN_WRITEBACK_TOKEN (REQUIRED) --------------------------------------------------
 #   The bearer token the card PATCHes are made with. Absent => refuse before any request.
+#   ITS USER SHOULD HOLD NO MORE THAN A MEMBER'S PERMISSIONS ON THE TARGET BOARD (card#12491). The
+#   token's abilities are verb-only (`read` / `write`), so they cannot narrow what the user's BOARD
+#   ROLE allows. A Member can move cards, which is all this tool writes. An Admin can also add
+#   members, manage webhooks, workflows, custom fields and the DL counter, and an owner can also
+#   archive or delete the board. Every run that sends a request — one with no shipped refs
+#   included — first reads the token's own user
+#   (`GET users/current.json`), whose `boards[]` carries each board's `owner_id` and the user's
+#   effective `permissions` on it. It prints a `⚠ WARNING` to stderr and to $GITHUB_STEP_SUMMARY
+#   when it is set, if the user owns the target board, holds any permission outside the Member
+#   set on it (an Admin, or a custom role granted more than a Member has), or if that cannot be
+#   read (the read fails, or the board or its permissions are absent from the answer). The
+#   warning changes NOTHING ELSE: the exit code, the summary line and what is promoted are the
+#   same as without it, and a failed read does not stop the run. Setting up that user, its token
+#   and where CI keeps it: agent-board-toolkit docs/INSTALL.md § 6a, "The writeback token's
+#   identity".
 #
 # --- KANBAN_EXPECTED_HOST (REQUIRED) ----------------------------------------------------
 #   The one host that token may be sent to. The resolved api_base must be https:// on it, or
@@ -533,7 +548,7 @@
 #   never the constraint; with both supplied from the environment it can move NEITHER.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.51.0'
+ABTK_TOOL_VERSION='0.52.0'
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 
@@ -1190,7 +1205,8 @@ fi
 # are simply absent — a gate that must catch it reads this count, not the rc.
 unm_txt=""
 if [ "${UNMEASURED_N:-0}" -gt 0 ]; then unm_txt="$UNMEASURED_N commits-unmeasured, "; fi
-[ -n "$DL_NUMS$PR_NUMS$CARD_IDS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do${unm_txt:+ (${unm_txt%, }: release-pr-body could not classify them; see NOT MEASURED above)}."; exit 0; }
+# The "nothing to do" exit is NOT here: it is below, after the token's role check, so a run with no
+# shipped refs still makes that read (card#12491) — every refusal that precedes it is above.
 jarr() { printf '%s' "$1" | jq -R . | jq -s 'map(select(. != ""))'; }
 DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"; CARDS_J="$(jarr "$CARD_IDS")"
 
@@ -1557,6 +1573,86 @@ fetch_whole_board() {
   fi
   printf '%s' "$cards"
 }
+
+# --- THE TOKEN'S OWN ROLE ON THIS BOARD — WARN-ONLY (card#12491) ---------------------------------
+# What is warned on and what the warning does NOT change are stated once, in the header's
+# KANBAN_WRITEBACK_TOKEN block. Why each choice here:
+#   * WHERE: after every refusal this tool makes before its first request, and before both the
+#     "nothing to do" exit and the board read. So every run that sends the token at all sends this
+#     read first — a run with no shipped refs included — and a refused run sends nothing.
+#   * ONE READ: `users/current.json` is the route that answers "who is this token", and its
+#     `boards[]` is every board the user owns or is a member of — unpaginated — each carrying
+#     `owner_id` and `permissions`, the user's EFFECTIVE permission list on that board as the
+#     server's own permission resolver computes it (custom-role grants included). So the rule
+#     reads the server's answer instead of re-deriving a role's meaning here.
+#   * THE OWNER IS NAMED APART: an owner's effective list is the Admin list, but only the owner
+#     may archive or delete the board, which the list does not show.
+#   * WHY AN UNREADABLE ANSWER WARNS: silence there would read as "the permissions are fine",
+#     which nothing measured. A target board absent from `boards[]` (the token's user is not a
+#     member) also warns; the board read below then refuses the run on its own terms.
+#
+# THE MEMBER PERMISSION SET — a COPY of the kanban app's BoardPermissions ROLE_MATRIX entry for
+# ROLE_MEMBER (app/Services/BoardPermissions.php on its `dev` branch, read for card#12491). A
+# kanban change to that entry needs this list changed with it: a permission added there and not
+# here makes every Member token warn (the loud direction); one removed there stays accepted here.
+MEMBER_PERMISSIONS='["board.view","task.create","task.update","task.move","task.archive","subtask.manage","comment.create","attachment.upload","timetracker.manage"]'
+ROLE_DOC_REF="agent-board-toolkit docs/INSTALL.md § 6a, \"The writeback token's identity\""
+# token_role_warn <finding> — ONE rendering, to stderr and (under Actions) to the step summary, so
+# the two cannot disagree. A stderr line in a GREEN job is invisible in a collapsed log.
+token_role_warn() {
+  local line
+  line="promote-released-cards: ⚠ WARNING — $1 Re-issue KANBAN_WRITEBACK_TOKEN on a dedicated \`<seat>-release\` user that is a Member (board_member) of board $BOARD and of no board it does not promote on: $ROLE_DOC_REF. This warning does not change this run's exit code or what it promotes."
+  printf '%s\n' "$line" >&2
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo "### promote-released-cards — the writeback token's board permissions"
+      echo ""
+      printf '%s\n' "$line"
+      echo ""
+    } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
+}
+token_role_check() {
+  local me verdict unread="the writeback token's permissions on board $BOARD could NOT be read"
+  if ! me="$(api "$API/users/current.json")"; then
+    token_role_warn "$unread (GET users/current.json: $(resp_detail)), so this run cannot rule out a token whose user holds more than a Member's permissions."
+    return 0
+  fi
+  # ONE jq verdict per answer shape, so no shape can fall between two reads: `owner`, `extra <csv>`,
+  # `member`, or `unread <why>`.
+  verdict="$(printf '%s' "$me" | jq -r --arg bs "$BOARD" --argjson m "$MEMBER_PERMISSIONS" '
+    ($bs | tonumber) as $b
+    | (.data.id) as $uid
+    | if ($uid | type) != "number" then "unread users/current.json answered success with no numeric .data.id"
+      elif (.data.boards | type) != "array" then "unread users/current.json carries no boards[] list"
+      else [.data.boards[] | select(type == "object" and .id == $b)] as $rows
+        | if ($rows | length) != 1 then "unread board \($b) is not in the boards[] of the token user (#\($uid)) — not a member of it, or not readable"
+          elif $rows[0].owner_id == $uid then "owner \($uid)"
+          elif ($rows[0].permissions | type) != "array" or any($rows[0].permissions[]; type != "string")
+            then "unread board \($b) in boards[] carries no permissions list of strings"
+          else ($rows[0].permissions - $m) as $x
+            | if ($x | length) > 0 then "extra \($uid) \($x | join(", "))" else "member" end
+          end
+      end' 2>/dev/null)" || verdict=''
+  case "$verdict" in
+    member) ;;
+    owner\ *)
+      token_role_warn "the writeback token's user (#${verdict#owner }) is the OWNER of board $BOARD. An owner holds every Admin permission and can also archive or delete the board, and the token's read/write abilities cannot narrow any of that." ;;
+    extra\ *)
+      verdict="${verdict#extra }"
+      token_role_warn "the writeback token's user (#${verdict%% *}) holds permissions on board $BOARD beyond a Member's: ${verdict#* }. The token's read/write abilities cannot narrow them." ;;
+    unread\ *)
+      token_role_warn "$unread (${verdict#unread }), so this run cannot rule out a token whose user holds more than a Member's permissions." ;;
+    *)
+      token_role_warn "$unread (users/current.json answered success with a body that is not JSON), so this run cannot rule out a token whose user holds more than a Member's permissions." ;;
+  esac
+  return 0
+}
+token_role_check
+# AFTER the role check on purpose (card#12491): a dry run with no shipped refs (`--dls none
+# --dry-run`) is how an operator verifies a re-issued token, so it must make the read and print the
+# warning like any other run. It is still before the board read, so an empty run reads nothing else.
+[ -n "$DL_NUMS$PR_NUMS$CARD_IDS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do${unm_txt:+ (${unm_txt%, }: release-pr-body could not classify them; see NOT MEASURED above)}."; exit 0; }
+
 CARDS="$(fetch_whole_board)"
 
 # --- correlate: a card ships if its dl_number is a shipped DL (qualified by its by-ref source,

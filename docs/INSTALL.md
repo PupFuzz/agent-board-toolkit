@@ -9,9 +9,10 @@ for c in bash curl jq git gh ps timeout; do command -v "$c" >/dev/null && echo "
 ```
 All must print `ok:`. (`gh` is only needed for tools that touch GitHub — `board-session-close`, `dependabot-deploy-reconcile`, and `gh-code-search`, which is a thin guarded wrapper around `gh api search/code` and refuses at rc 2 without it. `release-pr-body` needs no `gh`, but it does need `git fetch` access to `origin` — it resolves **both ends** of the release range from the remote: the baseline from the remote's release branch, since the local one is stale by design under the branch-off-dev flow, and the head from the remote's integration branch, since the local one lags every merge that lands after a release worktree is cut. Each leg has its own explicit override — `--base <tag>` and `--head <ref>` — and each skips only its own leg's fetch, so an offline run passes both. An explicit ref must still **resolve in the checkout**: the flag says which ref to use, not that a ref this repo does not have should be read as an empty range, so a `--base`/`--head` naming no commit here is refused at rc 2 rather than generating a body and a `shipped-cards` manifest that list nothing.)
 
-Two of these are newer and **not** fatal if missing, so they are listed to be checked rather than assumed:
+Two of these, and `python3` (not in the loop above — check it with `command -v python3`), are **not** fatal if missing, so they are listed to be checked rather than assumed:
 
 - **`ps`** — `dependabot-deploy-reconcile` reads the whole process table to decide whether the tree it inspects is the one actually running. Without it that tool reports an instrument failure rather than a wrong answer.
+- **`python3`** — `next-dl`'s offline `max+1` scan reads local decision logs through `bin/_decision-log.py`, and refuses to mint without it (its atomic claim does not need it); `dl-collision-gate` refuses to run without it.
 - **`timeout`** (coreutils) — bounds each advisory leg of `board-session-close`. **macOS ships no `timeout` by default**, and the MSYS/Git-Bash install in §2 may not either. When it is absent the legs still run, and each one prints a one-line warning saying it is running **unbounded**: it can no longer hang the close's exit code, but it can hang its clock. Install coreutils (`brew install coreutils` provides `gtimeout`; symlink or alias it as `timeout`) to get the bound back.
 
 
@@ -369,6 +370,31 @@ Consume `promote-released-cards` via the [`promote/`](../promote/action.yml) com
     # source: 'acme/widget'                    # optional OVERRIDE of the REQUIRED .promote.source (§4). Normally leave it out and set the key in .release-pr.json — the script refuses before any read if neither is present. Same literal-not-a-variable reasoning as shipped-stage-ids below, and stronger: a blank input here does NOT disable a guard, it falls back to the committed key
 ```
 
+#### The writeback token's identity
+
+`KANBAN_WRITEBACK_TOKEN` moves cards on the board, so it should be able to do that and little else. Set it up once per agent seat:
+
+1. **A dedicated kanban user named `<seat>-release`**, where `<seat>` is the seat's roster id (for example `builder-release`). One user per seat, shared by every repo that seat releases. Do not reuse a person's account or the seat's own working account.
+2. **Make it a Member (`board_member`) of each board it promotes on, and of no other board.** Not Admin, not the owner. A token's abilities only distinguish verbs (`read` for GET, `write` for POST/PATCH/PUT/DELETE), so the token cannot narrow anything its user's **board role** allows. An Admin can also add and remove members, create webhooks (each sends the board's events to the public URL it names), change workflows and custom fields, delete any card, and reset the DL counter; the owner holds all of that and can also archive or delete the board. Member can move cards, which is all the mover needs: it reads the board (`GET tasks/search.json`), moves each card (`PATCH tasks/<id>.json` with `workflow_stage_id`) and reads it back (`GET tasks/<id>.json`), plus the one read below. A `board_custom` role is fine while it grants nothing a Member lacks; granting it any of `delete`, `comment_delete_any`, `attachment_delete` or `webhook_manage` gives it part of an Admin's reach, and the mover warns on it.
+3. **Issue the token with the `read+write` scope, not `*` (Full access).** `read+write` passes both verb checks; `*` also passes any ability the kanban app adds later.
+4. **Keep the secret where pull-request workflows cannot read it.**
+   - **Public repos:** put the secret in a GitHub **environment** named `kanban-writeback` whose deployment branches are **`main` only** (repo Settings → Environments: create `kanban-writeback`, limit its deployment branches to `main` alone, add `KANBAN_WRITEBACK_TOKEN` as an environment secret there, then delete the repository secret of that name). Declare the environment on the promote job:
+
+     ```yaml
+     jobs:
+       promote:
+         runs-on: ubuntu-latest
+         environment: kanban-writeback   # the secret exists only for jobs running on main
+         steps:
+           # … checkout, then the action above, unchanged:
+           - uses: <owner>/agent-board-toolkit/promote@<full-40-char-SHA>  # vX.Y.Z
+             with:
+               writeback-token: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
+     ```
+   - **Private repos on a GitHub plan without environments:** there is nowhere to fence the secret. A repository secret is readable by every workflow run in the repo, including one a same-repo pull request edits. The Member role in step 2 is then the whole limit on what a leaked token can do.
+
+**The mover checks the token's permissions on every run that sends a request.** That read is the first request of the run, made before the board read and before the "no shipped refs — nothing to do" exit, so a dry run with nothing to promote (`--dls none --dry-run`) makes it too. Only a run the tool refuses before sending anything (a config, source, token or host refusal, or a range it cannot derive) skips it. `promote-released-cards` reads the token's own user (`GET users/current.json`), which lists each of the user's boards with its `owner_id` and the user's effective `permissions` there. If the user owns the target board, holds any permission a Member does not, or the read fails or does not list the board, it prints a `⚠ WARNING` naming the ownership or the extra permissions to stderr and to the job's step summary. The warning does not change the exit code or what is promoted. `promote-released-cards --help` (the `KANBAN_WRITEBACK_TOKEN` block) owns the exact rule.
+
 Pin by **full 40-char SHA with the `# vX.Y.Z` comment** (the comment is what dependabot parses). The consumer repo still needs its own `.release-pr.json` (§4) — **including `promote.source`, which is REQUIRED and has no default: without it every run of this action fails at rc 2, naming the key and the fix** — and unset-guards for the two repo variables if it wants friendlier errors than the script's own fail-closed ones.
 
 > **The BOOLEAN inputs take `true` or `false`, lower-case, and REFUSE anything else at rc 2.** `require-complete` and `dry-run` are the two. An empty value — the input left out, or a `${{ }}` expression that resolves to nothing because the run was not a `workflow_dispatch` — still means `false`, so the passthrough above is safe on a push-triggered run. Everything else (`True`, `TRUE`, `yes`, `on`, `1`, and their negatives) is a refusal naming the input, **not** a value read as `false`: a composite action's inputs are strings, the test that consumed them was `[ "$X" = "true" ]`, and a near-miss spelling therefore produced a run byte-identical to one where the input was never passed — for `dry-run` that meant **real board writes for an operator who asked for a preview**, with nothing in the log to say so. ⚠ **If you wire `dry-run` to a `workflow_dispatch` input, declare that input `type: boolean`** — a `type: string` (or `type: choice` with `True` among its options) hands this action whatever the operator typed.
@@ -444,7 +470,7 @@ cat ~/agent-board-toolkit/VERSION > <repo>/.agent-board-toolkit-version    # rec
 
 > **Vendoring `board-session-close`, or any of the `bin/_kbc-*.py` helpers?** There is a SECOND sibling lib on the same terms, in Python: `bin/_kbc-archive-lib.py`, which the helpers path-load beside themselves. **Which helpers those are is derived, not listed** — `grep -l '_kbc-archive-lib.py' ~/agent-board-toolkit/bin/*.py` answers it for the version you are vendoring. **Re-vendor `bin/_kbc-archive-lib.py` TOGETHER with any helper you copied**, exactly as the bash lib above: shared code moves INTO that lib over time (`stage_field_maps` and `live_cards` did), so a new helper beside an old lib fails at runtime with `AttributeError: module '…' has no attribute 'stage_field_maps'` — and it fails at the call site, mid-report, not at startup. `board-session-close` resolves its advisory legs as siblings of itself with no env override, so a copy vendored **without** them still runs and says which leg did not run (advisory — a missing leg never blocks a close), but it cannot report what that leg reports.
 
-**Both paths** require **`KANBAN_EXPECTED_HOST`** — §6a supplies it via the `expected-host` **input** (step-level env overrides job env, so setting it only as job env does NOT reach the action's script; pin it as a repo variable and pass it through), §6b sets it in the CI job's env (alongside `KANBAN_WRITEBACK_TOKEN`). It pins the host `promote-released-cards` will send the token to, out-of-band from the PR-editable `.release-pr.json` (see §4). **This is required, not optional:** with no baked default, an unset `KANBAN_EXPECTED_HOST` makes the promote step fail closed (exit non-zero, token never sent). See [`UPGRADE.md`](UPGRADE.md) for keeping a vendored copy (§6b) current; action consumers (§6a) upgrade via the pin.
+**Both paths** require **`KANBAN_EXPECTED_HOST`** — §6a supplies it via the `expected-host` **input** (step-level env overrides job env, so setting it only as job env does NOT reach the action's script; pin it as a repo variable and pass it through), §6b sets it in the CI job's env (alongside `KANBAN_WRITEBACK_TOKEN`). It pins the host `promote-released-cards` will send the token to, out-of-band from the PR-editable `.release-pr.json` (see §4). **This is required, not optional:** with no baked default, an unset `KANBAN_EXPECTED_HOST` makes the promote step fail closed (exit non-zero, token never sent). See [`UPGRADE.md`](UPGRADE.md) for keeping a vendored copy (§6b) current; action consumers (§6a) upgrade via the pin. **Both paths** also want the token set up as §6a's *The writeback token's identity* says — the user, its role, the token scope and the `kanban-writeback` environment apply to a vendored copy exactly as to the action.
 
 ### 6c. GitHub Actions consumer — the release-artifact gate
 
@@ -615,8 +641,11 @@ on:
   pull_request:
     # NO `paths:` filter: one that stops matching makes this gate absent, not red.
     # `synchronize` re-reads the target tip — the only way the second of two concurrently
-    # minted numbers is ever caught.
-    types: [opened, reopened, synchronize]
+    # minted numbers is ever caught. `edited` is the only event a RETARGET fires: without it a
+    # PR moved to another base keeps a verdict judged against the old target (§6c says why).
+    # A title or body edit fires it too, which only re-runs a check that executes no code from
+    # the PR and whose verdict neither field changes.
+    types: [opened, edited, reopened, synchronize]
 permissions:
   contents: read
 jobs:
@@ -635,11 +664,26 @@ jobs:
 
 **Keep the checkout's default `ref:`.** On a pull request it is the `refs/pull/N/merge` commit, and the gate pairs the work tree with that merge's first parent (`bin/pr-base-snapshot`); a work tree that is not this PR's merge is refused at rc 2, never given a guessed base. **The bound people assume away:** two open PRs that each mint the same new number both pass, because neither number is on the target branch yet; the second reds on its first run after the first merges.
 
+**Before you enable it — two states of the target branch's log refuse every pull request.** The gate judges each PR's merge, so a defect already on the target branch is in every PR's input:
+
+- **The log ends inside an unclosed code fence.** Every PR is refused, including the one that closes it, because the gate reads the fence from the target branch, not from the PR. Close it before you enable the gate; once the gate runs, only a path it does not block can close it (a direct push, or a merge that bypasses the check).
+- **The log already uses one DL number twice** — including through a heading indented 1–3 spaces, which renders as a heading and which the gate reads. Every PR is refused until a PR renumbers one of the two entries to a free number; that PR passes.
+
+Check the target branch's log before you add the workflow, with the predicate the gate runs:
+
+```bash
+git fetch origin <target-branch>
+git show origin/<target-branch>:CLAUDE_DECISIONS.md > /tmp/target-log.md
+python3 ~/agent-board-toolkit/bin/_decision-log.py check --head /tmp/target-log.md; echo "rc=$?"
+```
+
+`rc=0` is clean. `rc=8` is the unclosed fence and `rc=5` the duplicate (each named on stderr): fix it first. `rc=7` is **not** a blocker, and is reached only once neither of those holds: run without `--base`/`--target`, the check refuses every placeholder heading (`## DL-TBD`), while the gate refuses only one a PR adds, so placeholders already on the target branch pass it. This list is the one statement of both preconditions.
+
 **Exit status.** `1` is a refusal (a verdict about the log). `2` means the gate measured nothing — usage, no base snapshot, the log unreadable at base or target, the fetch failed, or the predicate exited with a status the gate does not enumerate. Both fail the step.
 
 **Vendoring instead (§6b)?** Vendor `bin/dl-collision-gate`, `bin/pr-base-snapshot` and `bin/_decision-log.py` together: the gate runs both from its own directory and refuses at rc 2 by name when either is missing. Run it as `dl-collision-gate --head-sha <sha> --base-ref <branch> [--log PATH]` inside the PR merge checkout.
 
-**Reading the grammar from another tool.** A consumer that must agree with the gate on what an entry is (an allocator's local-log veto, say) path-loads `bin/_decision-log.py` and calls `header_scan` / `header_numbers` — the module docstring declares that contract, and `tests/decision-log-selftest.sh` checks it. The grammar reads top-level ATX `## DL-` headings only; a setext H2 or a heading inside a blockquote or list item is not read (the grammar comment names these).
+**Reading the grammar from another tool.** A consumer that must agree with the gate on what an entry is (an allocator's local-log veto, say) path-loads `bin/_decision-log.py` and calls `header_scan` / `header_numbers` — the module docstring declares that contract, and `tests/decision-log-selftest.sh` checks it. A shell tool runs `_decision-log.py floor <log>` instead, which prints the highest number one log holds, deliberately counting headings inside a code fence that the gate skips (`cmd_floor`'s docstring says why); `next-dl`'s offline `max+1` scan does. The grammar reads top-level ATX `## DL-` headings only; a setext H2 or a heading inside a blockquote or list item is not read (the grammar comment names these).
 
 ## Worked example (host install, primary board named `dev`)
 

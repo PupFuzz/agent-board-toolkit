@@ -100,6 +100,12 @@
 #                   only make every card behave the same way. With a single-card board the two
 #                   are indistinguishable, which is exactly how a rc-1 assertion came to be
 #                   pinned in the one configuration where it happened to hold.
+#   $STUB_ME_STATUS / $STUB_ME_BODY  what `GET users/current.json` (the token's own user, with
+#                   its `boards[]`) answers with. Default 200 and user 900 holding, on board 12, the
+#                   kanban app's Member permission list and no ownership — what the token's user
+#                   SHOULD hold, so a caller that sets neither sees no role warning (card#12491).
+#                   $STUB_ME_TRANSPORT, when set, makes that read exit with THIS curl rc having
+#                   written nothing.
 #   $STUB_STAGE_UNAPPLIED  ⛔ THE 2xx THAT CHANGES NOTHING. When set, the stage PATCH still
 #                   answers its success status and is still logged — and the
 #                   stub's own card does NOT change. That is the state card#9938 exists for and
@@ -219,6 +225,11 @@ fi
 
 [ -n "${GET_LOG:-}" ] && printf '%s\n' "$url" >> "$GET_LOG"
 case "$url" in
+  */users/current.json)
+    [ -n "${STUB_ME_TRANSPORT:-}" ] && exit "$STUB_ME_TRANSPORT"
+    medefault='{"data":{"id":900,"boards":[{"id":12,"owner_id":1,"permissions":["board.view","task.create","task.update","task.move","task.archive","subtask.manage","comment.create","attachment.upload","timetracker.manage"]}]}}'
+    emit "${STUB_ME_STATUS:-200}" "${STUB_ME_BODY:-$medefault}"
+    ;;
   */tasks/[0-9]*.json)
     # The single-card read that NEVER COMPLETED — no status, no body, curl's own rc. It is the
     # CARD-scoped twin of $STUB_GET_TRANSPORT, which reaches only the board GET below (this arm

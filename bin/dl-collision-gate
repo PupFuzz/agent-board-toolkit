@@ -52,7 +52,7 @@ set -euo pipefail
 # makes a write RETURN non-zero, and every write below tolerates that instead of dying on it.
 trap '' PIPE
 
-ABTK_TOOL_VERSION='0.51.0'
+ABTK_TOOL_VERSION='0.52.0'
 
 _put()     { printf '%s\n' "$1" 2>/dev/null || true; }
 _put_err() { printf '%s\n' "$1" >&2 2>/dev/null || true; }
@@ -142,7 +142,9 @@ case "$rc" in
   8)
     _put "::error::a decision log this gate read ends inside an unclosed code fence (named above)."
     _put "Every heading after the fence renders as code and was not scanned, so no verdict here would describe the log's real population."
-    _put "Fix: close the fence."
+    # WHOSE fence it is, and so the remedy, is the predicate's verdict (named above); it is not
+    # re-decided here. The predicate reads files, not branches, so this line supplies the name.
+    _put "Fix: the remedy named above. A remedy naming THE TARGET BRANCH means '$BASE_REF'."
     exit 1
     ;;
   2)
