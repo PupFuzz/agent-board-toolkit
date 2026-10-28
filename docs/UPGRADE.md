@@ -613,7 +613,8 @@ kbcard show --task <some-id> | jq .id              # host -> the id, no error
 - **[release-CI] A repo that adopted the decision-log collision gate from v0.51.0's recipe adds `edited` to its workflow's `types:` (card#12338)** — `[opened, edited, reopened, synchronize]`, the list `docs/INSTALL.md` §6f carries. Changing a PR's base branch fires only `edited`, so without it a retargeted PR keeps a verdict judged against its old target. The gate also now names a base or target branch's unclosed code fence as the target branch's to close.
 - **No `PATH` symlink loop.** No tool is added or removed.
 
-### Unreleased
+### v0.52.1
 
 - **[release-CI] Optional: narrow the release user to a Custom role with only "Move tasks" (card#12544).** v0.52.0's step 2 said to make `<seat>-release` a **Member**; it needs less. The mover's only write is a `workflow_stage_id`-only PATCH, which the kanban app authorizes on `task.move` alone, so `docs/INSTALL.md` §6a step 2 now gives it a **Custom** role with only **Move tasks** enabled (API: role `board_custom`, `custom_permissions` `move: true` and every other key `false`) on each board it promotes and no other. A Member keeps working and the mover does not warn on it; switching drops the create- and edit-card permissions it never uses. To switch: on each board's members page change the user's role to **Custom**, untick everything but **Move tasks**, save, then re-run v0.52.0's step 5 dry run and check its stderr carries no `promote-released-cards: ⚠ WARNING — ` line. The token does not need re-issuing.
 - **[vendor]** re-vendor `bin/promote-released-cards` for the new remediation wording in its token warning; nothing else in it changes.
+- **No `PATH` symlink loop.** No tool is added or removed.

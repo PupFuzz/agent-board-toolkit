@@ -55,7 +55,7 @@ from pathlib import Path
 # (card#6871). The flag only governs loads made after it, so the entry point sets it.
 sys.dont_write_bytecode = True
 
-ABTK_TOOL_VERSION='0.52.0'
+ABTK_TOOL_VERSION='0.52.1'
 
 EXIT_USAGE = 2
 EXIT_DUPLICATE_AT_HEAD = 5
