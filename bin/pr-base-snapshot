@@ -48,7 +48,7 @@ set -euo pipefail
 # (card#6911).
 trap '' PIPE
 
-ABTK_TOOL_VERSION='0.51.0'
+ABTK_TOOL_VERSION='0.52.0'
 
 _put()     { printf '%s\n' "$1" 2>/dev/null || true; }
 _put_err() { printf '%s\n' "$1" >&2 2>/dev/null || true; }
