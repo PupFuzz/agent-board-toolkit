@@ -507,6 +507,16 @@
 #
 # --- KANBAN_WRITEBACK_TOKEN (REQUIRED) --------------------------------------------------
 #   The bearer token the card PATCHes are made with. Absent => refuse before any request.
+#   ITS USER SHOULD BE A `board_member` OF THE TARGET BOARD, AND NOTHING MORE (card#12491). The
+#   token's abilities are verb-only (`read` / `write`), so they cannot exclude what the user's
+#   BOARD ROLE allows, and an admin or owner role includes deleting the board. Before any move this
+#   run reads the token's own user (`GET users/current.json`) and that user's row in the board's
+#   member list (`GET boards/<id>/members.json`). An `is_owner` row, a `board_admin` row, or a read
+#   that fails or answers nothing usable prints a `⚠ WARNING` to stderr and to
+#   $GITHUB_STEP_SUMMARY when it is set. The warning changes NOTHING ELSE: the exit code, the
+#   summary line and what is promoted are the same as without it, and a failed read does not stop
+#   the run. Setting up that user, its token and where CI keeps it: agent-board-toolkit
+#   docs/INSTALL.md § 6a, "The writeback token's identity".
 #
 # --- KANBAN_EXPECTED_HOST (REQUIRED) ----------------------------------------------------
 #   The one host that token may be sent to. The resolved api_base must be https:// on it, or
@@ -1557,6 +1567,72 @@ fetch_whole_board() {
   fi
   printf '%s' "$cards"
 }
+
+# --- THE TOKEN'S OWN ROLE ON THIS BOARD — WARN-ONLY (card#12491) ---------------------------------
+# What the role means and what the warning does NOT change are stated once, in the header's
+# KANBAN_WRITEBACK_TOKEN block. Why each choice here:
+#   * WHERE: after every refusal this tool makes before its first read, and before the board read,
+#     so a run that is going to send the token at all asks this first, and a run refused earlier
+#     makes no extra request.
+#   * WHY TWO READS: `users/current.json` is the only route that answers "who is this token", and
+#     its `boards[]` carries no role; `boards/<id>/members.json` carries `role` and `is_owner` per
+#     user. The owner row is listed as `board_admin` with `is_owner: true`, so `is_owner` is read
+#     first and named apart, because an owner cannot be demoted by a role change.
+#   * WHY AN UNREADABLE ROLE WARNS: silence there would read as "the role is fine", which nothing
+#     measured. A member list the token may not read (403 — not a member) also warns; the board
+#     read below then refuses the run on its own terms, as it always did.
+#   * `board_viewer` and `board_custom` are not warned about: neither can hold board.delete
+#     (`board_custom` cannot be granted it).
+ROLE_DOC_REF="agent-board-toolkit docs/INSTALL.md § 6a, \"The writeback token's identity\""
+# token_role_warn <finding> — ONE rendering, to stderr and (under Actions) to the step summary, so
+# the two cannot disagree. A stderr line in a GREEN job is invisible in a collapsed log.
+token_role_warn() {
+  local line
+  line="promote-released-cards: ⚠ WARNING — $1 Re-issue KANBAN_WRITEBACK_TOKEN on a dedicated \`<seat>-release\` user that is a Member (board_member) of board $BOARD and of no board it does not promote on: $ROLE_DOC_REF. This warning does not change this run's exit code or what it promotes."
+  printf '%s\n' "$line" >&2
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo "### promote-released-cards — the writeback token's board role"
+      echo ""
+      printf '%s\n' "$line"
+      echo ""
+    } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
+}
+token_role_check() {
+  local me uid members rows n role owner unread="the writeback token's role on board $BOARD could NOT be read"
+  if ! me="$(api "$API/users/current.json")"; then
+    token_role_warn "$unread (GET users/current.json: $(resp_detail)), so this run cannot rule out a token whose user may delete the board."
+    return 0
+  fi
+  uid="$(printf '%s' "$me" | jq -r '.data.id | select(type == "number") | tostring' 2>/dev/null)" || uid=''
+  if ! uint_ok "$uid"; then
+    token_role_warn "$unread (GET users/current.json answered success with no numeric .data.id), so this run cannot rule out a token whose user may delete the board."
+    return 0
+  fi
+  if ! members="$(api "$API/boards/$BOARD/members.json")"; then
+    token_role_warn "$unread (GET boards/$BOARD/members.json: $(resp_detail)), so this run cannot rule out a token whose user (#$uid) may delete the board."
+    return 0
+  fi
+  rows="$(printf '%s' "$members" | jq -c --argjson u "$uid" \
+            'if (.data | type) == "array" then [.data[] | select(type == "object" and .user_id == $u)] else empty end' 2>/dev/null)" || rows=''
+  n="$(printf '%s' "$rows" | jq 'length' 2>/dev/null)" || n=''
+  if [ -z "$rows" ] || [ "$n" != 1 ]; then
+    token_role_warn "$unread (GET boards/$BOARD/members.json answered success with ${n:-no readable} row(s) for the token's user #$uid, where one was expected), so this run cannot rule out a token whose user may delete the board."
+    return 0
+  fi
+  role="$(printf '%s' "$rows" | jq -r '.[0].role | select(type == "string")' 2>/dev/null)" || role=''
+  owner="$(printf '%s' "$rows" | jq -r '.[0].is_owner == true' 2>/dev/null)" || owner=''
+  if [ "$owner" = true ]; then
+    token_role_warn "the writeback token's user (#$uid) is the OWNER of board $BOARD (role ${role:-unread}, is_owner true). An owner holds every board permission, board.delete included, and the token's read/write abilities cannot exclude any of them."
+  elif [ "$role" = board_admin ]; then
+    token_role_warn "the writeback token's user (#$uid) holds role board_admin on board $BOARD. That role includes board.delete, and the token's read/write abilities cannot exclude it."
+  elif [ -z "$role" ]; then
+    token_role_warn "$unread (the member row for the token's user #$uid carries no role string), so this run cannot rule out a token whose user may delete the board."
+  fi
+  return 0
+}
+token_role_check
+
 CARDS="$(fetch_whole_board)"
 
 # --- correlate: a card ships if its dl_number is a shipped DL (qualified by its by-ref source,

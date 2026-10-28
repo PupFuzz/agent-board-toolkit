@@ -26,7 +26,11 @@ description: >-
 
 inputs:
   writeback-token:
-    description: 'Kanban API bearer token whose user is a member of the target board (pass a secret).'
+    description: >-
+      Kanban API bearer token (pass a secret) with the read+write scope, whose user
+      is a Member (board_member) of the target board, not its Admin or owner: the
+      script warns on an Admin or owner role, or an unreadable one, without changing
+      its exit code. INSTALL.md 6a, "The writeback token's identity".
     required: true
   expected-host:
     description: >-

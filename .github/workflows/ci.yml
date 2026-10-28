@@ -206,6 +206,7 @@ jobs:
           - promote-revert-selftest
           - promote-source-qualify-selftest
           - promote-stage-guard-selftest
+          - promote-token-role-selftest
           - python-syntax-gate-selftest
           - read-outcome-collapse-selftest
           - reader-ref-canon-selftest
