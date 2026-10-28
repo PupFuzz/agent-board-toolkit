@@ -28,7 +28,9 @@ inputs:
   writeback-token:
     description: >-
       Kanban API bearer token (pass a secret) with the read+write scope, whose user
-      is a Member (board_member) of the target board, not its Admin or owner: the
+      holds a Custom role with only "Move tasks" enabled on the target board
+      (board_custom, custom_permissions move=true, all others false), not Admin or
+      owner; its only write is a column move. Member also works but grants more. The
       script warns when the user owns the board, holds any permission a Member does
       not, or that cannot be read, without changing its exit code. INSTALL.md 6a, "The writeback token's identity".
     required: true
