@@ -6,10 +6,14 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-27
+
+**Minor — `promote-released-cards` warns when its writeback token's user can do more than a Member (card#12491); `next-dl`'s offline scan reads the decision-log collision gate's grammar and now refuses where it used to mint (card#12338).** The PRs in `v0.51.0..v0.52.0` that carry a change are enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.51.0..v0.52.0` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **minor**: it adds a user-visible warning and carries one acceptance narrowing (card#12338, `next-dl`).
+
 ### Added
 
 - **card#12491** — **`promote-released-cards` warns when its writeback token's user owns the target board or holds any permission a Member does not, or when that cannot be read; `docs/INSTALL.md` §6a now says who should own the token.** As the first request of every run that sends one, a run with nothing to promote included, it reads the token's own user (`GET users/current.json`), whose `boards[]` carries each board's `owner_id` and the user's effective `permissions`, and prints a `⚠ WARNING` naming the ownership or the extra permissions to stderr and, under Actions, to `$GITHUB_STEP_SUMMARY`. An Admin, and a custom role granted more than a Member has (for example `webhook_manage` or `delete`), warn. The exit code, the summary line and what is promoted are unchanged, and a failed read does not stop the run. The new §6a section *The writeback token's identity* sets the token up on a dedicated `<seat>-release` user that is a Member of only the boards it promotes on, with a `read+write` token, kept on public repos in a `kanban-writeback` environment limited to `main`; it states that a private repo without environments leaves the secret readable by same-repo pull-request workflows. Token abilities are verb-only, so they cannot narrow what the board role allows: an Admin can add members and create webhooks that send board events to any public URL, and only the owner can archive or delete the board. `tests/promote-token-role-selftest.sh` drives the warning on owner, Admin, over-granted custom-role and unreadable fixtures, its absence on viewer, Member and Member-equivalent custom-role fixtures, and the same exit code in each. This adds no `--help` flag or config key.
-  - **Upgrade:** **[release-CI]** REQUIRED — re-issue the token on a `<seat>-release` Member user and fence it as `docs/UPGRADE.md` §6 *Unreleased* lists. **[vendor]** re-vendor `bin/promote-released-cards` to get the warning.
+  - **Upgrade:** **[release-CI]** REQUIRED — re-issue the token on a `<seat>-release` Member user and fence it as `docs/UPGRADE.md` §6 v0.52.0 lists. **[vendor]** re-vendor `bin/promote-released-cards` to get the warning.
 
 ### Changed
 
