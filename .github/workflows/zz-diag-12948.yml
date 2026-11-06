@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          set -x
+          set +e
           cat /etc/os-release | head -3
           bash --version | head -1
           for c in cat sleep timeout kill seq date env head tee yes printf setsid; do p=$(command -v $c); echo "$c -> $p -> $(readlink -f "$p" 2>/dev/null)"; "$p" --version 2>&1 | head -1; done
@@ -36,5 +36,16 @@ jobs:
           bash -c 'timeout -k 5 30 bash -c "sleep 20" & p=$!; sleep 1; t0=$(date +%s); kill -TERM $p; wait $p; echo "bg-nonint TERM rc=$? secs=$(( $(date +%s)-t0 ))"; ps -ef | grep -c "sleep 20"'
           bash -c 'timeout -k 5 30 bash -c "sleep 20" & p=$!; sleep 1; t0=$(date +%s); kill -INT $p; wait $p; echo "bg-nonint INT rc=$? secs=$(( $(date +%s)-t0 ))"'
           grep -i sig /proc/self/status
+          dfl() { python3 -c 'import signal,os,sys; signal.signal(signal.SIGPIPE, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' "$@"; }
+          dfl bash -c 'trap -p PIPE; set -o pipefail; cat /tmp/big | grep -qx 1; echo "DFL cat: ${PIPESTATUS[*]}"; gnucat /tmp/big | grep -qx 1; echo "DFL gnucat: ${PIPESTATUS[*]}"; printf "%s\n" "$(cat /tmp/big)" | grep -qx 1; echo "DFL builtin: ${PIPESTATUS[*]}"; seq 1 300000 | grep -qx 1; echo "DFL seq: ${PIPESTATUS[*]}"; head -c 9999999 /tmp/big | grep -qx 1; echo "DFL head: ${PIPESTATUS[*]}"'
+          dfl strace -f -e trace=rt_sigaction,write,exit_group -o /tmp/st3 cat /tmp/big | grep -qx 1; grep -E 'SIGPIPE|EPIPE|exit' /tmp/st3 | head
+          strace -f -e trace=rt_sigaction,write,exit_group -o /tmp/st4 cat /tmp/big | grep -qx 1; grep -E 'SIGPIPE|EPIPE|exit' /tmp/st4 | head
+          # timeout pgid
+          timeout 5 bash -c 'ps -o pid,pgid,comm -p $$ -p $PPID'; echo "shell pgid $(ps -o pgid= -p $$)"
+          gnutimeout 5 bash -c 'ps -o pid,pgid,comm -p $$ -p $PPID'
+          for T in timeout gnutimeout; do
+            bash -c "$T -k 5 30 bash -c 'sleep 20' & p=\$!; sleep 1; t0=\$(date +%s); kill -TERM \$p; wait \$p; echo \"$T bg TERM rc=\$? secs=\$(( \$(date +%s)-t0 ))\"; pgrep -fa 'sleep 20'; pkill -f 'sleep 20'"
+          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: bash tests/release-pr-body-selftest.sh 2>&1 | grep -E "FAIL|SIGINT|interrupted" || true
+      - run: PATH=$PWD/gnubin:$PATH; mkdir gnubin; for f in /usr/bin/gnu*; do b=${f#/usr/bin/gnu}; ln -s $f gnubin/$b; done; ls gnubin | wc -l; timeout --version | head -1; bash tests/release-pr-body-selftest.sh 2>&1 | grep -E 'FAIL|SIGINT|interrupted'; bash tests/pipeline-free-match-selftest.sh | tail -3
