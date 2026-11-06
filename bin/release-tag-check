@@ -50,7 +50,7 @@
 # be free to drift from the gate that guards release PRs.
 #
 # NEITHER IS THE TAG NAME (card#7203). Which tag a version maps to is `.release-pr.json`'s
-# `tag_format`, and its one reader is `release-pr-body`, so this asks that sibling for the
+# `tag_format`, and the one mapping of it is `release-pr-body`'s, so this asks that sibling for the
 # answer (`--tag`) rather than carrying a second copy of the mapping. It carried one until
 # card#7203 — a hardcoded `TAG="v${VERSION}"` — which is correct only for the default scheme:
 # a consumer whose config says `{{version}}` or `release-{{version}}` (documented in
@@ -235,7 +235,7 @@ case "$VERDICT" in
 esac
 VERSION="${VERDICT#release }"
 
-# THE SIBLING IS THE ONE READER OF `tag_format`, and this is the second delegation to a bin in
+# THE SIBLING OWNS THE `tag_format` MAPPING, and this is the second delegation to a bin in
 # this same directory rather than to whatever a PATH lookup finds — same reason as the
 # classifier above. `--tag` returns before that tool touches the network, and the VERSION is
 # passed explicitly: the classifier may have re-decided which value this range ships (its
@@ -468,11 +468,11 @@ MIXED=""
 # cannot be taken, the refusal says the cause is UNMEASURED rather than picking one.
 set +e; _tags_at_commit; TAGS_RC=$?; set -e
 if [ "$TAGS_RC" -ne 0 ]; then
-  CAUSE="The follow-up look that would tell an untagged release from a tag-name mismatch could NOT READ ${REMOTE} (${TAGS_READ_ERR}), so the CAUSE here is unmeasured: check BOTH the workflow that creates your tags for this commit AND how ${CONFIG} resolved version ${VERSION} to ${TAG} (its tag_format if that key is set, else the default v{{version}}) against what that workflow actually creates."
+  CAUSE="The follow-up look that would tell an untagged release from a tag-name mismatch could NOT READ ${REMOTE} (${TAGS_READ_ERR}), so the CAUSE here is unmeasured: check BOTH the workflow that creates your tags for this commit AND how ${CONFIG} resolved version ${VERSION} to ${TAG} (its tag_format) against what that workflow actually creates."
 elif [ -n "$TAGS_AT_COMMIT" ]; then
   # Deliberately NOT phrased as "tagged under another name": if ${TAG} itself arrived in the
   # window between the final poll and this look, every clause below is still true.
-  CAUSE="A second look WITHOUT the tag-name filter finds ${AFTER_SHA} carrying: ${TAGS_AT_COMMIT}. So this commit IS tagged on ${REMOTE}, and ${TAG} is what ${CONFIG} resolved version ${VERSION} to — its tag_format if that key is set, else the default v{{version}}. That resolution tells THIS CHECK what to expect and does NOT change what your tagging workflow creates, so check those two against each other before reading this as a tagging failure."
+  CAUSE="A second look WITHOUT the tag-name filter finds ${AFTER_SHA} carrying: ${TAGS_AT_COMMIT}. So this commit IS tagged on ${REMOTE}, and ${TAG} is what ${CONFIG} resolved version ${VERSION} to by its tag_format. That resolution tells THIS CHECK what to expect and does NOT change what your tagging workflow creates, so check those two against each other before reading this as a tagging failure."
 else
   CAUSE="No tag of ANY name points at ${AFTER_SHA} on ${REMOTE}, so a tag under a different name is excluded BY MEASUREMENT: the release merged and was NOT tagged — check the auto-tag-version workflow run for this commit; a 403 on its tag push has happened before (card#6579)."
 fi

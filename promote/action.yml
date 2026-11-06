@@ -11,7 +11,9 @@ description: >-
   clone), and a .release-pr.json with a .promote block must exist at the
   workspace root — including .promote.source, which is REQUIRED and has no
   default: the script refuses before any read without it (see the `source`
-  input below, and INSTALL.md §4).
+  input below, and INSTALL.md §4). The top-level .tag_format is REQUIRED
+  too: this action never passes --base, so the script derives it from
+  release-pr-body --last-release-tag, which refuses at rc 2 without the key.
   AND THE DECLARED SOURCE MUST BE THIS REPO. A resolved source other than "*"
   is compared, case-folded, against $GITHUB_REPOSITORY — which Actions sets to
   the repository this workflow runs in — and a mismatch refuses at rc 2 before
