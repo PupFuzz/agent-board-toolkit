@@ -53,9 +53,9 @@ export BOARD_FILE="$TMP/board.json"
 # mkcfg <path> <source-json-or-OMIT> — a promote config, with or without the key under test.
 mkcfg() {
   if [ "$2" = OMIT ]; then
-    jq -n '{ref_token_regex:"DL-[0-9]+",promote:{board_id:"12",released_stage_id:"85",api_base:"https://kanban.test/api/v3"}}' > "$1"
+    jq -n '{ref_token_regex:"DL-[0-9]+",tag_format:"v{{version}}",promote:{board_id:"12",released_stage_id:"85",api_base:"https://kanban.test/api/v3"}}' > "$1"
   else
-    jq -n --arg s "$2" '{ref_token_regex:"DL-[0-9]+",promote:{board_id:"12",released_stage_id:"85",api_base:"https://kanban.test/api/v3",source:$s}}' > "$1"
+    jq -n --arg s "$2" '{ref_token_regex:"DL-[0-9]+",tag_format:"v{{version}}",promote:{board_id:"12",released_stage_id:"85",api_base:"https://kanban.test/api/v3",source:$s}}' > "$1"
   fi
 }
 CFG_NONE="$TMP/cfg-none.json";  mkcfg "$CFG_NONE" OMIT

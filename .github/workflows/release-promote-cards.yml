@@ -47,7 +47,7 @@ concurrency:
 
 jobs:
   promote:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # The environment's deployment branches are `main` only, so this job starts only on `main`,
     # and its KANBAN_WRITEBACK_TOKEN shadows a repository secret of that name. That keeps the
     # token from pull-request workflows only once no repository secret of that name remains:

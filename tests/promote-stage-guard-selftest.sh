@@ -51,10 +51,12 @@ promote_install_curl_stub "$TMP/bin"
 # tracks one repo — which is what makes every assertion in this file a claim about the stage
 # guard and the flags, unchanged, rather than about repo qualification. The qualification
 # itself is driven by tests/promote-source-qualify-selftest.sh, including the arm that reds if
-# a config omitting this key is allowed to run.
+# a config omitting this key is allowed to run. `tag_format` is declared because a DEFAULTED base
+# needs it (card#12945); the block that drives its absence derives its own config without it.
 cat > "$TMP/release-pr.json" <<'JSON'
 {
   "ref_token_regex": "DL-[0-9]+",
+  "tag_format": "v{{version}}",
   "promote": {
     "board_id": "12",
     "released_stage_id": "85",
@@ -569,5 +571,90 @@ eq "control: …and the card was PATCHed"             "true"  "$(has '/tasks/1.j
 run_range --dls "DL-100" --base no-such-tag
 eq "control: --dls with an unresolvable --base → rc 0" "0"    "$rc"
 eq "control: …and it still promotes"                   "true" "$(has '/tasks/1.json' "$patched")"
+
+echo "== the DERIVED base is a RELEASE tag, named by release-pr-body --last-release-tag (card#12945) =="
+# WHAT WAS WRONG. The defaulted base was a raw `git describe --tags --abbrev=0 "${HEAD_REF}^"`, which
+# takes ANY tag — a second baseline derivation beside release-pr-body's tag_format-matched one. On
+# kanban-board every `deploy/*` tag shares a commit with a `v*` tag and describe names the `deploy/`
+# one; a `deploy/*` tag on a commit of its own would move the base forward and drop the commits
+# before it. The base is now asked of the sibling, so a non-release tag is never the base, and the
+# derived base needs `tag_format` declared.
+#
+# FIXTURE: v0.0.1 on the baseline, then a non-release commit (DL-100) carrying `deploy/b`, then a
+# merged feature (DL-101). The head's first parent is the `deploy/b` commit, so an unfiltered base
+# is `deploy/b` and DL-100 is dropped from the range; the release base is v0.0.1 and both ship.
+_tgrepo() { # <dir> — a repo with the fixture's identity
+  mkdir -p "$1"; git -C "$1" init -q -b main
+  git -C "$1" config user.email t@t; git -C "$1" config user.name t
+}
+TG="$TMP/gittagfmt"; _tgrepo "$TG"
+git -C "$TG" commit -q --allow-empty -m "baseline"
+git -C "$TG" tag v0.0.1
+git -C "$TG" commit -q --allow-empty -m "feat: one DL-100"
+git -C "$TG" tag deploy/b
+git -C "$TG" checkout -q -b feat
+git -C "$TG" commit -q --allow-empty -m "feat: two DL-101"
+git -C "$TG" checkout -q main
+git -C "$TG" merge -q --no-ff -m "Merge the thing" feat
+
+cp "$TMP/release-pr.json" "$TMP/release-pr-tf.json"
+jq 'del(.tag_format)' "$TMP/release-pr.json" > "$TMP/release-pr-notf.json"
+eq "precondition: the fixture config declares tag_format" "v{{version}}" "$(jq -r '.tag_format' "$TMP/release-pr-tf.json")"
+eq "precondition: …and the no-tag_format copy does not"   "null"         "$(jq -r '.tag_format' "$TMP/release-pr-notf.json")"
+run_tg() { # <dir> <config> <args...> — the real script in <dir>, NOTE visible
+  local d="$1" c="$2"; shift 2
+  : > "$PATCH_LOG"; rc=0
+  out="$( (cd "$d" && env -u GITHUB_ACTIONS "$PRC" --config "$c" "$@") 2>"$TMP/err")" || rc=$?
+  err="$(cat "$TMP/err")"; patched="$(cat "$PATCH_LOG")"
+}
+
+eq "precondition: unfiltered describe of the head's first parent names deploy/b" \
+   "deploy/b" "$(git -C "$TG" describe --tags --abbrev=0 'HEAD^')"
+run_tg "$TG" "$TMP/release-pr-tf.json"
+eq "derived base over a deploy/ tag → rc 0"                     "0"     "$rc"
+eq "…the base is the release tag, not the deploy/ tag"          "true"  "$(has "baseline 'v0.0.1' derived from LOCAL tags" "$err")"
+eq "…so the commit before the deploy/ tag ships (card #1)"      "true"  "$(has '/tasks/1.json' "$patched")"
+eq "…as does the merged feature (card #2)"                      "true"  "$(has '/tasks/2.json' "$patched")"
+
+# A DOUBLE-TAGGED release commit: v0.0.2 and deploy/c on the same commit, the head's first parent.
+TD="$TMP/gittagdbl"; _tgrepo "$TD"
+git -C "$TD" commit -q --allow-empty -m "baseline"
+git -C "$TD" tag v0.0.1
+git -C "$TD" commit -q --allow-empty -m "release: v0.0.2 DL-100"
+git -C "$TD" tag v0.0.2
+git -C "$TD" tag deploy/c
+git -C "$TD" checkout -q -b feat
+git -C "$TD" commit -q --allow-empty -m "feat: two DL-101"
+git -C "$TD" checkout -q main
+git -C "$TD" merge -q --no-ff -m "Merge the thing" feat
+eq "precondition: unfiltered describe of the double-tagged commit names deploy/c" \
+   "deploy/c" "$(git -C "$TD" describe --tags --abbrev=0 'HEAD^')"
+run_tg "$TD" "$TMP/release-pr-tf.json"
+eq "derived base on a double-tagged commit → rc 0"              "0"     "$rc"
+eq "…the base is the v tag"                                     "true"  "$(has "baseline 'v0.0.2' derived from LOCAL tags" "$err")"
+eq "…and the range is that release's: card #1 shipped before it" "false" "$(has '/tasks/1.json' "$patched")"
+eq "…card #2 ships"                                             "true"  "$(has '/tasks/2.json' "$patched")"
+
+# NO tag_format: the derived base refuses — the sibling's reason passes through — and moves nothing.
+run_tg "$TG" "$TMP/release-pr-notf.json"
+eq "derived base with no tag_format → rc 2"                     "2"     "$rc"
+eq "…the sibling's refusal names the key"                       "true"  "$(has 'does not declare `tag_format`' "$err")"
+eq "…and this tool names the step that refused"                 "true"  "$(has 'release-pr-body --last-release-tag exited 2' "$err")"
+eq "…nothing was PATCHed"                                       ""      "$patched"
+# …while the paths that derive no base still run without it.
+run_tg "$TG" "$TMP/release-pr-notf.json" --base v0.0.1
+eq "control: an explicit --base with no tag_format → rc 0"      "0"     "$rc"
+eq "control: …and it promotes"                                  "true"  "$(has '/tasks/1.json' "$patched")"
+run_tg "$TG" "$TMP/release-pr-notf.json" --dls "DL-100"
+eq "control: --dls with no tag_format → rc 0"                   "0"     "$rc"
+eq "control: …and it promotes"                                  "true"  "$(has '/tasks/1.json' "$patched")"
+
+# A ROOT head has no first parent to ask about: the full-history refusal, unchanged.
+TR="$TMP/gittagroot"; _tgrepo "$TR"
+git -C "$TR" commit -q --allow-empty -m "baseline DL-100"
+git -C "$TR" tag v0.0.1
+run_tg "$TR" "$TMP/release-pr-tf.json"
+eq "a root head → rc 2"                                         "2"     "$rc"
+eq "…by the full-history refusal"                               "true"  "$(has 'refusing a full-history sweep' "$err")"
 
 _summary "promote-stage-guard-selftest"
