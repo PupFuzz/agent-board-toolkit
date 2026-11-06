@@ -33,7 +33,7 @@ jobs:
     # out at the default depth 1, whose truncated history resolves no tag at all, so the gate would
     # refuse rather than pass blindly. Being named in this `run:` block satisfies ci-matrix-parity's
     # one rule for the selftest.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       # ⛔ THE DEFAULT `ref:` IS LOAD-BEARING FOR THE VERDICT, not only for the checkout
       # (card#10338). On a pull_request event this action leaves the MERGE COMMIT

@@ -6,6 +6,11 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#12948** — **The toolkit's CI is green again on Ubuntu 26.04, and its runner image is pinned (`ubuntu-26.04`) instead of following `ubuntu-latest`.** When `ubuntu-latest` moved to 26.04, these selftests went red on every branch with no change to the code they test. **`tests/pipeline-free-match-selftest.sh`:** 26.04's default `cat` is uutils coreutils, which raises its stdout pipe to 1 MiB, so the old ~800 KiB "large" fixture fit in the pipe and the writer never failed. The defect the file proves still happens, just past the larger buffer. The large fixtures are now sized from `/proc/sys/fs/pipe-max-size` and checked against it, so the file holds with GNU and uutils `cat`. **`tests/release-pr-body-selftest.sh` (Ctrl-C case):** bash 5.3 (26.04's bash) ignores SIGINT in the `( cd … && … & )` launch that bash 5.2 did not, so the generator could not see the interrupt the test sent. The launch now resets SIGINT/SIGQUIT to default first, as a terminal launch does. `bin/release-pr-body` is unchanged: measured on bash 5.3 with uutils coreutils, it stops at once with rc 130. The fixed case also goes red when the background-and-`wait` call is made a foreground call. The pipe-buffer condition where other selftests restate it, and `verdict-through-truncating-reader-selftest.sh`'s `env` prerequisite text, are corrected to match.
+  - **Upgrade:** none. No shipped bin, action or vendored surface changes.
+
 ## [0.52.1] - 2026-10-28
 
 **Patch — the writeback token's release user needs only a Custom board role with "Move tasks" (card#12544), and this repo's own promote job runs in the `kanban-writeback` environment (card#12374).** The PRs in `v0.52.0..v0.52.1` are enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.52.0..v0.52.1` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **patch**: no new `bin/` tool, flag or capability, and no acceptance narrowing — no input that succeeded before now fails; the only behavior change is the remediation wording of an existing stderr warning.

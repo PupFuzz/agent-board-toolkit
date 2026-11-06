@@ -348,9 +348,10 @@ declare -A DRIVER_ENV=(
 # and would measure the ambient one TWICE while reporting a two-disposition result — a clean
 # answer over a population half of which was never measured, which is the failure this whole
 # gate exists to make impossible. Refusing is the only honest option; skipping would ship the
-# lie. GNU coreutils >= 8.31 (2019); ubuntu-latest, which CI runs, carries 9.x.
+# lie. GNU coreutils >= 8.31 (2019) has both flags, and so does uutils coreutils 0.10.0 (the `env`
+# Ubuntu 26.04 ships by default, which CI runs) — measured honouring both, not just accepting them.
 if ! env --default-signal=PIPE true 2>/dev/null || ! env --ignore-signal=PIPE true 2>/dev/null; then
-    printf '%s\n' "verdict-through-truncating-reader-selftest: needs GNU coreutils env with --default-signal/--ignore-signal (>= 8.31); without it the two SIGPIPE dispositions cannot be pinned and every measurement below would silently be of the ambient one." >&2
+    printf '%s\n' "verdict-through-truncating-reader-selftest: needs an env with --default-signal/--ignore-signal (GNU coreutils >= 8.31, or uutils coreutils); without it the two SIGPIPE dispositions cannot be pinned and every measurement below would silently be of the ambient one." >&2
     exit 1
 fi
 

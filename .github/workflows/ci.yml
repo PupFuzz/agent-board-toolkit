@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# THE RUNNER IMAGE IS PINNED, NOT `ubuntu-latest` (card#12948). When `ubuntu-latest` moved from
+# 24.04 to 26.04 it swapped GNU coreutils for uutils and bash 5.2 for 5.3 under every job at once,
+# with no commit here, and suites went red on every branch overnight. A pinned image moves
+# only in a diff that names it. 26.04 because that is what consumer hosts run; the suite is
+# written to hold on both images, so a move is an edit plus a green run, not a migration.
 jobs:
   shellcheck:
     # THE ANALYSER IS PINNED, NOT INHERITED (card#6619). Every shellcheck call in this file goes
@@ -19,7 +24,7 @@ jobs:
     # the pinned version today, so the wrapper resolves it off PATH and downloads nothing;
     # `tests/shellcheck-pin-selftest.sh` holds this rule over the whole workflow directory and
     # drives the download arm that CI therefore never exercises.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: shellcheck bin/, hooks/ and tests/
@@ -101,7 +106,7 @@ jobs:
     # declares that set and carries the command that re-prints it live; this comment deliberately
     # does not restate either the names or a status, because a comment cannot hold a repository
     # SETTING. What is load-bearing here is only that `ci-gate` below `needs:` this job.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: drift-check runs and reports no drift against itself
@@ -125,7 +130,7 @@ jobs:
     # self-referential, so deleting that one line would disable the guard silently — the exact
     # hole it closes. Being named in this `run:` block is also how it satisfies the rule it
     # enforces (matrix entry OR named in a run: block), with no exception list.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: every selftest is run by a PR-triggered workflow, and the triggers hold their contract
@@ -146,7 +151,7 @@ jobs:
     # (card#5355). An intentionally non-matrix test is wired by naming it in its own job's
     # `run:` block — in this file or in a sibling workflow (card#6062) — which satisfies the
     # guard too, so there is no exception list to maintain.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -251,7 +256,7 @@ jobs:
     #
     # ~4 min: it is the suite, once more. That is the price of measuring the property instead
     # of asserting it, and the incident it exists to prevent cost a hand-restored credential.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -265,7 +270,7 @@ jobs:
     # Guards the composite action's wiring: SHA-pinned consumers get no
     # toolkit-side signal if the wrapper rots (the shellcheck job's population is bin/,
     # hooks/ and tests/ — never promote/action.yml's embedded run: block).
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Wiring assertions (parse, script path, flag contract, embedded shellcheck)
@@ -384,7 +389,7 @@ jobs:
     # The promote job's sibling, for the same reason: a SHA-pinned consumer gets no
     # toolkit-side signal if the wrapper rots, and the shellcheck job's population does not
     # reach this action's embedded run: block either.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -446,7 +451,7 @@ jobs:
     # as a `selftest` matrix entry. What this job adds is the part no local
     # test can stand in for — the RUNNER actually executing the composite on the path expected to
     # pass, and the action's shipped run step refusing on the path expected to fail.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -561,7 +566,7 @@ jobs:
       - release-artifacts-action-selftest
       - release-tag-check-action-selftest
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: every needed job succeeded
         env:

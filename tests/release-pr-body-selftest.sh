@@ -1748,14 +1748,21 @@ eq "zero bundled changes, no verifier"                  "Review: no bundled chan
 # runs the verifier in a group of its own, so only an interrupt the generator itself acts on stops
 # the wait. The generator runs as its own group leader (setsid) under a wrapper that records its
 # rc; SIGINT goes to that group while the verifier hangs 20s on the first PR, under a 30s bound.
+# The launch is an ASYNC list, and with job control off POSIX has an async list start with SIGINT
+# and SIGQUIT IGNORED — an ignore every exec below would inherit, so the generator could not trap
+# the very interrupt this case sends. bash 5.2 skipped that ignore for an and-list like `cd … &&
+# …`; bash 5.3 applies it (Ubuntu 26.04 ships 5.3, card#12948), which is how this case went red
+# there with the generator untouched. The `trap - INT QUIT` inside the async list resets them to
+# default (POSIX interp 751, which 5.3 implements), so the generator starts the way a terminal
+# starts it, on either bash.
 _need -x "$(command -v setsid || echo setsid)" setsid
 printf '%s\n' '#!/usr/bin/env bash' 'echo $$ > "$RV_PG"' "trap ':' INT" '"$@"' 'echo $? > "$RV_RCF"' > "$RV/int-run"
 chmod +x "$RV/int-run"
 rm -f "$RV/pg" "$RV/rcf"
 RV_T0="$(date +%s)"
-( cd "$RVR" && RV_PG="$RV/pg" RV_RCF="$RV/rcf" setsid "$RV/int-run" env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
+( { trap - INT QUIT; cd "$RVR" && RV_PG="$RV/pg" RV_RCF="$RV/rcf" setsid "$RV/int-run" env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
     PATH="$RVB:$RV_PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" RV_SLOW=all RV_SLEEP=20 \
-    "$BIN" --version 0.2.0 --base v0.1.0 --head "$RV_MID" >"$RV/out" 2>"$RV/err" & )
+    "$BIN" --version 0.2.0 --base v0.1.0 --head "$RV_MID" >"$RV/out" 2>"$RV/err"; } & )
 for _i in $(seq 1 50); do [[ -s "$RV/pg" ]] && break; sleep 0.1; done
 sleep 1.5
 kill -INT -- "-$(cat "$RV/pg")" 2>/dev/null || true
