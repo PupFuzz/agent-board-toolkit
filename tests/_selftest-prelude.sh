@@ -135,7 +135,8 @@ has() { case "$2" in *"$1"*) echo true ;; *) echo false ;; esac; }
 # (a) `grep -q` leaves EARLY — the match is near the START of the stream, so the reader is gone
 # while the writer still has bytes to push (a match at the END means grep read everything and
 # exited after the writer did: no closed pipe, no signal); and (b) the writer has more than the
-# 64 KiB PIPE BUFFER left to write at that moment. Measured on this host (bash 5.2.21),
+# PIPE BUFFER left to write at that moment — 64 KiB unless the writer raised it (uutils `cat`
+# does, to 1 MiB; card#12948). Measured on this host (bash 5.2.21),
 # `printf '%s\n' "$big" | grep -qx MATCH-ME` — a BUILTIN writer:
 #     needle first, 60009 bytes → rc 0    PIPESTATUS 0 0    (payload fits the buffer)
 #     needle first, 65009 bytes → rc 141  PIPESTATUS 141 0  (the builtin's subshell DIED)
