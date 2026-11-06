@@ -6,46 +6,17 @@ jobs:
   diag:
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          set +e
-          cat /etc/os-release | head -3
-          bash --version | head -1
-          for c in cat sleep timeout kill seq date env head tee yes printf setsid; do p=$(command -v $c); echo "$c -> $p -> $(readlink -f "$p" 2>/dev/null)"; "$p" --version 2>&1 | head -1; done
-          dpkg -l | grep -Ei 'coreutils|uutils' || true
-          ls -la /usr/lib/cargo/bin 2>/dev/null | head; ls /usr/bin/gnu* 2>/dev/null | head
-          trap -p SIGPIPE
-          seq 1 30000 > /tmp/big
-          (set -o pipefail; cat /tmp/big | grep -qx 1; echo "cat: ${PIPESTATUS[*]}")
-          (trap '' PIPE; set -o pipefail; cat /tmp/big | grep -qx 1; echo "cat ign: ${PIPESTATUS[*]}")
-          (trap - PIPE; set -o pipefail; cat /tmp/big | grep -qx 1; echo "cat dfl: ${PIPESTATUS[*]}")
-          (set -o pipefail; cat < /tmp/big | grep -qx 1; echo "cat stdin-file: ${PIPESTATUS[*]}")
-          (set -o pipefail; seq 1 30000 | cat | grep -qx 1; echo "cat pipe-in: ${PIPESTATUS[*]}")
-          (set -o pipefail; head -c 10000000 /tmp/big | grep -qx 1; echo "head: ${PIPESTATUS[*]}")
-          (set -o pipefail; seq 1 300000 | grep -qx 1; echo "seq: ${PIPESTATUS[*]}")
-          (set -o pipefail; yes | head -1 >/dev/null; echo "yes: ${PIPESTATUS[*]}")
-          (set -o pipefail; printf '%s\n' "$(cat /tmp/big)" | grep -qx 1; echo "builtin: ${PIPESTATUS[*]}")
-          (set -o pipefail; /usr/bin/gnucat /tmp/big 2>/dev/null | grep -qx 1; echo "gnucat: ${PIPESTATUS[*]}") || true
-          cat /tmp/big | strace -f -e trace=write,splice,sendfile,exit_group -o /tmp/st cat 2>/dev/null | grep -qx 1 || true
-          (strace -f -e trace=write,splice,sendfile,copy_file_range,exit_group -o /tmp/st2 cat /tmp/big | grep -qx 1) || true; tail -5 /tmp/st2 || true
-          # timeout process group + signal forwarding
-          timeout 5 bash -c 'echo "timeout child pgid=$(ps -o pgid= $$) mypid=$$ ppid=$PPID"; ps -o pid,pgid,comm -p $PPID' || true
-          echo "my pgid: $(ps -o pgid= $$)"
-          # TERM forwarding by timeout
-          timeout -k 5 30 bash -c 'sleep 20' & p=$!; sleep 1; t0=$(date +%s); kill -TERM $p; wait $p; echo "timeout TERM rc=$? secs=$(( $(date +%s)-t0 ))"
-          # background (SIGINT ignored) then TERM
-          bash -c 'timeout -k 5 30 bash -c "sleep 20" & p=$!; sleep 1; t0=$(date +%s); kill -TERM $p; wait $p; echo "bg-nonint TERM rc=$? secs=$(( $(date +%s)-t0 ))"; ps -ef | grep -c "sleep 20"'
-          bash -c 'timeout -k 5 30 bash -c "sleep 20" & p=$!; sleep 1; t0=$(date +%s); kill -INT $p; wait $p; echo "bg-nonint INT rc=$? secs=$(( $(date +%s)-t0 ))"'
-          grep -i sig /proc/self/status
-          dfl() { python3 -c 'import signal,os,sys; signal.signal(signal.SIGPIPE, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' "$@"; }
-          dfl bash -c 'trap -p PIPE; set -o pipefail; cat /tmp/big | grep -qx 1; echo "DFL cat: ${PIPESTATUS[*]}"; gnucat /tmp/big | grep -qx 1; echo "DFL gnucat: ${PIPESTATUS[*]}"; printf "%s\n" "$(cat /tmp/big)" | grep -qx 1; echo "DFL builtin: ${PIPESTATUS[*]}"; seq 1 300000 | grep -qx 1; echo "DFL seq: ${PIPESTATUS[*]}"; head -c 9999999 /tmp/big | grep -qx 1; echo "DFL head: ${PIPESTATUS[*]}"'
-          dfl strace -f -e trace=rt_sigaction,write,exit_group -o /tmp/st3 cat /tmp/big | grep -qx 1; grep -E 'SIGPIPE|EPIPE|exit' /tmp/st3 | head
-          strace -f -e trace=rt_sigaction,write,exit_group -o /tmp/st4 cat /tmp/big | grep -qx 1; grep -E 'SIGPIPE|EPIPE|exit' /tmp/st4 | head
-          # timeout pgid
-          timeout 5 bash -c 'ps -o pid,pgid,comm -p $$ -p $PPID'; echo "shell pgid $(ps -o pgid= -p $$)"
-          gnutimeout 5 bash -c 'ps -o pid,pgid,comm -p $$ -p $PPID'
-          for T in timeout gnutimeout; do
-            bash -c "$T -k 5 30 bash -c 'sleep 20' & p=\$!; sleep 1; t0=\$(date +%s); kill -TERM \$p; wait \$p; echo \"$T bg TERM rc=\$? secs=\$(( \$(date +%s)-t0 ))\"; pgrep -fa 'sleep 20'; pkill -f 'sleep 20'"
-          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - run: bash tests/release-pr-body-selftest.sh 2>&1 | grep -E "FAIL|SIGINT|interrupted" || true
-      - run: PATH=$PWD/gnubin:$PATH; mkdir gnubin; for f in /usr/bin/gnu*; do b=${f#/usr/bin/gnu}; ln -s $f gnubin/$b; done; ls gnubin | wc -l; timeout --version | head -1; bash tests/release-pr-body-selftest.sh 2>&1 | grep -E 'FAIL|SIGINT|interrupted'; bash tests/pipeline-free-match-selftest.sh | tail -3
+      - name: sigint disposition of async lists
+        run: |
+          bash --version | head -1
+          bash -c '( setsid bash -c "grep SigIgn /proc/\$\$/status" & ); sleep 0.5; ( cd /tmp && setsid bash -c "grep SigIgn /proc/\$\$/status" & ); sleep 0.5; ( cd /tmp && bash -c "grep SigIgn /proc/\$\$/status" & ); sleep 0.5'
+      - name: repro uutils timeout
+        run: bash tests/zz-diag/int-repro.sh timeout || true
+      - name: repro gnu timeout
+        run: bash tests/zz-diag/int-repro.sh gnutimeout || true
+      - name: selftest with GNU coreutils first on PATH
+        run: |
+          mkdir "$RUNNER_TEMP/gnubin"; for f in /usr/bin/gnu*; do ln -s "$f" "$RUNNER_TEMP/gnubin/${f#/usr/bin/gnu}"; done
+          export PATH="$RUNNER_TEMP/gnubin:$PATH"; timeout --version | head -1
+          bash tests/release-pr-body-selftest.sh 2>&1 | grep -E 'FAIL|SIGINT|interrupted|passed' || true
