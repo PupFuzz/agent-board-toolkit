@@ -89,7 +89,8 @@ NAMES_OUTCOME='did not return a complete card list|INCOMPLETE|unavailable|read f
 # other process. Two conditions decide it, and NEITHER is the writer's class:
 #   (a) `grep -q` leaves EARLY — the match is near the start, so the reader is gone while the
 #       writer still has bytes to push; and
-#   (b) the writer has more than the 64 KiB PIPE BUFFER left to write when that happens.
+#   (b) the writer has more than the PIPE BUFFER left to write when that happens (64 KiB unless
+#       the writer raised it — uutils `cat` does, to 1 MiB; card#12948).
 #
 # ⛔ THE INTERESTING PART — the original measurement is REPRODUCIBLE, and that is why it fooled
 # everyone. It holds only with the match at the END of the body, where grep reads the whole
