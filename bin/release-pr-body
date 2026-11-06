@@ -14,6 +14,9 @@
 #   release-pr-body --manifest        # print just the machine-readable shipped-ref list (one per line)
 #   release-pr-body --card-manifest   # print just the shipped CARD IDs (bare integers, one per line)
 #   release-pr-body --tag [--version X.Y.Z]  # print just the git TAG NAME this repo's tag_format maps a version to
+#   release-pr-body --last-release-tag --head REF
+#                                     # print the newest RELEASE tag (a name tag_format can produce)
+#                                     # reachable from REF, or nothing; no fetch, no version needed
 #   release-pr-body --tool-version    # print the agent-board-toolkit version THIS FILE is, and exit
 #   release-pr-body --classify-commits --base REF --head REF
 #                                     # print which commits in REF..REF ship, one classified line per
@@ -65,8 +68,8 @@
 # a list is given with the command that re-prints it. Every `*-cmd` is shell-quoted, runs from the
 # repo root, names this tool by its PATH name and pins each resolved range end by SHA, so it
 # answers about the same range later (a first release has no base to pin). The block is never
-# emitted by a query mode (`--manifest`, `--card-manifest`, `--tag`, `--tool-version`,
-# `--classify-commits`) or a refusal.
+# emitted by a query mode (`--manifest`, `--card-manifest`, `--tag`, `--last-release-tag`,
+# `--tool-version`, `--classify-commits`) or a refusal.
 # "Not included" (the scope a release deferred) is not a field of this block: git cannot derive
 # deferred scope, so it stays with the release-pr skill, which reports it outside the body.
 #
@@ -80,13 +83,28 @@
 # flag can answer. Every earlier revision of this file refuses `--tool-version` as `unknown arg`
 # at rc 2 — that refusal means "older than the flag", never a version.
 #
-# `--tag` EXISTS SO THE MAPPING HAS ONE IMPLEMENTATION (card#7203). `.release-pr.json`'s
-# `tag_format` is read here and nowhere else; `bin/release-tag-check` needs the same answer to
-# know which tag to wait for, and hardcoding `v${VERSION}` there made it poll for a tag that
-# cannot exist under a non-`v` scheme — refusing EVERY release at its bound, for any consumer
-# who set the key this file documents. It resolves the tag by calling this mode on its sibling,
-# exactly as it delegates the release classification to `release-artifacts-check`. The mode
-# returns BEFORE the baseline block, so it performs no fetch and touches no network.
+# `--tag` EXISTS SO THE MAPPING HAS ONE IMPLEMENTATION (card#7203). Which tag a version maps to,
+# and which tags count as RELEASE tags when a baseline is derived, are both `.release-pr.json`'s
+# `tag_format`, and this file computes both for every release tool that honours the key.
+# `bin/release-tag-check` needs the tag name to know which tag to wait for, and hardcoding
+# `v${VERSION}` there made it poll for a tag that cannot exist under a non-`v` scheme — refusing
+# EVERY release at its bound, for any consumer who set the key this file documents. It resolves
+# the tag by calling this mode on its sibling, exactly as it delegates the release classification
+# to `release-artifacts-check`. `bin/promote-released-cards` derives its default range base by
+# calling `--last-release-tag` the same way (card#12945). The one other reader of the key in this
+# toolkit, `bin/changelog-gate`, does not honour it: it reads `v*` tags only, with a baseline of
+# its own (`git describe --match 'v*'`), accepts the key only absent or "v{{version}}", and refuses
+# any other value. Both modes return BEFORE the baseline block, so they perform no fetch and touch
+# no network.
+#
+# `tag_format` HAS NO DEFAULT (card#12945). A config that does not declare it, or declares it
+# empty, is refused at rc 2 by every mode that needs a tag name or a release baseline: `--tag`,
+# `--last-release-tag`, body generation (its header and the announce block name the tag), and
+# `--manifest` / `--card-manifest` when the base is DEFAULTED (the baseline is a release tag).
+# Modes that need neither still run without it: `--tool-version`, `--classify-commits`, and
+# `--manifest` / `--card-manifest` given an explicit `--base` (and an explicit `--head` if
+# offline). Until card#12945 a missing key read as `v{{version}}`, so a repo tagging under any
+# other scheme that forgot the key got the wrong tag name and baseline at rc 0.
 #
 # TWO REF SPELLINGS, TWO ID SPACES — the config declares each separately because
 # they correlate against DIFFERENT card fields, and conflating them promotes the
@@ -549,7 +567,7 @@ commit_rows() {
   done <<< "$recs"
 }
 
-CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0; TOOL_VERSION_ONLY=0; CLASSIFY_ONLY=0
+CONFIG=".release-pr.json"; VERSION=""; BASE=""; HEAD_REF=""; MANIFEST_ONLY=0; CARD_MANIFEST_ONLY=0; TAG_ONLY=0; LAST_TAG_ONLY=0; TOOL_VERSION_ONLY=0; CLASSIFY_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) require_value "$1" "${2:-}"; VERSION="$2"; shift 2;;
@@ -557,6 +575,7 @@ while [ $# -gt 0 ]; do
     --head)    require_value "$1" "${2:-}"; HEAD_REF="$2"; shift 2;;
     --config)  require_value "$1" "${2:-}"; CONFIG="$2"; shift 2;;
     --tag)      TAG_ONLY=1; shift;;
+    --last-release-tag) LAST_TAG_ONLY=1; shift;;
     --manifest) MANIFEST_ONLY=1; shift;;
     --card-manifest) CARD_MANIFEST_ONLY=1; shift;;
     --tool-version) TOOL_VERSION_ONLY=1; shift;;
@@ -583,6 +602,7 @@ done
 QUERY_MODES=""; QUERY_COUNT=0
 query_mode() { [ "$1" = 1 ] || return 0; QUERY_MODES="${QUERY_MODES:+$QUERY_MODES, }$2"; QUERY_COUNT=$((QUERY_COUNT + 1)); }
 query_mode "$TAG_ONLY"           --tag
+query_mode "$LAST_TAG_ONLY"      --last-release-tag
 query_mode "$MANIFEST_ONLY"      --manifest
 query_mode "$CARD_MANIFEST_ONLY" --card-manifest
 query_mode "$TOOL_VERSION_ONLY"  --tool-version
@@ -628,15 +648,48 @@ VERSION_EXTRACT_CMD="$(cfg_opt '.version_extract_cmd')"  # optional; see the ver
 REF_TOKEN_REGEX="$(cfg_opt '.ref_token_regex')"    # e.g. "DL-[0-9]+"; optional — numeric part is a DL number
 CARD_TOKEN_REGEX="$(cfg_opt '.card_token_regex')"  # e.g. "card#[0-9]+"; optional — numeric part is a CARD ID
 # How a version maps to its git tag name, with {{version}} as the placeholder
-# (symmetric with the `artifacts` template expansion below). Drives both the
-# baseline own-tag exclude AND the body's display header, so a non-v scheme names
-# the tag that actually exists in each place. Default `v{{version}}` preserves the
-# historical `v`-prefixed tag; a non-prefixed scheme sets e.g. "{{version}}" (the
-# date string IS the tag) or "release-{{version}}".
-# NB: default assigned on its own line for readability. (An earlier comment here
-# claimed `${VAR:-v{{version}}}` mis-parses on the `}}` — tested false in bash/sh;
-# the inline form works. The two-line form is kept as the clearer one.)
-TAG_FORMAT="$(cfg_opt '.tag_format')"; [ -n "$TAG_FORMAT" ] || TAG_FORMAT='v{{version}}'
+# (symmetric with the `artifacts` template expansion below). Drives the baseline's
+# release-tag match and own-tag exclude AND the body's display header, so a non-v
+# scheme names the tag that actually exists in each place. A `v`-prefixed line
+# declares "v{{version}}"; a non-prefixed scheme sets e.g. "{{version}}" (the date
+# string IS the tag) or "release-{{version}}". NO DEFAULT — the header's
+# `tag_format` HAS NO DEFAULT block owns which modes refuse without it.
+TAG_FORMAT="$(cfg_opt '.tag_format')"
+# A manifest query given an explicit --base derives no baseline and names no tag; every other
+# mode that reaches this line needs the key. Refused here, before the version resolution (which
+# can run a config-named command) and before any fetch.
+if [ -z "$TAG_FORMAT" ]; then
+  if ! { [ "$MANIFEST_ONLY" = 1 ] || [ "$CARD_MANIFEST_ONLY" = 1 ]; } || [ -z "$BASE" ]; then
+    die "$CONFIG does not declare \`tag_format\` (missing or empty) — it says what this repo's release tags are called, and this mode needs it to name a release tag or find the last one; there is no default, because a guessed prefix names the wrong tag at rc 0 on any other scheme. Add it to $CONFIG: \"tag_format\": \"v{{version}}\" for v-prefixed tags (v1.2.3), or the scheme your tagging workflow creates, e.g. \"{{version}}\" or \"release-{{version}}\""
+  fi
+fi
+
+# last_release_tag <tip> [<exclude>]: the newest release tag reachable from <tip> — newest as
+# `git describe` orders them — or nothing. THE ONE BASELINE DERIVATION (card#12945): the body's
+# default base below and `bin/promote-released-cards` (through `--last-release-tag`) both read it.
+# A release tag is one `tag_format` can produce: `--match` is the format with `{{version}}` as `*`,
+# so a lightweight `deploy/…` tag never becomes the base under "v{{version}}", whether it sits on
+# a commit of its own or on a release commit beside the `v` tag (unfiltered, `describe` returned
+# the `deploy/` name there — measured on kanban-board at v0.51.0). The format's literal text needs
+# no glob escaping: `*`, `?`, `[` and `\` are illegal in a ref name, so a format carrying one names
+# no tag at all. NOT CLOSED: the glob does not check the version part, so under "v{{version}}" a
+# tag like `v-nightly` still counts, and under "{{version}}" every tag does.
+last_release_tag() {
+  local glob="${TAG_FORMAT//\{\{version\}\}/*}" rel
+  rel="$(git describe --tags --abbrev=0 --match="$glob" ${2:+"--exclude=$2"} "$1" 2>/dev/null || true)"
+  [ -z "$rel" ] || printf '%s\n' "$rel"
+}
+
+# `--last-release-tag` answers from git and the config alone, before the version resolution: its
+# caller passes the ref to look back from and needs no version. No fetch — the caller owns which
+# tags are local, as it owns the ref.
+if [ "$LAST_TAG_ONLY" = 1 ]; then
+  [ -n "$HEAD_REF" ] \
+    || die "--last-release-tag needs --head <ref>: it names the newest release tag reachable from the ref it is given, and resolves no default"
+  require_resolvable --head "$HEAD_REF"
+  last_release_tag "$HEAD_REF"
+  exit 0
+fi
 
 # Resolve the version: explicit flag, else `version_extract_cmd` if the config names one,
 # else the FIRST version_regex match in the version file. That regex is the ONE declaration
@@ -768,7 +821,8 @@ fi
 # The actual tag name for this version, per tag_format. Drives BOTH the baseline
 # own-tag exclude (below) AND the body's display header — computed unconditionally
 # here so an explicit --base (which skips the baseline block) still renders the
-# real tag. Under the default `v{{version}}` this is `v<version>` (back-compat).
+# real tag. Empty only on the one path the tag_format refusal above lets through
+# undeclared — a manifest query with an explicit --base — which reads it nowhere.
 THIS_TAG="${TAG_FORMAT//\{\{version\}\}/$VERSION}"
 
 # THE QUERY MODE RETURNS HERE, before the baseline block below — which FETCHES from origin and
@@ -825,8 +879,9 @@ fi
 # needs: an annotated tag peels through, and anything `git log` could not use as a range end
 # fails here too, so no ref that resolves today changes behaviour.
 #
-# NOT reached by `--tag`, which returns above: that mode builds no range, and `release-tag-check`
-# asks it inside a CI job with no guarantee the range's refs are present at all.
+# NOT reached by `--tag` or `--last-release-tag`, which return above: neither builds a range, and
+# `release-tag-check` asks `--tag` inside a CI job with no guarantee the range's refs are present at
+# all. (`--last-release-tag` checks its one ref with the same predicate before reading it.)
 #
 # `bin/promote-released-cards` carries the same predicate under its own message (card#7525). The
 # two are compared directly since card#8529 — tests/mirror-pair-parity-selftest.sh extracts both
@@ -836,11 +891,12 @@ fi
 # `--classify-commits` query mode needs it before the version is resolved; this block is its WHY.
 
 # The base leg fetches with tags (release tags point at main-only merge commits a
-# dev-side fetch's tag auto-follow never brings over); the excluded tag name is
-# derived from tag_format, not a hardcoded `v` prefix (preserves .NET / date tag
-# schemes). The two fetches are SEPARATE commands on purpose: each resolves its own
-# tip with a fetch-head fallback, for a clone whose refspec does not cover that
-# branch and so never gets a `refs/remotes/origin/…` update — and one combined
+# dev-side fetch's tag auto-follow never brings over); which tags count, and the
+# excluded own tag, are derived from tag_format by last_release_tag, not a hardcoded
+# `v` prefix (preserves .NET / date tag schemes). The two fetches are SEPARATE
+# commands on purpose: each resolves its own tip with a fetch-head fallback, for a
+# clone whose refspec does not cover that branch and so never gets a
+# `refs/remotes/origin/…` update — and one combined
 # fetch leaves the fetch head naming two branches with no way to tell which line is
 # whose. The base leg runs FIRST so its fetch head is consumed before the head
 # leg's fetch overwrites it.
@@ -858,7 +914,7 @@ if [ -z "$BASE" ]; then
   if [ -n "$LOCAL_TIP" ] && [ "$LOCAL_TIP" != "$MAIN_TIP" ]; then
     echo "release-pr-body: note: local '$MAIN_BRANCH' ($(git rev-parse --short "$LOCAL_TIP")) is behind/apart from origin/$MAIN_BRANCH ($(git rev-parse --short "$MAIN_TIP")) — expected under the release flow; the baseline uses the remote tip." >&2
   fi
-  BASE="$(git describe --tags --abbrev=0 --exclude="$THIS_TAG" "$MAIN_TIP" 2>/dev/null || true)"
+  BASE="$(last_release_tag "$MAIN_TIP" "$THIS_TAG")"
 else
   # An explicit --base has the SAME shape as an explicit --head, verified rather than assumed:
   # it skips this leg's fetch, `require_value` has already made it non-empty, and it is

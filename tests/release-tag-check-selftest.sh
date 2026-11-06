@@ -44,6 +44,7 @@ mkdir -p "$R"; g init -q "$R"
 cat > "$R/.release-pr.json" <<'JSON'
 {
   "version_file": "VERSION",
+  "tag_format": "v{{version}}",
   "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
   "artifacts": ["VERSION → {{version}}"]
 }
@@ -264,8 +265,9 @@ g -C "$R" push -q --delete origin v0.29.0 && g -C "$R" tag -d v0.29.0 >/dev/null
 #
 # ONE FIXTURE, FOUR SCHEMES, selected by --config: the configs are all COMMITTED at both ends of
 # the range because the classifier reads its copy out of git, while the tag name is resolved
-# from the checkout. Watched RED on the pre-card#7203 binary — every arm below except the two
-# controls, which is what makes the controls controls.
+# from the checkout. Watched RED on the pre-card#7203 binary — every arm below except the
+# controls, which is what makes the controls controls (the no-key arms were rewritten by
+# card#12945 and watched red on the pre-card#12945 binary instead).
 echo "== the tag asserted is the one tag_format names, not v<version> =="
 R2="$T/tagfmt"; REMOTE2="$T/tagfmt-remote.git"
 g init --bare -q "$REMOTE2"; mkdir -p "$R2"; g init -q "$R2"
@@ -276,7 +278,7 @@ _tf_cfg() { # _tf_cfg <path> [tag_format]
     printf '{\n  "version_file": "VERSION",\n  "version_regex": "[0-9]+\\\\.[0-9]+\\\\.[0-9]+",\n  "artifacts": ["VERSION → {{version}}"]\n}\n' > "$R2/$1"
   fi
 }
-_tf_cfg .release-pr.json                       # no tag_format key at all — the historical default
+_tf_cfg .release-pr.json                       # no tag_format key at all — refused since card#12945
 _tf_cfg tf-v.json        'v{{version}}'        # the default, stated explicitly
 _tf_cfg tf-release.json  'release-{{version}}' # a prefixed non-v scheme
 _tf_cfg tf-bare.json     '{{version}}'         # the version IS the tag (date schemes)
@@ -301,17 +303,22 @@ tf_run() { # tf_run <config> [args...]
 tf_tag() { g -C "$R2" tag "$1" "$TF_RELEASE" && g -C "$R2" push -q origin "$1"; }
 tf_untag() { g -C "$R2" push -q --delete origin "$1" && g -C "$R2" tag -d "$1" >/dev/null; }
 
-# CONTROL A — no key: the historical `v<version>` behaviour, byte-for-byte. If this arm ever
-# moves, the change was not additive.
+# NO KEY — REFUSED, NOT DEFAULTED (card#12945). Until then an unset key meant `v<version>`; the
+# sibling now refuses a config that does not declare `tag_format`, and this tool relays that
+# refusal at rc 2 before any poll, even with `v0.28.0` itself on the remote. A tool that still
+# guessed the prefix would find that tag and pass.
 tf_tag v0.28.0
 tf_run .release-pr.json
-eq "control: no tag_format ⇒ still v0.28.0"       "0"    "$RC"
-eq "…named as such"                               "true" "$(has "v0.28.0 present at $TF_RELEASE" "$OUT")"
-# CONTROL B — the key set to its OWN default. A fixture that sets a key to its default value
-# cannot discriminate "the key was read" from "the default fired", so this is a control and NOT
-# coverage: the arms below are what prove the key is read.
+eq "no tag_format → rc 2, though v0.28.0 exists"  "2"    "$RC"
+eq "…the sibling's refusal names the key"         "true" "$(has 'does not declare `tag_format`' "$OUT")"
+eq "…relayed as an unresolved tag name"           "true" "$(has 'could not resolve the tag name for version 0.28.0' "$OUT")"
+eq "…and no tag was asserted from a guessed name" "false" "$(has 'v0.28.0 present at' "$OUT")"
+# CONTROL — the v-prefixed scheme, declared. It names the same tag a hardcoded `v` prefix would,
+# so it cannot discriminate "the key was read" from a hardcode: this is a control and NOT
+# coverage; the arms below are what prove the key is read.
 tf_run tf-v.json
 eq "control: tag_format v{{version}} ⇒ v0.28.0"   "0"    "$RC"
+eq "…named as such"                               "true" "$(has "v0.28.0 present at $TF_RELEASE" "$OUT")"
 
 # THE DISCRIMINATING NEGATIVE, RUN FIRST. `v0.28.0` — the tag a hardcoded prefix would find —
 # is on the remote and `release-0.28.0` is not. A tool reading tag_format must REFUSE here; the
@@ -358,29 +365,6 @@ eq "…naming the bare version as the tag"          "true" "$(has "0.28.0 presen
 eq "…and never invents a v prefix"                "false" "$(has "v0.28.0" "$OUT")"
 tf_untag 0.28.0
 
-# ── THE COMBINATION NOTHING DROVE: the key ABSENT, and another tag AT the commit ──────────────
-# Every arm above reaches the tag-elsewhere cause with a fixture that HAS `tag_format`, so the
-# message was free to say the config MAPS this version to that name — while the unset key is
-# the NORMAL case (`docs/INSTALL.md` §6d: "a repo that leaves the key unset gets `v<version>`"),
-# because the default is applied by the sibling that reads the file, not written in the file.
-# The operator was sent to look up a key they will not find. This is the missing cell.
-echo "== the tag-elsewhere cause holds with NO tag_format key in the config =="
-tf_tag release-0.28.0
-tf_run .release-pr.json
-eq "no key + another tag at the commit → rc 1"    "1"    "$RC"
-# Anchored on the message's own prefix, not on the bare tag: `v0.28.0 does not exist` is a
-# SUBSTRING of what a wrong tag name would print (`Xv0.28.0 does not exist`), so the unanchored
-# needle passes under a mutation of the very thing it is asserting.
-eq "…naming v0.28.0 as the tag it waited for"     "true" \
-   "$(has 'release-tag-check: v0.28.0 does not exist' "$OUT")"
-eq "…and the tag that IS at the commit"           "true" "$(has 'carrying: release-0.28.0' "$OUT")"
-# PRESENCE AND ABSENCE BOTH, because an assertion of absence alone certifies whatever replaces
-# the text it forbids — including nothing at all.
-eq "…saying the key may not be set at all"        "true" \
-   "$(has 'its tag_format if that key is set, else the default v{{version}}' "$OUT")"
-eq "…never asserting the config carries the key"  "false" "$(has 'tag_format maps version' "$OUT")"
-tf_untag release-0.28.0
-
 # ── A CONTROL CHARACTER IN THE TAG NAME IS A WORKFLOW COMMAND ─────────────────────────────────
 # `${TAG}` is interpolated into a `::error::` annotation, so a NEWLINE in `tag_format` makes the
 # refusal carry a second, attacker-chosen workflow command into the promote job's log. No legal
@@ -395,7 +379,7 @@ eq "…and NO workflow command is emitted"          "0"    "$(_wf_lines "$OUT")"
 # CONTROL — the same counter over an ordinary refusal, which DOES emit one. Without it, "no
 # workflow command" would also be true of a counter that can only ever answer zero.
 tf_tag release-0.28.0
-tf_run .release-pr.json
+tf_run tf-v.json
 # NON-ZERO, not a fixed count: a host with no coreutils `timeout` legitimately adds a
 # `::warning::` of its own, and a control that reds on THAT is measuring the host, not the tool.
 eq "control: an ordinary refusal DOES emit one"   "false" \
