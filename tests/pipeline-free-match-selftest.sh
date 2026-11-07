@@ -24,8 +24,21 @@
 #   (a) `grep -q` LEAVES EARLY — the match is near the start of the stream, so the reader is gone
 #       while the writer still has bytes to push. A match at the END means grep read everything
 #       and exited after the writer did: no closed pipe, no signal, rc 0.
-#   (b) the writer still has MORE THAN THE PIPE BUFFER (64 KiB) left to write when that happens.
-#       Under the buffer the whole payload is absorbed and the writer exits 0 regardless.
+#   (b) the writer still has MORE THAN THE PIPE BUFFER left to write when that happens. Under
+#       the buffer the whole payload is absorbed and the writer exits 0 regardless.
+#
+# ⚑ THE PIPE BUFFER IS THE WRITER'S TO SIZE, NOT A CONSTANT (card#12948). A pipe starts at
+# 64 KiB, but any process holding it may raise it with `fcntl(F_SETPIPE_SZ)` up to
+# `/proc/sys/fs/pipe-max-size` (1 MiB by default; only CAP_SYS_RESOURCE goes past it). GNU `cat`
+# leaves it alone. uutils `cat` — the `cat` Ubuntu 26.04 ships by default — raises its stdout
+# pipe to 1 MiB and `splice`s the file into it, so an ~800 KiB fixture that GNU `cat` could not
+# get rid of is absorbed WHOLE, before `grep` reads a byte, and the writer exits 0. An earlier
+# cut of this file sized BIG at "past 64 KiB" and went red on every 26.04 runner at `0 0` — not
+# because the defect went away, but because its fixture no longer reached condition (b). The
+# window moved; it did not close: past the writer's buffer uutils `cat` takes SIGPIPE (141) or
+# EPIPE (`cat: <file>: Broken pipe`, 1) exactly as GNU `cat` does. So the large fixtures below are
+# sized from, and asserted against, the LARGEST buffer an unprivileged writer can set on this
+# host, which covers both implementations without naming either.
 #
 # ⚑ AND THE WRITER'S NON-ZERO STATUS IS NOT ALWAYS 141 — it depends on the SIGPIPE DISPOSITION
 # this process tree INHERITED, which is why this file measures that disposition instead of
@@ -85,11 +98,20 @@ NEEDLE='MATCH-ME'
 # _filler <lines> — bulk that carries no needle.
 _filler() { local i; for i in $(seq 1 "$1"); do printf 'filler-line-%s-padding-padding-padding\n' "$i"; done; }
 
+# PIPE_CAP — the largest pipe buffer an unprivileged writer can give itself here. Linux exposes
+# it; elsewhere there is no F_SETPIPE_SZ and the default buffer is the only one.
+PIPE_CAP=65536
+[[ -r /proc/sys/fs/pipe-max-size ]] && PIPE_CAP="$(< /proc/sys/fs/pipe-max-size)"
+# The large fixtures carry 3x PIPE_CAP of filler (~40 bytes a line): a full buffer, plus whatever
+# `grep` reads before it matches line 1, still leaves the writer more than a buffer's worth it
+# can only push into a closed pipe.
+BIG_LINES=$(( 3 * PIPE_CAP / 40 ))
+
 # FOUR fixtures, one per cell of (match position) × (payload size). The pair that differs on ONE
 # axis is what makes each verdict attributable; a single big-early fixture would red and prove
 # only that SOMETHING about it is hazardous.
-BIG_EARLY="$TMP/big-early.txt";  { printf '%s\n' "$NEEDLE"; _filler 20000; } > "$BIG_EARLY"
-BIG_LATE="$TMP/big-late.txt";    { _filler 20000; printf '%s\n' "$NEEDLE"; } > "$BIG_LATE"
+BIG_EARLY="$TMP/big-early.txt";  { printf '%s\n' "$NEEDLE"; _filler "$BIG_LINES"; } > "$BIG_EARLY"
+BIG_LATE="$TMP/big-late.txt";    { _filler "$BIG_LINES"; printf '%s\n' "$NEEDLE"; } > "$BIG_LATE"
 SMALL_EARLY="$TMP/small-early.txt"; { printf '%s\n' "$NEEDLE"; _filler 10; } > "$SMALL_EARLY"
 SMALL_LATE="$TMP/small-late.txt";   { _filler 10; printf '%s\n' "$NEEDLE"; } > "$SMALL_LATE"
 BIG_EARLY_TEXT="$(cat "$BIG_EARLY")"
@@ -98,16 +120,18 @@ SMALL_EARLY_TEXT="$(cat "$SMALL_EARLY")"
 
 _bytes() { wc -c < "$1" | tr -d ' '; }
 
-# The 64 KiB pipe buffer is half the mechanism, so the fixtures' sizes are asserted rather than
+# The pipe buffer is half the mechanism, so the fixtures' sizes are asserted rather than
 # assumed. A "large" fixture that quietly shrank under the buffer would turn the whole battery
-# into a vacuous pass — which is the precise failure this file exists to have caught.
-echo "== the fixtures straddle the 64 KiB pipe buffer, and each carries the needle where it claims =="
+# into a vacuous pass — which is the precise failure this file exists to have caught, and then
+# hit when the buffer grew under it (card#12948). Large means past TWICE the largest buffer a
+# writer can set here; small means inside the default one, which no writer can shrink.
+echo "== the fixtures straddle the pipe buffer (largest settable here: $PIPE_CAP), and each carries the needle where it claims =="
 for _f in "$BIG_EARLY" "$BIG_LATE"; do
-    eq "$(basename "$_f") is past the pipe buffer" "true" \
-       "$([[ "$(_bytes "$_f")" -gt 65536 ]] && echo true || echo false)"
+    eq "$(basename "$_f") is past twice the largest settable pipe buffer" "true" \
+       "$([[ "$(_bytes "$_f")" -gt $(( 2 * PIPE_CAP )) ]] && echo true || echo false)"
 done
 for _f in "$SMALL_EARLY" "$SMALL_LATE"; do
-    eq "$(basename "$_f") is inside the pipe buffer" "true" \
+    eq "$(basename "$_f") is inside the default pipe buffer" "true" \
        "$([[ "$(_bytes "$_f")" -lt 65536 ]] && echo true || echo false)"
 done
 eq "the EARLY fixtures really do carry the needle on line 1" "true" \

@@ -120,7 +120,8 @@
 #   which pull request a commit is and whether it ships (card#11602): a revert — known by git's
 #   `This reverts commit` line — ships no DL from the original it quotes and never its original's
 #   `(#N)`, and a change a revert in the range takes back ships nothing. That sibling must be vendored beside
-#   this file for a range-derived run; without it the run refuses (rc 2). An explicit
+#   this file for a range-derived run (it also names a defaulted <base>, through
+#   `--last-release-tag`); without it the run refuses (rc 2). An explicit
 #   --dls/--cards run does not read the range and does not need it;
 #   - card IDs from `--cards` only, matched against the card's own `id`.
 #
@@ -211,11 +212,12 @@
 #       explicit id set derives no range at all). Then REVERT the `dry-run` edit in the next dev
 #       PR: under a release-branch flow the back-merge carries it into dev, and every later
 #       release would otherwise run as a dry run. ⚠ A TAG AT THE LAST OLD-REPO COMMIT IS NOT A
-#       SUBSTITUTE in general: the derived base is `git describe` of the release head's FIRST
+#       SUBSTITUTE in general: the derived base is the newest RELEASE tag (one `tag_format` can
+#       produce; `release-pr-body --last-release-tag`) reachable from the release head's FIRST
 #       PARENT, and under a release-branch flow that is the previous main tip, from which a tag on
-#       a later dev commit is unreachable — describe still answers the last release tag (measured).
+#       a later dev commit is unreachable — it still answers the last release tag (measured).
 #       It works only where that commit is an ancestor of the first parent (a trunk flow; check
-#       with `git merge-base --is-ancestor`). `--shipped-stages` limits the damage either way: a
+#       with `git merge-base --is-ancestor`), and only for a tag name `tag_format` can produce. `--shipped-stages` limits the damage either way: a
 #       colliding new-repo card whose pull request has not merged is not in a Shipped-class stage
 #       and is skipped (one that HAS merged is still promoted).
 #   (b) A GitHub TRANSFER KEEPS NUMBERS. Unlike a fresh-history move, a transferred repo's #N is
@@ -460,6 +462,11 @@
 #   no explicit --dls/--cards set is given. Each is the caller's override for a leg this tool
 #   otherwise derives, and each MUST NAME A COMMIT THIS REPO HAS: a ref that does not resolve is
 #   refused at rc 2 naming the flag and the value, never read as an empty range (card#7535).
+#   Defaulted, the head is `HEAD` and the base is the newest RELEASE tag in LOCAL tags reachable
+#   from the head's first parent, as the sibling `release-pr-body --last-release-tag` names it: a
+#   release tag is one `.release-pr.json`'s `tag_format` can produce, so a `deploy/…` or other
+#   non-release tag is never the base. The derived base therefore needs `tag_format` declared,
+#   and refuses at rc 2 without it (card#12945); an explicit --base, or --dls/--cards, does not.
 #
 # --shipped-stages "51,52": comma-separated numeric workflow_stage_ids that count as a
 #   "Shipped-class" source stage. When set, a DL/PR-matched card whose CURRENT stage is
@@ -551,7 +558,7 @@
 #   never the constraint; with both supplied from the environment it can move NEITHER.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.52.1'
+ABTK_TOOL_VERSION='0.53.0'
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 
@@ -1140,21 +1147,39 @@ else
   # ⛔ ONLY THE EXPLICIT LEGS. A DEFAULTED HEAD_REF is `HEAD`, and it is deliberately NOT checked
   # here: its failure direction is the opposite one and is dispositioned in place — an empty repo
   # falls through to the base-tag die below, which names no flag because the caller passed none.
-  # A DEFAULTED BASE is `git describe`'s answer about that same tip and gets the full-history-
-  # sweep refusal below, which is the stronger check. Widening this guard to cover them would
-  # rewrite two refusals that are already correct into ones that name flags nobody used.
+  # A DEFAULTED BASE is the sibling's `--last-release-tag` answer about that same tip and gets
+  # the full-history-sweep refusal below, which is the stronger check. Widening this guard to
+  # cover them would rewrite two refusals that are already correct into ones that name flags
+  # nobody used.
   #
   # THE BASE LEG IS CHECKED FIRST, matching bin/release-pr-body's ordering so the two tools
   # answer the same way about the same pair of flags. The head leg must nonetheless be checked
-  # before the `git describe "${HEAD_REF}^"` below, and is: that describe swallows its own
-  # failure, leaving BASE empty, so an unresolvable EXPLICIT --head used to surface as
+  # before the base derivation below, and is: an unresolvable head has no first parent to ask
+  # about, so BASE stays empty, and an unresolvable EXPLICIT --head used to surface as
   # "no base tag found before <head>" — a refusal (rc 2) that blamed the wrong leg, and printed
   # a NOTE about a baseline of ''.
   [ -z "$BASE" ]     || require_resolvable --base "$BASE"
   [ -z "$HEAD_REF" ] || require_resolvable --head "$HEAD_REF"
   HEAD_REF="${HEAD_REF:-HEAD}"
+  # THE SIBLING OWNS BOTH THE BASELINE AND THE SHIPPED SET: `release-pr-body` in this same bin/
+  # (not a PATH lookup, so the two cannot be different toolkit versions disagreeing on the rule —
+  # the shape bin/release-tag-check uses for `--tag`). Checked once, here, before either use.
+  RPB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-pr-body"
+  [ -x "$RPB" ] || die "$RPB is missing or not executable — it owns the derived range base (\`release-pr-body --last-release-tag\`) and which commits in the range ship (\`release-pr-body --classify-commits\`), and a range-derived promote refuses rather than guess. Vendor bin/release-pr-body beside this file (docs/INSTALL.md §6b), or pass the shipped set explicitly with --dls/--cards"
   if [ -z "$BASE" ]; then
-    BASE="$(git describe --tags --abbrev=0 "${HEAD_REF}^" 2>/dev/null || true)"
+    # THE DERIVED BASE IS ASKED FOR, NEVER DESCRIBED HERE (card#12945): the newest RELEASE tag —
+    # one `.release-pr.json`'s `tag_format` can produce — reachable from the head's first parent.
+    # A raw `git describe --tags` here took ANY tag, so a lightweight `deploy/…` tag on a commit
+    # after the last release would become the base and drop that release's earlier commits from
+    # the range; release-pr-body's own baseline already matched tag_format. One derivation, there.
+    # Its refusal (no `tag_format` declared, rc 2) passes through on stderr and is fatal here.
+    # A head with no first parent (a root commit, or an empty repo's unborn HEAD) is not asked
+    # about: BASE stays empty and takes the full-history refusal below, as it always has.
+    BASE_RC=0
+    if git rev-parse --verify -q "${HEAD_REF}~1^{commit}" >/dev/null; then
+      BASE="$(env -u KANBAN_WRITEBACK_TOKEN "$RPB" --last-release-tag --head "${HEAD_REF}^" --config "$CONFIG")" || BASE_RC=$?
+    fi
+    [ "$BASE_RC" -eq 0 ] || die "$RPB --last-release-tag exited $BASE_RC (its reason is above) — refusing to derive a range base it could not name; pass --base <ref>, or --dls/--cards. A release-pr-body older than this mover has no --last-release-tag (it refuses the flag as 'unknown arg'): re-vendor the two TOGETHER"
     # A DERIVED baseline uses LOCAL tags. The authoritative CI invocation fetches
     # tags (fetch-depth 0 + fetch-tags), so it is remote-truth by construction; a
     # LOCAL run's tag set can lag a release and silently over-report the shipped
@@ -1178,9 +1203,8 @@ else
   # <shipped pr> and a DL token ONLY from its <shipped text>, both empty whenever a commit ships
   # nothing — so this end holds no subject rule at all.
   # ⛔ A MISSING OR FAILING SIBLING IS FATAL (rc 2), never a fall-back to reading subjects: that
-  # fall-back is the second parser this replaced, and it promotes reverted cards.
-  RPB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-pr-body"
-  [ -x "$RPB" ] || die "$RPB is missing or not executable — it owns which commits in $RANGE ship (\`release-pr-body --classify-commits\`), and a range-derived promote refuses rather than guess. Vendor bin/release-pr-body beside this file (docs/INSTALL.md §6b), or pass the shipped set explicitly with --dls/--cards"
+  # fall-back is the second parser this replaced, and it promotes reverted cards. ($RPB is
+  # resolved and checked above, before the base derivation.)
   ROWS_RC=0
   ROWS="$(env -u KANBAN_WRITEBACK_TOKEN "$RPB" --classify-commits --base "$BASE" --head "$HEAD_REF")" || ROWS_RC=$?
   [ "$ROWS_RC" -eq 0 ] || die "$RPB --classify-commits exited $ROWS_RC over $RANGE — refusing to promote from a range nothing classified. A release-pr-body older than this mover has no --classify-commits (it refuses the flag as 'unknown arg'): re-vendor the two TOGETHER"

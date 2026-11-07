@@ -32,10 +32,10 @@
 # The producer then fails on the closed pipe, `set -o pipefail` promotes ITS non-zero status to
 # the pipeline's, and the `&&` tail reports the match as `false`. Not an error — a WRONG ANSWER
 # at rc 0, with nothing for the reader to notice. It needs the match near the START of the stream
-# (so the reader leaves early) and more than the 64 KiB pipe buffer still to write, which is why
-# it is invisible until a payload grows: `lib-set-derivation-selftest.sh` was green on five
-# consecutive local runs and red in CI on the same commit once a second multi-KB `[Unreleased]`
-# entry crossed the buffer.
+# (so the reader leaves early) and more than the pipe buffer (64 KiB unless the writer raised it)
+# still to write, which is why it is invisible until a payload grows: `lib-set-derivation-selftest.sh`
+# was green on five consecutive local runs and red in CI on the same commit once a second
+# multi-KB `[Unreleased]` entry crossed the buffer.
 #
 # ⛔ THE PRODUCER'S CLASS IS NOT THE DISCRIMINATOR, and neither is its status NUMBER. A bash
 # `printf` builtin is forked into a subshell and takes SIGPIPE like anything else; and the status

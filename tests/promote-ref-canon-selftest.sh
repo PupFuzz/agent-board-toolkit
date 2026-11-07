@@ -242,6 +242,7 @@ export PATH="$TMP/bin:$PATH"
 cat > "$TMP/release-pr.json" <<'JSON'
 {
   "ref_token_regex": "DL-[0-9]+",
+  "tag_format": "v{{version}}",
   "promote": {
     "board_id": "12",
     "released_stage_id": "85",

@@ -104,7 +104,7 @@
 #       `|| { … }` on the next physical line) — a trailing `\`, and a line ending in `||` or `&&`,
 #       which bash continues with no `\` — and the line is truncated at its first TOP-LEVEL
 #       `;` so a `||` belonging to a LATER statement on the same line is not attributed to the
-#       capture (`release-pr-body`'s `TAG_FORMAT="$(cfg_opt …)"; [ -n … ] || TAG_FORMAT=…`).
+#       capture (`FMT="$(cfg_opt …)"; [ -n … ] || FMT=…`, planted as NEGATIVE 3 below).
 #
 #   (b) THE CAPTURED VALUE IS LATER TESTED FOR EMPTINESS — `-z`/`-n` on it, or compared against
 #       `""` — on a non-comment line of the same file. Comment lines are excluded: a header
@@ -293,14 +293,13 @@ DISPOSITIONED=(
   "bin/kbcard:decision|SAME OUTCOME — the --force escape hatch, documented: an empty decision still writes the audited override line, never a silent forced archive; the non-force branch keeps no '||' and fails closed."
   "bin/promote-released-cards:DL_NUMS|NO READ — grep over \$DLS_IN / \$SUBJECTS, already in memory; an all-empty ref set exits 0 'nothing to do' and moves no card."
   "bin/promote-released-cards:PR_NUMS|NO READ — grep over \$SUBJECTS, already in memory, as DL_NUMS above: empty means the range carries no (#N) marker, so the '*'-with-no-repo refusal has no PR number to act on and does not fire; a range that read nothing is empty on the DL leg too and exits 0 'nothing to do'."
-  "bin/promote-released-cards:BASE|SAME OUTCOME — empty dies 'refusing a full-history sweep'; both outcomes refuse, and a LOCAL-tag baseline is named on stderr."
   "bin/promote-released-cards:token_role_check:if api|SAME OUTCOME — the one identity read (users/current.json) is warn-only (card#12491): a false api() — refused or never completed — takes the 'permissions … could NOT be read' WARNING with resp_detail's status, and never reads as Member permissions. Every 2xx shape is ruled in ONE jq verdict whose unreadable arms (no id, no boards[], the board absent, no permissions list, a body jq cannot parse) warn the same way. No arm changes the exit code or what is promoted."
   "bin/release-artifacts-check:EXTRACTED_VERSION|DISPOSED — the git show failure dies one line above; the '|| true' is the documented SIGPIPE guard on a pipeline over \$content, already in memory, and empty dies rather than classifying the PR."
   "bin/release-pr-body:VERSION|SAME OUTCOME — the file's presence gates the if, and empty dies 'could not resolve version'; both outcomes refuse."
   "bin/release-pr-body:LOCAL_TIP|SAME OUTCOME — an absent local ref is the normal case under this release flow; the branch only prints an advisory note and the baseline uses the remote tip either way."
   "bin/release-pr-body:LOCAL_DEV|SAME OUTCOME — the head leg's twin of LOCAL_TIP above (card#7517): an absent local integration ref is the normal case in a fresh release clone, the branch only prints an advisory note, and the range uses the remote tip either way. The fetch that could fail is captured and dies above it."
   "bin/release-pr-body:REMOTE_DEV|SAME OUTCOME — read LOCAL-ONLY on purpose, on the explicit --head path that must not touch the network (card#7517): an origin/dev that is absent and one that cannot be read both mean 'this repo holds nothing fresher to compare the caller's ref against', and both suppress an advisory note only — the ref the caller named is used unchanged in either case."
-  "bin/release-pr-body:BASE|SAME OUTCOME — an empty BASE collapses RANGE to HEAD_REF deliberately (the first-ever release); the fetch that could fail is captured and dies above."
+  "bin/release-pr-body:rel|SAME OUTCOME — last_release_tag, the one baseline derivation (card#12945): a describe that fails and one that finds no release tag both answer empty. The body reads empty as the first-ever release (RANGE collapses to HEAD_REF deliberately; the fetch that could fail is captured and dies above), and promote-released-cards refuses an empty derived base as a full-history sweep."
   "bin/release-pr-body:ref|NO READ — grep over \$subj, already in memory."
   "bin/release-pr-body:promote|SAME OUTCOME — falls back to the sibling directory, then returns BEFORE any coverage line is printed, so an unresolvable mover yields no coverage report rather than a clean one."
   "bin/release-pr-body:miss|DISPOSED — the mover's rc is captured at the call ('&& rc=0 || rc=\$?') and a non-zero rc prints 'could not run'; this grep only reads output already accepted."

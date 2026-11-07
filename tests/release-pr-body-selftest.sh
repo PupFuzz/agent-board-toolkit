@@ -76,6 +76,7 @@ g -C "$W" pull -q origin dev
 # are not the defaults, which is the only setting that can tell the two apart.
 cat > "$W/.release-pr.json" <<'EOF'
 {
+  "tag_format": "v{{version}}",
   "ref_token_regex": "DL-[0-9]+"
 }
 EOF
@@ -148,6 +149,7 @@ g -C "$HS" push -q origin dev
 # discrimination rule the block below states for main_branch/dev_branch).
 cat > "$HW/.release-pr.json" <<'EOF'
 {
+  "tag_format": "v{{version}}",
   "card_token_regex": "card#[0-9]+"
 }
 EOF
@@ -376,6 +378,7 @@ g -C "$AW" push -q origin trunk main dev integration --tags
 
 cat > "$AW/.release-pr.json" <<'EOF'
 {
+  "tag_format": "v{{version}}",
   "main_branch": "trunk",
   "dev_branch": "integration",
   "ref_token_regex": "DL-[0-9]+"
@@ -414,6 +417,7 @@ _verhdr() { # <version-file content> <version_regex, JSON-escaped> → the body'
   # backslash escapes, so the JSON's `\\.` arrives intact.
   cat > "$W/.release-pr.json" <<EOF
 {
+  "tag_format": "v{{version}}",
   "ref_token_regex": "DL-[0-9]+",
   "version_file": "VERSION.txt",
   "version_regex": "$re"
@@ -477,7 +481,7 @@ _xscript xbin/extract-version.sh 'printf "%s\n" 0.43.0'
 # The ABSENT spelling is a real case, not a formality: it is the byte-identity control for
 # every consumer that never sets the key.
 _xcfg() {
-  { printf '{ "ref_token_regex": "DL-[0-9]+", "version_file": "config/app.php",'
+  { printf '{ "tag_format": "v{{version}}", "ref_token_regex": "DL-[0-9]+", "version_file": "config/app.php",'
     printf ' "version_regex": "%s",' "'version' => '[0-9.]+'"
     [ -z "${1:-}" ] || printf ' "version_extract_cmd": "%s",' "$1"
     printf ' "artifacts": ["config/app.php \\u2192 {{version}}"] }\n'
@@ -617,10 +621,14 @@ echo "== tag_format drives the own-tag exclude (re-run after tagging, non-v sche
 # re-run for 0.3.0 must exclude release-0.3.0 (its own tag) when resolving BASE.
 # A hardcoded v-prefix excludes the nonexistent v0.3.0 instead, so BASE resolves
 # to release-0.3.0 itself and the body reports 'since release-0.3.0' with 0 commits.
+# The scheme changed at 0.2.0, so that release carries both names: since card#12945 only a
+# tag the declared format can produce is a release tag, and `v0.2.0` alone would leave this
+# scheme with no previous release at all.
+g -C "$S" tag release-0.2.0 v0.2.0
 g -C "$S" checkout -q main
 g -C "$S" merge -q --no-ff dev -m "Merge pull request #4 (release 0.3.0)"
 g -C "$S" tag release-0.3.0
-g -C "$S" push -q origin main release-0.3.0
+g -C "$S" push -q origin main release-0.2.0 release-0.3.0
 cat > "$W/.release-pr.json" <<'EOF'
 {
   "ref_token_regex": "DL-[0-9]+",
@@ -629,17 +637,17 @@ cat > "$W/.release-pr.json" <<'EOF'
 EOF
 body5="$( (cd "$W" && "$BIN" --version 0.3.0) 2>/dev/null )" && rc=0 || rc=$?
 if [[ "$rc" -eq 0 ]]; then ok "generates a body under tag_format (rc=0)"; else bad "expected rc=0, got rc=$rc"; fi
-contains     "own tag excluded via tag_format"    "$body5" "since v0.2.0"
+contains     "own tag excluded via tag_format"    "$body5" "since release-0.2.0"
 not_contains "own tag is not its own baseline"    "$body5" "since release-0.3.0"
 contains     "range still bundles the dev commit" "$body5" "new work for cycle two"
 
 echo "== body header renders the real tag via tag_format (card#4762) =="
 # The display header must name the tag that actually exists (per tag_format), not a
-# hardcoded v-prefix. $body was generated with the default scheme (no tag_format);
+# hardcoded v-prefix. $body was generated with the v-prefixed scheme (v{{version}});
 # $body5 with tag_format=release-{{version}}. not_contains is scoped to the header
 # LINE so a legitimate v-prefixed baseline elsewhere in the body can't false-match.
 dflt_hdr="$(printf '%s\n' "$body" | head -1)"
-contains "default scheme header names the v-prefixed tag" "$dflt_hdr" "release PR — v0.3.0."
+contains "v{{version}} scheme header names the v-prefixed tag" "$dflt_hdr" "release PR — v0.3.0."
 
 tf_hdr="$(printf '%s\n' "$body5" | head -1)"
 contains     "tag_format header names release-<version>" "$tf_hdr" "release PR — release-0.3.0."
@@ -818,6 +826,7 @@ chmod +x "$COV/bin/curl"
 
 cat > "$CR/.release-pr.json" <<'EOF'
 {
+  "tag_format": "v{{version}}",
   "ref_token_regex": "DL-[0-9]+",
   "card_token_regex": "card#[0-9]+",
   "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3", "source": "*" }
@@ -888,6 +897,7 @@ echo two > "$QC/f"; g -C "$QC" commit -qam "feat: a tracked thing (DL-77) (#43)"
 echo three > "$QC/f"; g -C "$QC" commit -qam "feat: an untracked thing (DL-99) (#44)"
 cat > "$QC/.release-pr.json" <<'EOF'
 {
+  "tag_format": "v{{version}}",
   "ref_token_regex": "DL-[0-9]+",
   "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3", "source": "acme/widget" }
 }
@@ -1311,7 +1321,7 @@ eq "control: --card-manifest alone still answers" "9999" \
 
 echo "== a repo that sets NEITHER token key still renders (no new required config) =="
 cat > "$CR/.release-pr.json" <<'EOF'
-{ "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" } }
+{ "tag_format": "v{{version}}", "promote": { "board_id": 12, "released_stage_id": 85, "api_base": "https://kanban.test/api/v3" } }
 EOF
 rc=0; notok="$(coverage_body)" || rc=$?
 eq "no token keys → still rc 0"                  "0"     "$rc"
@@ -1330,6 +1340,7 @@ echo "== the artifacts checklist RENDERS, with {{version}} expanded (card#7038 i
 # template expansion reds too instead of shipping `{{version}}` into a release PR body.
 cat > "$CR/.release-pr.json" <<'EOF'
 {
+  "tag_format": "v{{version}}",
   "ref_token_regex": "DL-[0-9]+",
   "artifacts": [
     "VERSION → {{version}}",
@@ -1379,6 +1390,7 @@ echo "== the BODY is installer content only; builder diagnostics MOVE to stderr,
 SPL="$COV/split"; mkdir -p "$SPL"
 cat > "$CR/.release-pr.json" <<'EOF'
 {
+  "tag_format": "v{{version}}",
   "ref_token_regex": "DL-[0-9]+",
   "card_token_regex": "card#[0-9]+",
   "artifacts": [ "VERSION → {{version}}" ],
@@ -1507,12 +1519,17 @@ eq "control: a full body on the same remote fails" "2"          "$rc"
 eq "control: …because the baseline fetch is fatal" "true"       "$(has 'cannot fetch origin' "$out")"
 g -C "$W" remote set-url origin "$T/origin.git"
 
-# The DEFAULT scheme is unchanged: no key ⇒ v<version>. A fixture that sets a key to its own
-# default cannot discriminate, so both spellings are driven — absent, and explicitly-default.
+# There is no default scheme since card#12945: no key ⇒ refused (the tag_format-is-REQUIRED block
+# below drives every mode), and the v-prefixed scheme is spelled out.
 cat > "$W/.release-pr.json" <<'EOF'
 { "ref_token_regex": "DL-[0-9]+" }
 EOF
-eq "control: no tag_format ⇒ v<version>"     "v0.3.0"           "$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )"
+rc=0; ( cd "$W" && "$BIN" --tag --version 0.3.0 ) >/dev/null 2>&1 || rc=$?
+eq "no tag_format ⇒ --tag refuses (rc 2)"    "2"                "$rc"
+cat > "$W/.release-pr.json" <<'EOF'
+{ "ref_token_regex": "DL-[0-9]+", "tag_format": "v{{version}}" }
+EOF
+eq "a v-prefixed scheme ⇒ v<version>"        "v0.3.0"           "$( (cd "$W" && "$BIN" --tag --version 0.3.0) 2>&1 )"
 cat > "$W/.release-pr.json" <<'EOF'
 { "ref_token_regex": "DL-[0-9]+", "tag_format": "{{version}}" }
 EOF
@@ -1581,7 +1598,7 @@ eq "copy: stderr is silent"                        ""     "$(cat "$T/tv-err")"
 # DECOYS — a VERSION where a path-relative read would look (beside bin/, and in the cwd) and a
 # config naming a different release. An implementation reading any of them prints 6.6.6.
 printf '6.6.6\n' > "$SEAT/VERSION"; printf '6.6.6\n' > "$SEAT/cwd/VERSION"
-printf '{ "version_file": "VERSION", "version_regex": "[0-9.]+" }\n' > "$SEAT/cwd/.release-pr.json"
+printf '{ "tag_format": "v{{version}}", "version_file": "VERSION", "version_regex": "[0-9.]+" }\n' > "$SEAT/cwd/.release-pr.json"
 _tv "$SEAT/cwd" "$SEAT/bin/release-pr-body" --tool-version
 eq "decoys: still exactly the toolkit version"     "true" "$(cmp -s "$T/tv-out" "$T/tv-want" && echo true || echo false)"
 eq "decoys: control — the release version IS 6.6.6 here" "v6.6.6" "$( (cd "$SEAT/cwd" && "$SEAT/bin/release-pr-body" --tag) 2>&1 )"
@@ -1634,7 +1651,7 @@ RV_MID="$(g -C "$RVR" rev-parse HEAD)"
 echo 4 > "$RVR/f"; g -C "$RVR" commit -qam "chore: a direct push with no pull request"
 RV_NOPR="$(g -C "$RVR" log -1 --format=%h)"
 echo 5 > "$RVR/f"; g -C "$RVR" commit -qam "fix: eleven again (#11)"
-echo '{}' > "$RVR/.release-pr.json"
+echo '{"tag_format": "v{{version}}"}' > "$RVR/.release-pr.json"
 
 # The stub verifier: exit code per PR from RV_MAP ("11=0 12=1"), RV_DEFAULT otherwise; it sleeps
 # RV_SLEEP seconds first when the PR is RV_SLOW (`all`: every PR), and appends every argument it was given to RV_LOG.
@@ -1748,14 +1765,21 @@ eq "zero bundled changes, no verifier"                  "Review: no bundled chan
 # runs the verifier in a group of its own, so only an interrupt the generator itself acts on stops
 # the wait. The generator runs as its own group leader (setsid) under a wrapper that records its
 # rc; SIGINT goes to that group while the verifier hangs 20s on the first PR, under a 30s bound.
+# The launch is an ASYNC list, and with job control off POSIX has an async list start with SIGINT
+# and SIGQUIT IGNORED — an ignore every exec below would inherit, so the generator could not trap
+# the very interrupt this case sends. bash 5.2 skipped that ignore for an and-list like `cd … &&
+# …`; bash 5.3 applies it (Ubuntu 26.04 ships 5.3, card#12948), which is how this case went red
+# there with the generator untouched. The `trap - INT QUIT` inside the async list resets them to
+# default (POSIX interp 751, which 5.3 implements), so the generator starts the way a terminal
+# starts it, on either bash.
 _need -x "$(command -v setsid || echo setsid)" setsid
 printf '%s\n' '#!/usr/bin/env bash' 'echo $$ > "$RV_PG"' "trap ':' INT" '"$@"' 'echo $? > "$RV_RCF"' > "$RV/int-run"
 chmod +x "$RV/int-run"
 rm -f "$RV/pg" "$RV/rcf"
 RV_T0="$(date +%s)"
-( cd "$RVR" && RV_PG="$RV/pg" RV_RCF="$RV/rcf" setsid "$RV/int-run" env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
+( { trap - INT QUIT; cd "$RVR" && RV_PG="$RV/pg" RV_RCF="$RV/rcf" setsid "$RV/int-run" env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
     PATH="$RVB:$RV_PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" RV_SLOW=all RV_SLEEP=20 \
-    "$BIN" --version 0.2.0 --base v0.1.0 --head "$RV_MID" >"$RV/out" 2>"$RV/err" & )
+    "$BIN" --version 0.2.0 --base v0.1.0 --head "$RV_MID" >"$RV/out" 2>"$RV/err"; } & )
 for _i in $(seq 1 50); do [[ -s "$RV/pg" ]] && break; sleep 0.1; done
 sleep 1.5
 kill -INT -- "-$(cat "$RV/pg")" 2>/dev/null || true
@@ -1901,7 +1925,7 @@ g -C "$TR" checkout -qb catchup
 _trc j "feat: forty (#40)"
 g -C "$TR" checkout -q main
 _trm catchup "Merge branch 'catchup'"
-echo '{"card_token_regex": "card#[0-9]+"}' > "$TR/.release-pr.json"
+echo '{"tag_format": "v{{version}}","card_token_regex": "card#[0-9]+"}' > "$TR/.release-pr.json"
 g -C "$TR" add .release-pr.json; g -C "$TR" commit -qm "chore: config (#41)"
 
 # _tr [VAR=value ...] — _rv's run, over the train fixture's v0.1.0..HEAD. Sets the same RV_* names.
@@ -2019,7 +2043,7 @@ RVT_U="$(_rvtc d 'Revert "feat: x (#21)')"
 g -C "$RVT" checkout -qb r "$RVT_U"; _rvtr "$RVT_24" >/dev/null
 g -C "$RVT" checkout -q main
 g -C "$RVT" merge -q --no-ff r -m "Merge branch 'r'"; RVT_M="$(g -C "$RVT" rev-parse HEAD)"
-echo '{}' > "$RVT/.release-pr.json"
+echo '{"tag_format": "v{{version}}"}' > "$RVT/.release-pr.json"
 # _rvt_row <sha> [<pr>] — the row a unit renders: its own ` (#<pr>)` dropped, nothing else.
 _rvt_row() { local s; s="$(g -C "$RVT" log -1 --format=%s "$1")"; if [ -n "${2:-}" ]; then printf -- '- **#%s** %s\n' "$2" "${s% (#$2)}"; else printf -- '- %s\n' "$s"; fi; }
 _rvt_h() { g -C "$RVT" rev-parse --short "$1"; }
@@ -2064,7 +2088,7 @@ echo 2 > "$SH/o"; g -C "$SH" add o; g -C "$SH" commit -qm "chore: base"; g -C "$
 g -C "$SH" revert --no-edit "$SH_S" >/dev/null
 g -C "$SH" commit -q --amend -m "Revert \"feat: s (#60)\" (#61)" -m "This reverts commit $SH_S."
 rm -rf "$RV/shal"; g clone -q --depth 2 "file://$SH" "$RV/shal" 2>/dev/null
-echo '{}' > "$RV/shal/.release-pr.json"
+echo '{"tag_format": "v{{version}}"}' > "$RV/shal/.release-pr.json"
 : > "$RV/log"; SH_RC=0
 ( cd "$RV/shal" && env -u RELEASE_PR_REVIEW_VERIFIER -u RELEASE_PR_REVIEW_VERIFIER_TIMEOUT \
     PATH="$RVB:$RV_PATH" GITHUB_REPOSITORY=acme/widget RV_LOG="$RV/log" \
@@ -2106,7 +2130,7 @@ g -C "$RX" commit -q --amend -m "Revert \"fix: y (card#4) (#22)\" (#25)" -m "Thi
 g -C "$RX" revert --no-edit "$RX_Y1" >/dev/null
 g -C "$RX" commit -q --amend -m "Reapply \"fix: y (card#4) (#22)\" (#25)" -m "This reverts commit $RX_Y1."; RX_Y2="$(g -C "$RX" rev-parse HEAD)"
 RX_RZ="$(_rxr "$RX_Z")"
-echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$RX/.release-pr.json"
+echo '{"tag_format": "v{{version}}","ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$RX/.release-pr.json"
 _rxh() { g -C "$RX" rev-parse --short "$1"; }
 _rx() { (cd "$RX" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 eq "fixture: R carries git's \`This reverts commit\` line naming O" "true" "$(has "This reverts commit $RX_O" "$(g -C "$RX" log -1 --format=%b "$RX_R")")"
@@ -2157,7 +2181,7 @@ g -C "$MX" checkout -qb m; echo 1 > "$MX/m"; g -C "$MX" add m; g -C "$MX" commit
 g -C "$MX" checkout -q main; echo 2 > "$MX/o"; g -C "$MX" add o; g -C "$MX" commit -qm "fix: other (#29)"
 g -C "$MX" merge -q --no-ff m -m "Merge pull request #31 from acme/m"; MX_M="$(g -C "$MX" rev-parse HEAD)"
 g -C "$MX" revert --no-edit -m 1 "$MX_M" >/dev/null; MX_R="$(g -C "$MX" rev-parse HEAD)"
-echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$MX/.release-pr.json"
+echo '{"tag_format": "v{{version}}","ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$MX/.release-pr.json"
 _mx() { (cd "$MX" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 eq "fixture: the merge's revert names the merge in its body line" "true" "$(has "This reverts commit $MX_M" "$(g -C "$MX" log -1 --format=%b "$MX_R")")"
 eq "a reverted merge: the card on its merged side is not shipped" "" "$(_mx --card-manifest 2>/dev/null)"
@@ -2179,7 +2203,7 @@ g -C "$QX" commit -qm "feat: new thing DL-77 (closes card#50) (#40)" -m "* wip
 * Revert \"feat: temp workaround DL-3 (#30)\"
 
 This reverts commit $QX_W."; QX_S="$(g -C "$QX" rev-parse HEAD)"
-echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$QX/.release-pr.json"
+echo '{"tag_format": "v{{version}}","ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$QX/.release-pr.json"
 _qx() { (cd "$QX" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 eq "a squash carrying a branch revert's body line still ships its own DL" "DL-77" "$(_qx --manifest 2>/dev/null | paste -sd' ' -)"
 eq "…and its own card" "50" "$(_qx --card-manifest 2>/dev/null | paste -sd' ' -)"
@@ -2198,7 +2222,7 @@ echo 2 > "$SX/b"; g -C "$SX" add b; g -C "$SX" commit -qm "chore: base"; g -C "$
 g -C "$SX" revert --no-edit "$SX_T" >/dev/null; SX_RT="$(g -C "$SX" rev-parse HEAD)"
 echo 3 > "$SX/q"; g -C "$SX" add q; g -C "$SX" commit -qm "feat: q (card#5) (#62)"
 rm -rf "$T/sx"; g clone -q --depth 3 "file://$SX" "$T/sx" 2>/dev/null
-echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$T/sx/.release-pr.json"
+echo '{"tag_format": "v{{version}}","ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$T/sx/.release-pr.json"
 eq "fixture: the clone is shallow and cannot read T" \
    "true|false" "$(g -C "$T/sx" rev-parse --is-shallow-repository)|$(g -C "$T/sx" cat-file -e "$SX_T^{commit}" 2>/dev/null && echo true || echo false)"
 _sx() { (cd "$T/sx" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
@@ -2231,7 +2255,7 @@ echo 2 > "$NX/n"; g -C "$NX" add n; g -C "$NX" commit -qm "feat: z wip"
 NX_MSG="$(g -C "$NX" log --reverse --format='* %s%n%n%b' main..br)"
 g -C "$NX" checkout -q main; g -C "$NX" merge -q --squash br >/dev/null
 g -C "$NX" commit -qm "feat: z DL-77 (closes card#12) (#40)" -m "$NX_MSG"; NX_S="$(g -C "$NX" rev-parse HEAD)"
-echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$NX/.release-pr.json"
+echo '{"tag_format": "v{{version}}","ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$NX/.release-pr.json"
 _nx() { (cd "$NX" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 _nxcc() { (cd "$NX" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
 eq "fixture: the squash body carries W's revert line and the reapply's line naming the branch revert" \
@@ -2264,7 +2288,7 @@ QB_MSG="$(g -C "$QB" log --reverse --format='* %s%n%n%b' main..br)"
 g -C "$QB" checkout -q main; g -C "$QB" merge -q --squash br >/dev/null
 g -C "$QB" commit -qm "feat: q DL-78 (closes card#13) (#41)" -m "$QB_MSG"; QB_S="$(g -C "$QB" rev-parse HEAD)"
 g -C "$QB" branch -qD br
-echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$QB/.release-pr.json"
+echo '{"tag_format": "v{{version}}","ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$QB/.release-pr.json"
 _qbcc() { (cd "$QB" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
 eq "fixture: the squash body reverts W and a branch-only commit, and W is gone from the tree" \
    "true|2|false" "$(has "This reverts commit $QB_W" "$(g -C "$QB" log -1 --format=%b)")|$(g -C "$QB" log -1 --format=%b | grep -c '^This reverts commit ')|$(test -f "$QB/w" && echo true || echo false)"
@@ -2283,7 +2307,7 @@ g -C "$M2" checkout -qb s; echo 1 > "$M2/s"; g -C "$M2" add s; g -C "$M2" commit
 g -C "$M2" checkout -q main; echo 2 > "$M2/m"; g -C "$M2" add m; g -C "$M2" commit -qm "fix: m DL-9 (card#21) (#29)"; M2_L="$(g -C "$M2" rev-parse HEAD)"
 g -C "$M2" merge -q --no-ff s -m "Merge pull request #32 from acme/s"; M2_M="$(g -C "$M2" rev-parse HEAD)"
 g -C "$M2" revert --no-edit -m 2 "$M2_M" >/dev/null; M2_R="$(g -C "$M2" rev-parse HEAD)"
-echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$M2/.release-pr.json"
+echo '{"tag_format": "v{{version}}","ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$M2/.release-pr.json"
 _m2() { (cd "$M2" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@"); }
 _m2cc() { (cd "$M2" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$1" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
 eq "fixture: the merge kept parent 2, and git's body line names it" \
@@ -2313,7 +2337,7 @@ g -C "$MB" checkout -qb s; echo 1 > "$MB/s"; g -C "$MB" add s; g -C "$MB" commit
 g -C "$MB" checkout -q main; echo 2 > "$MB/m"; g -C "$MB" add m; g -C "$MB" commit -qm "fix: m DL-9 (card#21) (#29)"
 g -C "$MB" merge -q --no-ff s -m "Merge pull request #32 from acme/s"; g -C "$MB" tag v0.1.0
 g -C "$MB" revert --no-edit -m 2 HEAD >/dev/null; MB_R="$(g -C "$MB" rev-parse --short HEAD)"
-echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$MB/.release-pr.json"
+echo '{"tag_format": "v{{version}}","ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$MB/.release-pr.json"
 MB_OUT="$(cd "$MB" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD 2>/dev/null)" || true
 eq "-m 2 from before the range: the body names the mainline #29 as reverted, not the kept side's #32" \
    "true|false" "$(has_line "Reverted by this range, shipped before it: #29 (DL-9, card#21), reverted by $MB_R." "$MB_OUT")|$(has "#32" "$(printf '%s\n' "$MB_OUT" | grep '^Reverted' || true)")"
@@ -2347,7 +2371,7 @@ echo "== a revert whose \`This reverts commit\` line names a commit a rebase or 
 # answer now: a commit of the range before the revert that carries the subject the revert quotes, or
 # the change the revert undoes, is NOT MEASURED — withheld, possibly taken back — never shipped.
 # Every rewrite here is a real `git rebase` or `git cherry-pick`.
-_rwcfg() { echo '{"ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$1/.release-pr.json"; }
+_rwcfg() { echo '{"tag_format": "v{{version}}","ref_token_regex":"DL-[0-9]+","card_token_regex":"card#[0-9]+"}' > "$1/.release-pr.json"; }
 _rwcc() { (cd "$1" && "$BIN" --classify-commits --base v0.1.0 --head HEAD) | awk -v s="$2" 'BEGIN { FS = "\037" } $2 == s { print $1 "|" $3 "|" $4 "|" $5 }'; }
 _rwq() { local d="$1"; shift; (cd "$d" && "$BIN" --version 0.2.0 --base v0.1.0 --head HEAD "$@" 2>/dev/null) | sort | paste -sd' ' -; }
 _rwgone() { g -C "$1" reflog expire --expire=now --all; g -C "$1" gc -q --prune=now; }
@@ -2621,5 +2645,111 @@ _fault "fault: the body path's reverted-merge side from before the range"       
 # answers `unknown` on failure, which is read as shallow, so the revert is not measured.
 FC_OUT="$(cd "$RB" && PATH="$FS:$PATH" FAULT="--is-shallow-repository" "$BIN" --classify-commits --base v0.1.0 --head HEAD 2>/dev/null | awk 'BEGIN { FS = "\037" } $1 == "shipped" && $5 ~ /feat: x/ { print "shipped" }')"
 eq "fault: the shallow probe fails closed — the reverted copy is never shipped" "" "$FC_OUT"
+
+echo "== tag_format is REQUIRED: no default, refused by name where a tag or baseline is needed (card#12945) =="
+# WHAT WAS SILENT. A config with no `tag_format` read as `v{{version}}`, so a repo tagging under any
+# other scheme that forgot the key got the wrong tag name and baseline at rc 0. The framework treats
+# a missing key as NOT DECLARED and stops; this tool now does too, in every mode that needs a tag
+# name or a release baseline, and in no other. The header block `tag_format` HAS NO DEFAULT owns the
+# mode list; each mode is driven here, both ways.
+#
+# THE FIXTURE CARRIES THE kanban-board SHAPE: lightweight `deploy/*` tags beside the `v*` ones — one
+# on a release commit (double-tagged) and one on a later non-release commit. Unfiltered, `git
+# describe --tags` names a `deploy/` tag in both places (the preconditions below measure it), so a
+# baseline that is not matched against tag_format takes a non-release tag as the base.
+TF="$T/tagfmt"; TFO="$T/tagfmt-origin.git"
+g init --bare -q "$TFO"; g -C "$TFO" symbolic-ref HEAD refs/heads/main
+g init -q "$TF"; g -C "$TF" symbolic-ref HEAD refs/heads/main
+echo 1 > "$TF/f"; g -C "$TF" add f; g -C "$TF" commit -qm "chore: init"
+g -C "$TF" tag v0.1.0
+echo 2 > "$TF/f"; g -C "$TF" commit -qam "feat: a (#1) DL-1"
+g -C "$TF" tag v0.2.0
+g -C "$TF" tag deploy/20261001T000000Z
+echo 3 > "$TF/f"; g -C "$TF" commit -qam "feat: b (#2) DL-2"
+g -C "$TF" tag deploy/20261103T000000Z
+echo 4 > "$TF/f"; g -C "$TF" commit -qam "feat: c (#3) DL-3"
+g -C "$TF" remote add origin "$TFO"
+g -C "$TF" push -q origin main --tags
+g -C "$TF" branch -q dev
+g -C "$TF" push -q origin dev
+tfcfg() { printf '%s\n' "$1" > "$TF/.release-pr.json"; }
+tfrun() { rc=0; TFOUT="$( (cd "$TF" && "$BIN" "$@") 2>"$T/tf.err" )" || rc=$?; TFERR="$(cat "$T/tf.err")"; }
+
+echo "-- precondition: unfiltered describe names the deploy/ tags"
+eq "precondition: describe of the tip names the non-release tag" "deploy/20261103T000000Z" "$(g -C "$TF" describe --tags --abbrev=0 main)"
+eq "precondition: describe of the double-tagged release commit names deploy/" \
+   "deploy/20261001T000000Z" "$(g -C "$TF" describe --tags --abbrev=0 v0.2.0)"
+
+echo "-- tag_format ABSENT: every tag-needing mode refuses at rc 2, naming the key, the file and the fix"
+tfcfg '{ "ref_token_regex": "DL-[0-9]+" }'
+_tf_refused() { # <label> — the last tfrun was refused for the missing key
+  eq "$1 → rc 2"                                   "2"     "$rc"
+  eq "…names the key and the file"                 "true"  "$(has '.release-pr.json does not declare `tag_format`' "$TFERR")"
+  eq "…names the fix for a v-prefixed line"        "true"  "$(has '"tag_format": "v{{version}}"' "$TFERR")"
+  eq "…and prints nothing on stdout"               ""      "$TFOUT"
+}
+tfrun --tag --version 0.3.0;                                   _tf_refused "--tag"
+tfrun --last-release-tag --head main;                          _tf_refused "--last-release-tag"
+tfrun --version 0.3.0 --base v0.2.0 --head main;               _tf_refused "a body with both legs explicit"
+# With origin unreachable, so the refusal is shown to come BEFORE the baseline fetch: a tool that
+# fetched first would fail there, naming the fetch instead.
+g -C "$TF" remote set-url origin "$T/no-such-origin.git"
+tfrun --version 0.3.0 --head main;                             _tf_refused "a body with the base defaulted"
+eq "…refused BEFORE the baseline fetch"                        "false" "$(has 'cannot fetch' "$TFERR")"
+g -C "$TF" remote set-url origin "$TFO"
+tfrun --version 0.3.0 --manifest --head main;                  _tf_refused "--manifest with the base defaulted"
+tfrun --version 0.3.0 --card-manifest --head main;             _tf_refused "--card-manifest with the base defaulted"
+# Declared EMPTY is not declared.
+tfcfg '{ "ref_token_regex": "DL-[0-9]+", "tag_format": "" }'
+tfrun --tag --version 0.3.0;                                   _tf_refused "--tag under an EMPTY tag_format"
+
+echo "-- tag_format ABSENT: the modes that need no tag name still answer"
+tfcfg '{ "ref_token_regex": "DL-[0-9]+", "card_token_regex": "card#[0-9]+" }'
+tfrun --tool-version
+eq "--tool-version → rc 0"                                     "0"     "$rc"
+eq "…prints the stamp"                                         "$(sed -n "s/^ABTK_TOOL_VERSION='\(.*\)'$/\1/p" "$BIN")" "$TFOUT"
+tfrun --classify-commits --base v0.2.0 --head main
+eq "--classify-commits → rc 0"                                 "0"     "$rc"
+eq "…classifies the range's commits"                           "2"     "$(_n_lines "$TFOUT")"
+tfrun --version 0.3.0 --manifest --base v0.2.0 --head main
+eq "--manifest with --base/--head explicit → rc 0"             "0"     "$rc"
+eq "…lists the range's DL tokens"                              "DL-3
+DL-2" "$TFOUT"
+tfrun --version 0.3.0 --card-manifest --base v0.2.0 --head main
+eq "--card-manifest with --base/--head explicit → rc 0"        "0"     "$rc"
+
+echo "-- tag_format DECLARED: the tag resolves, and the baseline is a RELEASE tag"
+tfcfg '{ "ref_token_regex": "DL-[0-9]+", "tag_format": "v{{version}}" }'
+tfrun --tag --version 0.3.0
+eq "--tag under v{{version}} → v0.3.0"                         "0|v0.3.0" "$rc|$TFOUT"
+tfrun --last-release-tag --head main
+eq "--last-release-tag skips a deploy/ tag on a later non-release commit" "0|v0.2.0" "$rc|$TFOUT"
+tfrun --last-release-tag --head v0.2.0
+eq "--last-release-tag on a double-tagged commit names the v tag"         "0|v0.2.0" "$rc|$TFOUT"
+tfrun --last-release-tag --head v0.1.0
+eq "--last-release-tag at the first release names it"                     "0|v0.1.0" "$rc|$TFOUT"
+tfrun --last-release-tag --head "v0.1.0~0"
+eq "…the same through any spelling of the ref"                            "0|v0.1.0" "$rc|$TFOUT"
+tfrun --last-release-tag
+eq "--last-release-tag with no --head → rc 2"                  "2"     "$rc"
+eq "…naming the missing flag"                                  "true"  "$(has '--last-release-tag needs --head' "$TFERR")"
+tfrun --last-release-tag --head no-such-ref
+eq "--last-release-tag on an unresolvable --head → rc 2"       "2"     "$rc"
+eq "…naming the ref"                                           "true"  "$(has "--head 'no-such-ref' does not resolve" "$TFERR")"
+# No tag the format can produce is reachable: an empty answer at rc 0, the first-release case.
+tfcfg '{ "ref_token_regex": "DL-[0-9]+", "tag_format": "release-{{version}}" }'
+tfrun --last-release-tag --head main
+eq "--last-release-tag with no matching tag → rc 0, empty"     "0|"    "$rc|$TFOUT"
+# The BODY's defaulted baseline reads the same derivation: fetched from origin's main, whose tip
+# carries the deploy/ tag. Unfiltered, the body said "since deploy/20261103T000000Z" and bundled
+# one commit.
+tfcfg '{ "ref_token_regex": "DL-[0-9]+", "tag_format": "v{{version}}" }'
+tfrun --version 0.3.0 --head main
+eq "a body with the base defaulted → rc 0"                     "0"     "$rc"
+eq "…its baseline is the release tag, not the deploy/ tag"     "true"  "$(has 'Bundles 2 commit(s) since v0.2.0' "$TFOUT")"
+eq "…and its header names the declared tag"                    "true"  "$(has 'release PR — v0.3.0.' "$TFOUT")"
+tfrun --version 0.3.0 --manifest --head main
+eq "--manifest with the base defaulted reads the same range"   "0|DL-3
+DL-2" "$rc|$TFOUT"
 
 _summary "release-pr-body-selftest"
