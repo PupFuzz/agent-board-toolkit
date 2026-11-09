@@ -6,6 +6,10 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.53.1] - 2026-11-09
+
+**Patch — `docs/UPGRADE.md` v0.52.0 step 6 warns that revoking the old writeback token breaks an agent-webhook-bridge that shares it (card#13036); `bin/release-pr-body` and `bin/card-completeness` no longer cite roundtable threads or seat names in their comments (card#13061).** The PRs in `v0.53.0..v0.53.1` are enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.53.0..v0.53.1` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **patch**: docs and comments only, no new `bin/` tool, flag or capability, and no acceptance narrowing: no input that succeeded before now fails.
+
 ### Fixed
 
 - **card#13061** — **`bin/release-pr-body` and `bin/card-completeness` no longer cite roundtable thread numbers or seat names in their comments.** Repos copy both tools word for word, so the citations went into each repo that vendors them, public ones included. The rule each comment states and its pointer to the owning doc are unchanged. No behaviour changes.
