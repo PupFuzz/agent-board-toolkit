@@ -1185,7 +1185,7 @@ repo_from_origin_url() {
   printf '%s/%s\n' "$owner" "$repo"
 }
 
-# --- the review sentence: one line, first under `## Bundled` (card#11149, rt#557) -------------
+# --- the review sentence: one line, first under `## Bundled` (card#11149) ----------------------
 # It tells the person merging the release how many of the bundled changes carry an independent
 # review record, and names the ones that do not. It is one sentence and not a per-row column
 # because release PR bodies are installer-only (DL-224 and the 2026-09-27 operator ruling):
