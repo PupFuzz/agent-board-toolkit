@@ -26,10 +26,10 @@
 #       #924 merged and the card reached `released_to_main`, while PR #936 (the FTS5 index +
 #       the record-search CLI — the PRODUCT of the phase) was merged to dev AFTER the tag and
 #       PR #959 was still open. The tool the card names was never delivered to any seat.
-#     - card#9606 (sola-device, 2026-09-20): PR #673 (docs) merged and drove the card toward
+#     - card#9606 (a peer seat's board, 2026-09-20): PR #673 (docs) merged and drove the card toward
 #       terminal while PR #674 — the actual implementation, carrying a real field defect —
 #       was still open. A human moved the stage back by hand.
-#     - PupFuzz/agent-roundtable#532, from aimla-pm, independently: "a card moves to
+#     - A peer seat's report, independently: "a card moves to
 #       shipped_to_dev on PARTIAL implementation, and the release sweep promotes that stage."
 #   That second sentence is the compounding half and the reason this tool is consulted by the
 #   RELEASE movers: even where the partial `shipped_to_dev` is set by a mover the release
@@ -212,7 +212,7 @@
 #      5 is an answer, 6 is the absence of one.
 set -euo pipefail
 
-ABTK_TOOL_VERSION='0.53.0'
+ABTK_TOOL_VERSION='0.53.1'
 
 die() { echo "card-completeness: $*" >&2; exit 2; }
 

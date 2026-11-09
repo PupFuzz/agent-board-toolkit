@@ -6,6 +6,17 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+## [0.53.1] - 2026-11-09
+
+**Patch — `docs/UPGRADE.md` v0.52.0 step 6 warns that revoking the old writeback token breaks an agent-webhook-bridge that shares it (card#13036); `bin/release-pr-body` and `bin/card-completeness` no longer cite roundtable threads or seat names in their comments (card#13061).** The PRs in `v0.53.0..v0.53.1` are enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.53.0..v0.53.1` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **patch**: docs and comments only, no new `bin/` tool, flag or capability, and no acceptance narrowing: no input that succeeded before now fails.
+
+### Fixed
+
+- **card#13061** — **`bin/release-pr-body` and `bin/card-completeness` no longer cite roundtable thread numbers or seat names in their comments.** Repos copy both tools word for word, so the citations went into each repo that vendors them, public ones included. The rule each comment states and its pointer to the owning doc are unchanged. No behaviour changes.
+  - **Upgrade:** **[vendor]** re-vendor both tools at your next re-sync; nothing breaks if you don't.
+- **card#13036** — **`docs/UPGRADE.md` § v0.52.0 step 6 now warns that revoking the old `KANBAN_WRITEBACK_TOKEN` also breaks an agent-webhook-bridge whose card-move writeback uses the same kanban token.** Every bridge card move then fails with a `401`, refused as `boardscope_4xx`. Step 6 now says to give the bridge its own token and run `bridge:check` before revoking.
+  - **Upgrade:** none (docs only). A seat that already revoked a token its bridge shared should search its bridge log for `board_scope_lookup_4xx` rows with `"status":401`.
+
 ## [0.53.0] - 2026-11-06
 
 **Minor — the release tools refuse a `.release-pr.json` that does not declare `tag_format`, and `promote-released-cards`' derived `--base` is now a release tag, never any other tag (card#12945); the toolkit's own CI runs on a pinned Ubuntu 26.04 image (card#12948).** The PRs in `v0.52.1..v0.53.0` that carry a change are #506 and #507, enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.52.1..v0.53.0` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **minor**: it adds a flag (`release-pr-body --last-release-tag`) and carries one acceptance narrowing (card#12945 — a config with no `tag_format`, or an empty one, used to complete at `rc 0` under a guessed `"v{{version}}"` and is now refused at `rc 2`). card#12948 is CI-only: it changes no shipped bin, composite action or other vendored surface.
