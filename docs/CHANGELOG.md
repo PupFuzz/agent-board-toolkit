@@ -8,6 +8,8 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ### Fixed
 
+- **card#13061** — **`bin/release-pr-body` and `bin/card-completeness` no longer cite roundtable thread numbers or seat names in their comments.** Repos copy both tools word for word, so the citations went into each repo that vendors them, public ones included. The rule each comment states and its pointer to the owning doc are unchanged. No behaviour changes.
+  - **Upgrade:** **[vendor]** re-vendor both tools at your next re-sync; nothing breaks if you don't.
 - **card#13036** — **`docs/UPGRADE.md` § v0.52.0 step 6 now warns that revoking the old `KANBAN_WRITEBACK_TOKEN` also breaks an agent-webhook-bridge whose card-move writeback uses the same kanban token.** Every bridge card move then fails with a `401`, refused as `boardscope_4xx`. Step 6 now says to give the bridge its own token and run `bridge:check` before revoking.
   - **Upgrade:** none (docs only). A seat that already revoked a token its bridge shared should search its bridge log for `board_scope_lookup_4xx` rows with `"status":401`.
 
