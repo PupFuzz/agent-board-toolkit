@@ -502,10 +502,10 @@ BSC_DISPOSED=(
     #    PR BODY may carry (a `Scope line` row, AI-attribution lines, a session link); the `card`
     #    they name is a `card#` citation, and none says anything about a card's by-ref source,
     #    payload.repo or the URL order. A re-vendor moves the digests, so the ruling is re-made then.
-    ".github/pr-body-lint/pr-body-lint.py::heading-not-allowed the IN table, read as a closed set::231a450406d7"
-    ".github/pr-body-lint/pr-body-lint.py::as a CLOSED table of line shapes (card#10673)::f55d6ae0531c"
+    ".github/pr-body-lint/pr-body-lint.py::heading-not-allowed the IN table, read as a closed set::91640cc22837"
+    ".github/pr-body-lint/pr-body-lint.py::as a CLOSED table of line shapes (card#10673)::b6404e834f8e"
     ".github/pr-body-lint/pr-body-lint.py::def rule_ai_attribution(rows):::6e2782fdaa7d"
-    ".github/pr-body-lint/pr-body-lint.py::standing instruction, and the shapes are the vendored::07f1f2b893f9"
+    ".github/pr-body-lint/pr-body-lint.py::standing instruction, and the shapes are the vendored::df3707687093"
     ".github/pr-body-lint/pr-body-lint.selftest.py::E — THE CLI, WHICH IS WHAT CI AND THE REVIEW PATH ACTUALLY RUN::01dfefd4e996"
 
     # ── THIS FILE ITSELF: its own prose about the trigger, the trigger, and its own control

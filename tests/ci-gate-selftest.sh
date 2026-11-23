@@ -124,12 +124,12 @@ REQUIRE_BESIDE_CI_GATE=(
     quality-ratchet          # quality-ratchet.yml — needs `edited`: it checks out the PR's MERGE
                              #   commit, as continue-on-error-guard does
     storage-cost-guard       # storage-cost-guard.yml — needs `edited`, for the same reason
+    pr-body-lint             # pr-body-lint.yml — needs `edited`: the PR BODY and TITLE it judges are
+                             #   not part of the diff, so their edits arrive only as `edited`
 )
 NOT_A_PR_GATE=(
     auto-tag                 # auto-tag-version.yml    — push: main only, post-merge
     promote                  # release-promote-cards.yml — push: main only, post-merge
-    pr-body-lint             # pr-body-lint.yml        — PR-triggered but REPORTING-ONLY
-                             #   (operator ruling 2026-09-18): must stay unrequired until blocking is decided
 )
 
 # _wf <projection> <workflow-path> [job] — one parser, five projections. Each is a fact about the

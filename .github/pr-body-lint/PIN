@@ -1,25 +1,35 @@
 # The PR-body linter this directory VENDORS, pinned. `.github/workflows/pr-body-lint.yml` checks
-# every `sha256` line below before it runs anything here, and fails the job (never the merge — the
-# context is not required) when one does not match.
+# every `sha256` line below before it runs anything here, and fails the `pr-body-lint` job (a
+# required context) when one does not match.
 #
 # SOURCE. `templates/bin/` of the `coord` plugin (agent-board-framework), at the `version` below:
-# `pr-body-lint.py`, its selftest and the selftest's fixtures, copied byte for byte. The framework
-# repo is private, so a runner cannot fetch them; that is why they are committed here.
+# `pr-body-lint.py`, its selftest and the selftest's fixtures. The framework repo is private, so a
+# runner cannot fetch them; that is why they are committed here. `pr-body-lint.py` and the fixtures
+# are byte for byte; the selftest is NOT (see LOCAL EDIT).
 #
 # WHY `.github/pr-body-lint/` AND NOT `bin/pr-body-lint.py` (the framework template's adopt path):
-# the same directory is used in each repo that vendors this, and in one of them `bin/` is the
-# shipped product, so a CI-only tool does not belong there. The selftest finds the linter and the
-# fixtures beside itself, so the three move together.
+# in this repo `bin/` is the shipped product, installed on PATH, so a CI-only tool does not belong
+# there (a vendored copy there would shadow each seat's plugin copy). The selftest finds the linter
+# and the fixtures beside itself, so the three move together.
 #
-# TO MOVE THE PIN: copy the three from the new plugin version's `templates/bin/`, run
-# `python3 pr-body-lint.selftest.py` here, replace the `version` and every `sha256` line with
-# `sha256sum` output for the new bytes, and read the version's UPDATING notes for new rules first:
-# a new rule changes which bodies get findings. Never edit a vendored file in place; the pin check
-# exists to refuse that. `report.py` is this repo's own wrapper, not vendored, and is not pinned.
+# LOCAL EDIT — `pr-body-lint.selftest.py` (card#13778; operator authorization: card#12616 comment
+# 18651). The 0.77.0 selftest assumes the lint lives at `bin/pr-body-lint.py` (arm i's base-copy
+# fixture, which arm k re-runs) and that `coord-ask-operator` sits beside it (arm m). This copy
+# points the fixture at `.github/pr-body-lint/pr-body-lint.py` and has arm m skip with a printed
+# NOTICE; its own header lists the edit and every site is marked `LOCAL EDIT`. Its sha256 below is
+# of the EDITED bytes; the unedited upstream file's is recorded on the `upstream` line, so
+# `diff` against the plugin copy shows exactly the edit. Drop the edit, re-copy unchanged and
+# delete the `upstream` line once card#13778 ships in the framework.
+#
+# TO MOVE THE PIN: copy the three from the new plugin version's `templates/bin/`, re-apply the
+# LOCAL EDIT unless card#13778 has shipped, run
+# `python3 .github/pr-body-lint/pr-body-lint.selftest.py --workflow .github/workflows/pr-body-lint.yml`
+# from the repo root, replace the `version` and every `sha256` line with `sha256sum` output for the
+# new bytes, and read the version's UPDATING notes for new rules first: a new rule changes which
+# bodies get findings, and here a finding fails the job. Never edit a vendored file in place
+# otherwise; the pin check exists to refuse that.
 
-version 0.59.0
-sha256  4243d5dba057cbfaa7c40a1d3520861af9730b22fff01520ab85a0ff8678e657  pr-body-lint.py
-sha256  c48f787318ab7e62a42a18cd68c600302927296b0b419f664c0881c6213b3557  pr-body-lint.selftest.py
+version 0.77.0
 sha256  31cfc5649c34f09601c76aaed5817c62d413cd5a5a1e6b8ae2456b3c751a8be4  pr-body-lint-fixtures/fw847-v0.50.0-body-2026-09-08T220229Z.md.txt
 sha256  85c244b7d3fbfa4bf79d2718c28ed902cb490e1ab16b3d4cd4196d98cb0fb21a  pr-body-lint-fixtures/fw847-v0.50.0-body-rewritten.md.txt
 sha256  bfb44759b25a3cbea31a63ecddadea35c9065fae9d5c0e4c6a1c56414783d3f9  pr-body-lint-fixtures/fw873-body-2026-09-08T205957Z.md.txt
@@ -27,3 +37,6 @@ sha256  4ec27d315998a93c41658a0f08437561ae009d01574e0d75c7051cac6a132656  pr-bod
 sha256  7f269aeb45243018829929c80c9c76a460bad26e1e237f229fca19707a225331  pr-body-lint-fixtures/fw891-v0.51.0-body-2026-09-10T140853Z.md.txt
 sha256  63ca4812628c7055faa5d2c8ca5e922b3cfa28904e2c1869deaa48e9c7c4c8eb  pr-body-lint-fixtures/fw891-v0.51.0-body-rewritten.md.txt
 sha256  898836573e14f8d14bb8d61cd383dae93884231c0ad13601a2d1663e464cff9b  pr-body-lint-fixtures/README.md
+sha256  957f89e9e3c5d3eae85b2e91b4ed0dd531c922252cb1c51cc5b46c3cfe4929d0  pr-body-lint.py
+sha256  7edea1b3787ca52108f10200131e8a26349920c98049120cec735761d4dbb3fa  pr-body-lint.selftest.py
+upstream  ca709194ca66a9bb5c712333c5f9072c8b5d80f43b66b25986ff0d7e09989d06  pr-body-lint.selftest.py
