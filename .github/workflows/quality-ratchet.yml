@@ -128,8 +128,11 @@ jobs:
       # is any number of directories). Keep the lines for your stack and delete the rest; `**/bin/**`
       # is the C# build output — delete it where `bin/` holds source. To leave tests out of the
       # population, add your test globs here (the default measures all code).
+      # `.github/pr-body-lint/` holds framework bytes pinned by sha256 in its PIN; this repo cannot
+      # edit them, so they are vendored code, like `vendor/` in the template's list.
       RATCHET_EXCLUDE: >-
         **/venv/** **/.venv/** **/__pycache__/**
+        **/.github/pr-body-lint/**
       # ⛔ CUSTOMIZE — the copy scan's formats (jscpd names). A XAML repository adds `markup`, sets
       # RATCHET_JSCPD_FORMATS_EXTS to `markup:xaml`, and adds `**/*.html **/*.htm **/*.xml **/*.svg`
       # to RATCHET_JSCPD_IGNORE (jscpd's markup format reads those too).
