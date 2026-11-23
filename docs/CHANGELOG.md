@@ -6,6 +6,11 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **card#12616** — **Two new pull-request checks from coord v0.77.0 run on this repository: `storage-cost-guard` and `quality-ratchet`.** `storage-cost-guard` reds a workflow that uploads an artifact without a short `retention-days` and a reason, or caches under a key that never changes; this repo's workflows have no such step today. `quality-ratchet` reds a PR that adds a function over the complexity or length limit, a new file over the size or comment-ratio limit, or a new copied block; growth of existing code is printed as a warning only. Here it reads function complexity and length in Python only; the extensionless bash tools in `bin/` get the file-size and comment-ratio rules but no function or copy rule. A NEW file whose comment ratio is over the workflow's `RATCHET_MAX_NEW_FILE_COMMENT_RATIO` reds, a bar most existing `bin/` tools are over (they are warned, never gated, when they grow). It excludes only virtualenv and `__pycache__` paths, and runs in report-only mode on PRs into `main`. Both are declared required beside `ci-gate` in `tests/ci-gate-selftest.sh`.
+  - **Upgrade:** none. The toolkit's own CI only; no shipped bin, action or vendored surface changes.
+
 ### Changed
 
 - **card#12616** — **The toolkit's own release workflow, `release-promote-cards.yml`, now promotes with the completeness gate on (`require-complete: 'true'` on `./promote`).** A card that another PR outside the release still names on its head branch (open, or merged to `dev` after the release was cut) is refused rather than moved to Released, and so is a card whose PRs cannot be read. The workflow gains `pull-requests: read`, which `bin/card-completeness` needs to list those PRs. A refused card fails the run (rc 5 unless a worse rc applies, per `bin/promote-released-cards`' exit-code ladder); `bin/card-completeness`'s header says what the gate reads and what it cannot see.
