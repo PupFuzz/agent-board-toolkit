@@ -8,7 +8,7 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ### Changed
 
-- **card#12616** — **The toolkit's own release workflow, `release-promote-cards.yml`, now promotes with the completeness gate on (`require-complete: 'true'` on `./promote`).** A card that another PR outside the release still names on its head branch (open, or merged to `dev` after the release was cut) is refused rather than moved to Released, and so is a card whose PRs cannot be read. The workflow gains `pull-requests: read`, which `bin/card-completeness` needs to list those PRs. A refused card fails the run with exit 5; `bin/card-completeness`'s header says what the gate reads and what it cannot see.
+- **card#12616** — **The toolkit's own release workflow, `release-promote-cards.yml`, now promotes with the completeness gate on (`require-complete: 'true'` on `./promote`).** A card that another PR outside the release still names on its head branch (open, or merged to `dev` after the release was cut) is refused rather than moved to Released, and so is a card whose PRs cannot be read. The workflow gains `pull-requests: read`, which `bin/card-completeness` needs to list those PRs. A refused card fails the run (rc 5 unless a worse rc applies, per `bin/promote-released-cards`' exit-code ladder); `bin/card-completeness`'s header says what the gate reads and what it cannot see.
   - **Upgrade:** none. The toolkit's own CI only; no shipped bin, action or vendored surface changes.
 
 ## [0.53.1] - 2026-11-09

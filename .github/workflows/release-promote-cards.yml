@@ -125,8 +125,9 @@ jobs:
           # not contain names it on its head branch (open, or merged to `.release-pr.json`
           # `.dev_branch` after the release was cut), and refused just the same when those PRs
           # cannot be read. The predicate and what it cannot see are in `bin/card-completeness`'s
-          # header; the mover finds it beside itself in `bin/`. A refused card exits 5: close or
-          # release the other PR and re-run, or after checking the card by hand promote it with
+          # header; the mover finds it beside itself in `bin/`. A refused card fails the run (rc 5
+          # unless a worse rc applies; the ladder is in `bin/promote-released-cards`' header): close
+          # or release the other PR and re-run, or after checking the card by hand promote it with
           # `bin/promote-released-cards --cards <id>` WITHOUT --require-complete.
           require-complete: 'true'
           dry-run: ${{ github.event.inputs.dry_run }}
