@@ -121,6 +121,9 @@ REQUIRE_BESIDE_CI_GATE=(
     continue-on-error-guard  # continue-on-error-guard.yml — needs `edited`: it checks out the PR's
                              #   MERGE commit, and a retargeted base arrives only as `edited`;
                              #   coord's ci-verdict.sh also pins this check by name (card#9022)
+    quality-ratchet          # quality-ratchet.yml — needs `edited`: it checks out the PR's MERGE
+                             #   commit, as continue-on-error-guard does
+    storage-cost-guard       # storage-cost-guard.yml — needs `edited`, for the same reason
 )
 NOT_A_PR_GATE=(
     auto-tag                 # auto-tag-version.yml    — push: main only, post-merge
