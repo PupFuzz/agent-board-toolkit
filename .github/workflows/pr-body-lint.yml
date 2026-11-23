@@ -1,32 +1,70 @@
-# pr-body-lint.yml — runs the coord framework's PR-body linter on every pull request, REPORTING-ONLY.
+# pr-body-lint.yml — red on a PR body that is the coder's commentary instead of what the
+# INSTALLER needs, and on one missing its audit rows or carrying an attribution line
+# (a `FROM:` / `TO:` line, or AI attribution).
 #
-# The standard is `skills/release-pr/SKILL.md § PR body` in the coord plugin; the program is the
-# one vendored, pinned, in `.github/pr-body-lint/` (`PIN` there names the version and the bytes).
-# Its own header lists the rules and what it does not judge; this file does not restate them.
+# The standard is `skills/release-pr/SKILL.md § PR body — write it for the software
+# installer` in your coord install. This workflow does not restate it and must not — it runs the
+# one program that enforces it, and that program's own header maps each rule to the row of the
+# IN/OUT tables it comes from, and to the owner of each rule every PR carries.
 #
-# ⛔ IT CANNOT BLOCK A MERGE — operator ruling, 2026-09-18: reporting-only first, and whether it
-# ever blocks is decided later on the evidence of these runs. Two things hold that, and both are
-# needed:
-#   1. A FINDING NEVER FAILS THE JOB. `report.py` exits 0 on findings and publishes each one as a
-#      `::warning::` annotation and in the job summary.
-#   2. THE CONTEXT MUST NOT BE REQUIRED while this ruling stands. It lives in its OWN workflow file
-#      so no aggregating required job can `needs:` it. Whether `pr-body-lint` is required is a
-#      repository SETTING no comment can hold; read it live:
-#        gh api "repos/<owner>/<repo>/branches/<branch>/protection" --jq '.required_status_checks'
-#        gh api "repos/<owner>/<repo>/rules/branches/<branch>"
-# What DOES fail the job is the linter returning NO VERDICT: vendored bytes that do not match the
-# pin, its own selftest failing, a body it could not read, or a crash (`report.py`'s docstring
-# owns how a crash is told apart from findings). A red X here therefore means "not measured",
-# never "the body has findings" — and while point 2 holds it does not block either.
+# WHY IT IS A WORKFLOW AND NOT ONLY A REVIEW STEP: a body can carry every required machine line
+# and still be the essay the standard forbids, and it is also the SQUASH MESSAGE that lands on the
+# release branch, so it outlives the PR page it was written on.
 #
-# TO MAKE IT BLOCKING LATER — a change to what CI accepts, so it needs its own decision: make the
-# findings arm of `report.py` exit 1 (or call `pr-body-lint.py` directly, as the framework's own
-# workflow template does), THEN add `pr-body-lint` to the required status checks.
-# In this repo, also move `pr-body-lint` from `NOT_A_PR_GATE` to `REQUIRE_BESIDE_CI_GATE` in
-# `tests/ci-gate-selftest.sh`, the file that declares which contexts are required.
+# THIS REPO'S COPY — the framework's template (coord 0.77.0) with its path lines adapted:
+#   * the lint, its selftest and fixtures are VENDORED in `.github/pr-body-lint/`, pinned by the
+#     sha256 lines of `PIN` there (which also says why not `bin/`: here `bin/` is the shipped
+#     product). The lint step reads the base's copy from that path, not `bin/pr-body-lint.py`;
+#   * steps the template does not have run first: the pin check, and the vendored selftest
+#     pointed at THIS file (`--workflow`), so a lint step that stops judging with the base's copy
+#     reds here. Either failing means the body was NOT measured, not that it has findings;
+#   * `runs-on:` is this repo's pinned image, and `reopened` is in the trigger, as in its other
+#     PR workflows.
+# The rules are the framework's, not this repo's. The lint's exit status is 0 for a body that
+# passes, 1 for one with findings, and 2 for a FAULT of any kind — a usage or input fault, or a
+# crash. Each PR is judged by the copy of the lint on its BASE branch (the lint step below owns
+# how), so a PR that edits the lint takes effect for the PRs after it.
 #
-# `edited` is in the trigger because the body is not part of the diff: a body or title edit fires
-# `edited`, never `synchronize`, so a PR retitled to or from a release is re-judged.
+# `pr-body-lint` is a REQUIRED context: `tests/ci-gate-selftest.sh` declares it in
+# `REQUIRE_BESIDE_CI_GATE`. Whether the branch protection agrees is a repository setting; read it
+# live: gh api "repos/<owner>/<repo>/branches/<branch>/protection" --jq '.required_status_checks'
+#
+# ⚠ OPTIONAL THIRD FILE — ONLY IF YOUR REPO REQUIRES A SECTION ON EVERY PR. A release
+# PR's H2 set is closed, so a heading your own shape check requires on every PR (a compliance
+# section, say) reds here on a release PR and no body can satisfy both. List each such heading's
+# TEXT, one per line and without the `## ` marker, in `.github/pr-body-lint-release-headings.txt`:
+#     SaMD boundary check
+# The lint reads that file from the repo root, which is where the step below runs it. Each line
+# admits exactly that heading text on a release PR and nothing else; no file means no extras; a
+# line written as `## …` is a fault (exit 2), and non-release PRs are unaffected.
+# `.github/pr-body-lint/pr-body-lint.py`'s `read_release_headings` owns the format.
+#
+# ⚠ ONLY A RELEASE PR IS HELD TO THE RELEASE-ONLY RULES, AND THE PR TITLE SAYS WHICH.
+# A title opening `release:` — what the release-pr skill gives every release PR — gets the full
+# standard. Any other PR gets everything but the release-only rules the lint's header names: the
+# banned openers, the live-state readings, the audit rows and both attribution rules still red on
+# every PR.
+# Drop the title `env:` line below and the lint judges EVERY PR as a release, announced in the log.
+#
+# ⚠ WHAT IT IS AND IS NOT. It checks the SHAPE the standard describes — the rules the program's
+# own header lists, each mapped to the IN / OUT table row it comes from. It cannot check whether
+# a highlight is written in the INSTALLER's terms; that judgement is the reviewer's, and a green run here is not a review.
+#
+# ⚠ A BOT-AUTHORED PR IS NOT ASKED FOR THE TWO AUDIT ROWS OR THE TWO PROVENANCE ROWS (`Origin:`,
+# `Design-approved:`), which is why this job passes the author's account type in beside the body.
+# Nothing else is waived for a bot (`pr-body-lint.py`'s header owns the exact set), and the
+# discriminator is the event's `user.type` rather than any login — the step below owns the argument.
+#
+# ⚠ IT RE-RUNS ON EVERY BODY EDIT, WHICH IS THE POINT OF THE `edited` TYPE. A body that was
+# compliant when the PR opened and grew a narration section three pushes later is the ordinary
+# failure; `synchronize` alone would never see it, because the body is not part of the diff.
+#
+# ⚠ RUNNER PREREQUISITE. This workflow requires an Actions runner that supports node24 (its action
+# references are SHA pins at majors that declare `runs.using: node24`). Do NOT unpin an action to
+# get node20 back: a tag can be repointed and a SHA cannot. If your runner is too old for node24,
+# pin instead to a SHA you have READ as node20 — read the object id itself, never infer the
+# runtime from the major:
+#     curl -sS https://raw.githubusercontent.com/<owner>/<action>/<sha>/action.yml | grep using
 
 name: PR body lint
 
@@ -34,19 +72,38 @@ on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
 
+# SUPERSEDED PR RUNS ARE CANCELLED; NOTHING ELSE EVER IS — KEEP IT when you copy this
+# file. A newer `pull_request` run for the same PR cancels this workflow's older run for it; every
+# other event gets a group of its own (`github.run_id`), so no push run is cancelled or evicted.
+# `plugins/coord/docs/CUSTOMIZING.md § Superseded PR runs are cancelled in the shipped workflows`
+# (in your coord install) OWNS the rule, the exemption and why the group is not just `github.ref`.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 env:
-  # UTF-8 stdio for every python process here, kept from the framework's template: a PR body
-  # routinely carries characters a runner's default codec may not encode.
+  # UTF-8 stdio pinned at WORKFLOW scope — one interpreter-level lever (PEP 540)
+  # covering every python process this workflow starts, rather than a per-call-site edit.
+  # KEEP IT when you copy this file: it is repo-independent, and without it a python step
+  # takes the RUNNER's stdio codec — the active code page on a `windows-*` runner — where
+  # printing a character that page lacks kills a HEALTHY gate with UnicodeEncodeError. A PR
+  # body routinely carries em-dashes and arrows, so this one would meet that character on its
+  # first real run. `plugins/coord/docs/CUSTOMIZING.md § UTF-8 stdio in the shipped workflows`
+  # (in your coord install) OWNS the argument and the measurement — deliberately not restated.
   PYTHONUTF8: "1"
 
 jobs:
   pr-body-lint:
     runs-on: ubuntu-26.04
     steps:
+      # `fetch-depth: 2` is what puts the BASE side of the PR's merge commit in this checkout: the
+      # step below runs the lint out of that commit, so do not drop it (the step fails without it).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
 
       - name: vendored linter matches its pin
         working-directory: .github/pr-body-lint
@@ -58,26 +115,71 @@ jobs:
           fi
 
       - name: vendored linter passes its own selftest
-        working-directory: .github/pr-body-lint
-        run: python3 pr-body-lint.selftest.py
+        run: python3 .github/pr-body-lint/pr-body-lint.selftest.py --workflow .github/workflows/pr-body-lint.yml
 
-      - name: lint this PR's body (reporting-only; exits 0 on findings)
-        # The body reaches the program through `env:`, never through the script text: interpolated
-        # into `run:`, `${{ github.event.pull_request.body }}` would be substituted into the shell
-        # source before bash runs, so a body could inject commands. As an env value it is data.
-        # The title comes through the same door for the same reason. It decides which rules run: a
-        # title opening `release:` is judged as a release PR, any other title is not (the lint's
-        # header owns that split). Drop it and every PR is judged as a release again.
-        # The author's account type comes through the same door and is a pass-through, not a rule:
-        # `user.type` is GitHub's own `User` | `Bot` | `Organization`, set by the account kind and
-        # not choosable by the PR's author. The lint waives only the `Built:` and
-        # `**Coordinated in:**` rows for `Bot`, since a dependency bot can declare neither
-        # truthfully; every other rule still applies. Drop it and every PR is asked for both rows.
+      - name: Lint the PR body against the installer standard
+        # ⛔ THE BODY REACHES THE PROGRAM THROUGH `env:`, NEVER THROUGH THE SCRIPT TEXT, AND THAT
+        # IS A SECURITY BOUNDARY RATHER THAN A STYLE CHOICE. `${{ github.event.pull_request.body }}`
+        # interpolated into a `run:` block is SUBSTITUTED BY THE RUNNER BEFORE bash ever sees the
+        # script, so a body containing `$(...)`, a backtick or a newline plus a command becomes
+        # part of the script — attacker-authored code in a workflow the repo's own token started.
+        # Passed as an environment VALUE it is data, whatever bytes it holds, and the program
+        # reads it with `--env` for exactly this reason (its `read_body` docstring owns the
+        # argument). Do not "simplify" this to an interpolation inside the run block.
+        #
+        # ⛔ AND THE AUTHOR'S ACCOUNT TYPE COMES THROUGH THE SAME DOOR — IT IS A PASS-THROUGH,
+        # NEVER A RULE. `user.type` is GitHub's own `User` | `Bot` | `Organization`, set from the
+        # account kind and not choosable by the PR's author; the lint compares it to `Bot` and
+        # waives `Built:` / `**Coordinated in:**`, and a missing `Origin:` / `Design-approved:`,
+        # for a bot PR, because a dependency bot can declare none of them truthfully. The RULE
+        # deliberately does NOT live here as an `if:` on this job: every adopter's copy of the lint
+        # is byte-identical and needs no local fork, and the review path reads the same program.
+        # If you drop this `env:` line the lint simply requires all of those rows of everyone — it
+        # fails CLOSED.
+        #
+        # ⛔ AND THE TITLE TOO, THROUGH THE SAME DOOR AND FOR THE SAME REASON: it is author text, and
+        # interpolated into `run:` it would be script. It decides which rules run (a title opening
+        # `release:` is a release PR), and the decision lives in the program, not in an `if:` here.
+        # `edited` fires on a title edit as well as a body edit, so a PR retitled to or from a
+        # release is re-judged.
+        #
+        # ⛔ THE JUDGE IS THE BASE'S COPY OF THE LINT, NOT THE PR'S. A PR that edits
+        # `.github/pr-body-lint/pr-body-lint.py` would otherwise be judged by its own edit.
+        # A `pull_request` run checks out the PR's MERGE commit, whose first parent is the base it
+        # merges into, so the lint is read out of `HEAD^1` into the runner's temp directory and run
+        # from there. The
+        # working directory stays the PR's checkout, so the repo's declared release headings are
+        # still read from the PR's tree. THE ADOPTION PR — the base has no vendored lint
+        # yet — is judged by the copy it adds, the only one there is, and the log says so.
+        # The step first checks that HEAD IS this PR's merge commit: its second parent must be the
+        # event's `pull_request.head.sha`, passed in as `COORD_PR_HEAD_SHA`. Anything else exits 2
+        # and names the cause — `fetch-depth` dropped (no second parent), or `ref:` set to the PR
+        # head, including a head that is itself a merge ("Update branch"), whose second parent
+        # exists but whose first parent is the PR's own previous commit, carrying the PR's lint.
+        # The RESIDUE, named — two ways a PR can still change what judges it: on `pull_request`
+        # the WORKFLOW file is the PR's own, so a PR that edits this file can; and the declared
+        # release headings (`.github/pr-body-lint-release-headings.txt`) are read from the PR's
+        # tree, so a PR that adds a heading there has it admitted on that same PR. This protects
+        # against an edit to the lint, not to those two files.
         env:
           COORD_PR_BODY: ${{ github.event.pull_request.body }}
           COORD_PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           COORD_PR_TITLE: ${{ github.event.pull_request.title }}
-        run: >-
-          python3 .github/pr-body-lint/report.py --env COORD_PR_BODY
-          --author-type-env COORD_PR_AUTHOR_TYPE --title-env COORD_PR_TITLE
-          --label "this PR's body"
+          COORD_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COORD_PR_HEAD_SHA:-}" ] \
+              || [ "$(git rev-parse -q --verify 'HEAD^2' || true)" != "$COORD_PR_HEAD_SHA" ]; then
+            echo "pr-body-lint: HEAD is not this PR's merge commit (its second parent is not the PR head ${COORD_PR_HEAD_SHA:-<unset>}), so the base's copy of the lint cannot be read. Keep the checkout's default ref, 'fetch-depth: 2' and the COORD_PR_HEAD_SHA env line." >&2
+            exit 2
+          fi
+          lint="$RUNNER_TEMP/pr-body-lint.base.py"
+          if git cat-file -e 'HEAD^1:.github/pr-body-lint/pr-body-lint.py' 2>/dev/null; then
+            git show 'HEAD^1:.github/pr-body-lint/pr-body-lint.py' > "$lint"
+          else
+            echo "pr-body-lint: the base has no .github/pr-body-lint/pr-body-lint.py, so this PR adopts the lint and is judged by the copy it adds."
+            lint=.github/pr-body-lint/pr-body-lint.py
+          fi
+          python3 "$lint" --env COORD_PR_BODY \
+            --author-type-env COORD_PR_AUTHOR_TYPE --title-env COORD_PR_TITLE \
+            --label "this PR's body"
