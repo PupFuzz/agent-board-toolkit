@@ -6,6 +6,11 @@ All notable changes to the agent-board-toolkit are documented here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **card#12616** — **The toolkit's own release workflow, `release-promote-cards.yml`, now promotes with the completeness gate on (`require-complete: 'true'` on `./promote`).** A card that another PR outside the release still names on its head branch (open, or merged to `dev` after the release was cut) is refused rather than moved to Released, and so is a card whose PRs cannot be read. The workflow gains `pull-requests: read`, which `bin/card-completeness` needs to list those PRs. A refused card fails the run with exit 5; `bin/card-completeness`'s header says what the gate reads and what it cannot see.
+  - **Upgrade:** none. The toolkit's own CI only; no shipped bin, action or vendored surface changes.
+
 ## [0.53.1] - 2026-11-09
 
 **Patch — `docs/UPGRADE.md` v0.52.0 step 6 warns that revoking the old writeback token breaks an agent-webhook-bridge that shares it (card#13036); `bin/release-pr-body` and `bin/card-completeness` no longer cite roundtable threads or seat names in their comments (card#13061).** The PRs in `v0.53.0..v0.53.1` are enumerated below and in the release PR's generated `## Bundled` table; `git log --oneline v0.53.0..v0.53.1` re-prints the range. Per `VERSIONING.md` § Bump sizing this is a **patch**: docs and comments only, no new `bin/` tool, flag or capability, and no acceptance narrowing: no input that succeeded before now fails.

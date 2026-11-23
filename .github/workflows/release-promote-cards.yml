@@ -40,6 +40,10 @@ on:
 
 permissions:
   contents: read
+  # The completeness gate (`require-complete` below) has `bin/card-completeness` ask this repo for
+  # its OPEN pull requests and for the PRs MERGED to `dev` that the release does not contain.
+  # Remove this and the gate refuses every matched card as UNMEASURED.
+  pull-requests: read
 
 concurrency:
   group: release-promote-cards-${{ github.sha }}
@@ -70,7 +74,7 @@ jobs:
       # nobody reads is the same silence this card exists to end. The bound, why it is 300s, and
       # what happens at it are stated in the tool's own header.
       #
-      # `contents: read` above is UNCHANGED and sufficient: this polls refs with `git ls-remote`
+      # `contents: read` above is all this step needs: it polls refs with `git ls-remote`
       # and writes nothing. The v0.28.0 403 was NOT a permissions defect — the failing job log
       # showed `Contents: write` already granted — so nothing here widens a token.
       #
@@ -117,4 +121,12 @@ jobs:
           # stage 89) are promoted; a matched card elsewhere is skipped, so a
           # stale/recycled DL or PR stamp can't resurrect a declined/backlog card.
           shipped-stage-ids: '89'
+          # COMPLETENESS GATE: a matched card is REFUSED, not promoted, while a PR this release does
+          # not contain names it on its head branch (open, or merged to `.release-pr.json`
+          # `.dev_branch` after the release was cut), and refused just the same when those PRs
+          # cannot be read. The predicate and what it cannot see are in `bin/card-completeness`'s
+          # header; the mover finds it beside itself in `bin/`. A refused card exits 5: close or
+          # release the other PR and re-run, or after checking the card by hand promote it with
+          # `bin/promote-released-cards --cards <id>` WITHOUT --require-complete.
+          require-complete: 'true'
           dry-run: ${{ github.event.inputs.dry_run }}
